@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semver bump level
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+
+permissions:
+  contents: write
+
+env:
+  FOUNDRY_VERSION: "v0.1.0-alpha.7"
+
+jobs:
+  release:
+    name: Package and publish release
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: version
+        run: |
+          latest=$(git tag --list 'v*.*.*' --sort=-v:refname | head -n1)
+          if [ -z "$latest" ]; then
+            current="0.0.0"
+          else
+            current="${latest#v}"
+          fi
+          if ! printf '%s\n' "$current" | grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "Latest version '$current' is not valid semver." >&2
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<< "$current"
+          case "${{ inputs.bump }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+            *) echo "Unknown bump: ${{ inputs.bump }}" >&2; exit 1 ;;
+          esac
+          version="${major}.${minor}.${patch}"
+          tag="v${version}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "Tag $tag already exists." >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install repository tooling
+        run: |
+          pip install -r requirements.txt
+          brew install prek ripgrep
+
+      - name: Install Task
+        uses: go-task/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '>=1.26.2'
+
+      - name: Install Anvil
+        run: |
+          go install github.com/cafecito-games/foundry-tools/cmd/anvil@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Foundry editor
+        run: |
+          foundry_dir="$RUNNER_TEMP/foundry"
+          mkdir -p "$foundry_dir"
+          asset="Foundry_${FOUNDRY_VERSION}_macos.universal.zip"
+          curl --fail --location \
+            "https://github.com/cafecito-games/Foundry/releases/download/${FOUNDRY_VERSION}/${asset}" \
+            --output "$foundry_dir/$asset"
+          unzip -q "$foundry_dir/$asset" -d "$foundry_dir"
+          xattr -dr com.apple.quarantine "$foundry_dir/Foundry.app" || true
+          chmod +x "$foundry_dir/Foundry.app/Contents/MacOS/Foundry"
+          echo "FOUNDRY_BIN=$foundry_dir/Foundry.app/Contents/MacOS/Foundry" >> "$GITHUB_ENV"
+
+      - name: Verify current Foundry CLI
+        run: |
+          "$FOUNDRY_BIN" --headless project import --project test_project
+
+      - name: Run validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: task test
+
+      - name: Build versioned addon archive
+        run: task package VERSION="${{ steps.version.outputs.version }}"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create \
+            "${{ steps.version.outputs.tag }}" \
+            "dist/FoundryObservability-${{ steps.version.outputs.version }}.zip" \
+            --title "FoundryObservability ${{ steps.version.outputs.tag }}" \
+            --generate-notes

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+fail() {
+	echo "FAIL: $*" >&2
+	exit 1
+}
+
+command -v unzip >/dev/null 2>&1 || fail "unzip is required"
+archive=$("$repo_root/scripts/package-addon")
+listing=$(unzip -Z1 "$archive")
+
+grep -qx 'addons/FoundryObservability/plugin.cfg' <<<"$listing" \
+	|| fail "package is missing plugin.cfg"
+grep -qx 'addons/FoundryObservability/FoundryObservability.fs' <<<"$listing" \
+	|| fail "package is missing the autoload"
+grep -qx 'addons/FoundryObservability/FoundryObservabilityApi.fs' <<<"$listing" \
+	|| fail "package is missing the public contract marker"
+
+if rg -n '(^|/)(test_project|\.foundry|\.git|\.build)(/|$)|\.DS_Store$' <<<"$listing"; then
+	fail "package contains repository or generated state"
+fi
+
+while IFS= read -r resource; do
+	relative=${resource#"$repo_root/"}
+	grep -qx "$relative.uid" <<<"$listing" \
+		|| fail "$relative.uid is missing from the package"
+done < <(find "$repo_root/addons/FoundryObservability" -type f -name '*.fs' | sort)
+
+echo "Package contract checks passed: $archive"

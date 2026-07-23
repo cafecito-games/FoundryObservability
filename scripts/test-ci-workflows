@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+pr_workflow="$repo_root/.github/workflows/pr-check.yml"
+release_workflow="$repo_root/.github/workflows/release.yml"
+
+fail() {
+	echo "FAIL: $*" >&2
+	exit 1
+}
+
+[[ -f "$pr_workflow" ]] || fail "pr-check.yml is missing"
+[[ -f "$release_workflow" ]] || fail "release.yml is missing"
+
+for workflow in "$pr_workflow" "$release_workflow"; do
+	rg -q 'actions/checkout@v7([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/checkout@v7"
+	rg -q 'actions/setup-python@v7([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/setup-python@v7"
+	rg -q 'actions/setup-go@v7([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/setup-go@v7"
+	rg -q 'go-task/setup-task@v2([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use go-task/setup-task@v2"
+	rg -q 'v0\.1\.0-alpha\.7' "$workflow" \
+		|| fail "$(basename "$workflow") must pin Foundry v0.1.0-alpha.7"
+	rg -q 'project import --project' "$workflow" \
+		|| fail "$(basename "$workflow") must use command-first project import"
+	rg -q 'task test' "$workflow" \
+		|| fail "$(basename "$workflow") must run the repository test gate"
+	if rg -n -- '--headless[[:space:]]+--path|--headless[[:space:]]+--editor|--check-only' "$workflow"; then
+		fail "$(basename "$workflow") contains a deprecated Foundry invocation"
+	fi
+done
+
+rg -q '^  contents: read$' "$pr_workflow" \
+	|| fail "pull-request workflow must request read-only contents permission"
+rg -q '^      bump:$' "$release_workflow" \
+	|| fail "release workflow must expose a bump input"
+for level in patch minor major; do
+	rg -q "^[[:space:]]+- $level$" "$release_workflow" \
+		|| fail "release workflow must offer $level"
+done
+rg -q 'GITHUB_OUTPUT' "$release_workflow" \
+	|| fail "release workflow must compute its version through GITHUB_OUTPUT"
+rg -q 'gh release create' "$release_workflow" \
+	|| fail "release workflow must publish a GitHub release"
+
+echo "CI workflow contract checks passed"

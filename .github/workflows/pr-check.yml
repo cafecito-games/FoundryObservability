@@ -1,0 +1,67 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  FOUNDRY_VERSION: "v0.1.0-alpha.7"
+
+jobs:
+  validate:
+    name: Validate FoundryObservability
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install repository tooling
+        run: |
+          pip install -r requirements.txt
+          brew install prek ripgrep
+
+      - name: Install Task
+        uses: go-task/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '>=1.26.2'
+
+      - name: Install Anvil
+        run: |
+          go install github.com/cafecito-games/foundry-tools/cmd/anvil@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Foundry editor
+        run: |
+          foundry_dir="$RUNNER_TEMP/foundry"
+          mkdir -p "$foundry_dir"
+          asset="Foundry_${FOUNDRY_VERSION}_macos.universal.zip"
+          curl --fail --location \
+            "https://github.com/cafecito-games/Foundry/releases/download/${FOUNDRY_VERSION}/${asset}" \
+            --output "$foundry_dir/$asset"
+          unzip -q "$foundry_dir/$asset" -d "$foundry_dir"
+          xattr -dr com.apple.quarantine "$foundry_dir/Foundry.app" || true
+          chmod +x "$foundry_dir/Foundry.app/Contents/MacOS/Foundry"
+          echo "FOUNDRY_BIN=$foundry_dir/Foundry.app/Contents/MacOS/Foundry" >> "$GITHUB_ENV"
+
+      - name: Verify current Foundry CLI
+        run: |
+          "$FOUNDRY_BIN" --headless project import --project test_project
+
+      - name: Run validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: task test
