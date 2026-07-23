@@ -3,7 +3,8 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project_dir="$repo_root/test_project"
-test_addon="$project_dir/addons/FoundryObservability"
+core_addon="$project_dir/addons/FoundryObservability"
+integration_addon="$project_dir/addons/FoundryObservabilityFoundryLib"
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -24,22 +25,32 @@ fi
 command -v anvil >/dev/null 2>&1 \
 	|| fail "anvil is required; install github.com/cafecito-games/foundry-tools/cmd/anvil"
 
-restore_test_addon() {
-	if [[ -d "$test_addon" && ! -L "$test_addon" ]]; then
-		rm -rf "$test_addon"
+restore_test_addons() {
+	if [[ -d "$core_addon" && ! -L "$core_addon" ]]; then
+		rm -rf "$core_addon"
 	fi
-	if [[ ! -e "$test_addon" ]]; then
-		ln -s ../../addons/FoundryObservability "$test_addon"
+	if [[ ! -e "$core_addon" ]]; then
+		ln -s ../../addons/FoundryObservability "$core_addon"
+	fi
+	if [[ -d "$integration_addon" && ! -L "$integration_addon" ]]; then
+		rm -rf "$integration_addon"
+	fi
+	if [[ ! -e "$integration_addon" ]]; then
+		ln -s ../../addons/FoundryObservabilityFoundryLib "$integration_addon"
 	fi
 }
 
-trap restore_test_addon EXIT
+trap restore_test_addons EXIT
 
 # Foundry's headless source scan intentionally skips directory symlinks. Materialize the local
 # addon for the duration of the runtime test, then restore the tracked development symlink.
-if [[ -L "$test_addon" ]]; then
-	rm "$test_addon"
-	cp -R "$repo_root/addons/FoundryObservability" "$test_addon"
+if [[ -L "$core_addon" ]]; then
+	rm "$core_addon"
+	cp -R "$repo_root/addons/FoundryObservability" "$core_addon"
+fi
+if [[ -L "$integration_addon" ]]; then
+	rm "$integration_addon"
+	cp -R "$repo_root/addons/FoundryObservabilityFoundryLib" "$integration_addon"
 fi
 
 if [[ "${FOUNDRYOBSERVABILITY_SKIP_ANVIL_INSTALL:-0}" != "1" ]]; then
