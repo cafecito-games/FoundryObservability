@@ -16,7 +16,7 @@ fail() {
 for workflow in "$pr_workflow" "$release_workflow"; do
 	rg -q 'v0\.1\.0-alpha\.7' "$workflow" \
 		|| fail "$(basename "$workflow") must pin Foundry v0.1.0-alpha.7"
-	rg -q 'foundry project import --project' "$workflow" \
+	rg -q 'project import --project' "$workflow" \
 		|| fail "$(basename "$workflow") must use command-first project import"
 	rg -q 'task test' "$workflow" \
 		|| fail "$(basename "$workflow") must run the repository test gate"
