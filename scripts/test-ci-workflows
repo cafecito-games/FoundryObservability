@@ -14,6 +14,14 @@ fail() {
 [[ -f "$release_workflow" ]] || fail "release.yml is missing"
 
 for workflow in "$pr_workflow" "$release_workflow"; do
+	rg -q 'actions/checkout@v7([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/checkout@v7"
+	rg -q 'actions/setup-python@v7([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/setup-python@v7"
+	rg -q 'actions/setup-go@v7([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/setup-go@v7"
+	rg -q 'go-task/setup-task@v2([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use go-task/setup-task@v2"
 	rg -q 'v0\.1\.0-alpha\.7' "$workflow" \
 		|| fail "$(basename "$workflow") must pin Foundry v0.1.0-alpha.7"
 	rg -q 'project import --project' "$workflow" \
