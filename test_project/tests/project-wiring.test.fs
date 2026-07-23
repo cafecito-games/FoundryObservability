@@ -19,15 +19,27 @@ func test_project_enables_foundry_observability_editor_plugin() -> void:
 	Expect.that(
 			"res://addons/FoundryObservability/plugin.cfg" in enabled_plugins).to_be_true()
 
-func test_project_contains_optional_foundrylib_integration_without_enabling_it() -> void:
-	var integration_source: String = FileAccess.get_file_as_string(
-			"res://addons/FoundryObservabilityFoundryLib/plugin.cfg")
-	Expect.that(integration_source).to_contain(
-			"name=\"FoundryObservabilityFoundryLib\"")
+func test_project_uses_foundrylib_adapter_from_core_addon() -> void:
+	var sink_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/FoundryLibObservabilitySink.fs")
+	Expect.that(sink_source).to_contain(
+			"namespace games.cafecito.foundryobservability.foundrylib")
+	Expect.that(sink_source).to_contain(
+			"class_name FoundryLibObservabilitySink")
+	Expect.that(sink_source).to_contain("uses LogSink")
+	var packages_source: String = FileAccess.get_file_as_string(
+			"res://packages.toml")
+	Expect.that(packages_source).to_contain("[packages.foundrylib]")
+	Expect.that(packages_source).to_contain(
+			"url = \"https://github.com/cafecito-games/FoundryLib.git\"")
 	var enabled_plugins: PackedStringArray = ProjectSettings.get_setting(
 			"editor_plugins/enabled", PackedStringArray())
 	Expect.that(
+			"res://addons/FoundryObservability/plugin.cfg" in enabled_plugins).to_be_true()
+	Expect.that(
 			"res://addons/FoundryObservabilityFoundryLib/plugin.cfg" in enabled_plugins).to_be_false()
+	Expect.that(FileAccess.file_exists(
+			"res://addons/FoundryObservabilityFoundryLib/plugin.cfg")).to_be_false()
 
 func test_project_enforces_strict_foundry_script_warnings() -> void:
 	Expect.that(ProjectSettings.get_setting(
