@@ -50,8 +50,9 @@ The public namespace is `games.cafecito.foundryobservability`.
 plugin in `export_plugin.fs` registers the `FoundryObservability` autoload when
 the addon is enabled. `FoundryObservability.fs` is a parseable `Node` autoload
 with no provider behavior. `FoundryObservabilityApi.fs` is an intentionally
-empty public contract marker so future sessions can add stable typed methods
-without changing the package boundary.
+behavior-free public contract marker with only a stable identity constant. The
+autoload does not consume the marker until the first real API method exists, so
+the bootstrap does not introduce a no-op runtime contract.
 
 The test project enables the editor plugin and autoload, declares FoundryLib as
 a Git package, and checks the project wiring through the FoundryLib test

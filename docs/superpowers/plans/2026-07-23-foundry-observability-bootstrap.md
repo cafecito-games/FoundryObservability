@@ -126,9 +126,14 @@ namespace games.cafecito.foundryobservability
 
 ## Public contract marker for the future FoundryObservability autoload API.
 trait_name FoundryObservabilityApi
+
+const CONTRACT_MARKER: String = "FoundryObservability"
 ~~~
 
-Create FoundryObservability.fs:
+Create FoundryObservability.fs. Keep the marker file separate but do not add a
+uses clause yet; Foundry's current analyzer rejects a behavior-free marker in
+an autoload's uses list, and the first real API method will establish that
+contract in a later change:
 
 ~~~foundryscript
 @autoload
@@ -136,7 +141,6 @@ namespace games.cafecito.foundryobservability
 
 ## Autoload entry point for the future game observability API.
 class_name FoundryObservability extends Node
-uses FoundryObservabilityApi
 ~~~
 
 - [ ] **Step 4: Link the addon into the test project and commit sources**
@@ -182,12 +186,12 @@ Create packages.toml:
   [packages.foundrylib]
     source = "git"
     url = "https://github.com/cafecito-games/FoundryLib.git"
-    version = "e4ce273f2bed77d4e31009ed65c7fdc43e0fd988"
+    version = "1e0a7d707562d4ef4435b6b2015bbb5d84266ecb"
     source_path = "addons/foundrylib"
     install_as = "foundrylib"
 ~~~
 
-Create packages.lock with the same resolved version and source path, and spec hash 0e904714c4d571fe4842a7e733a00a672e70c04c69fb3dfc4fa2e39bab0fc8e1.
+Create packages.lock with the same resolved version and source path, and spec hash 574b1acf7f65afd308272014c87b5664a8e9d092cca71a127a1eba329c32df31.
 
 - [ ] **Step 3: Add project-wiring tests**
 
@@ -225,7 +229,7 @@ test-ci-workflows, package-addon, test-package, and test-foundry-uids.
 
 scripts/test-foundry-script must resolve FOUNDRY_BIN, foundry on PATH, or the
 local macOS binary; require all four addon files; use rg to check the descriptor
-name/version, namespace, class name, uses, trait_name, and
+name/version, namespace, class name, and trait_name, and
 add_autoload_singleton; reject legacy names; run:
 
 ~~~sh
