@@ -98,7 +98,8 @@ jobs:
           echo "FOUNDRY_BIN=$foundry_dir/Foundry.app/Contents/MacOS/Foundry" >> "$GITHUB_ENV"
 
       - name: Verify current Foundry CLI
-        run: "$FOUNDRY_BIN" --headless project import --project test_project
+        run: |
+          "$FOUNDRY_BIN" --headless project import --project test_project
 
       - name: Run validation
         env:
