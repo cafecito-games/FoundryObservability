@@ -1,0 +1,47 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Run the complete validation gate
+    cmds:
+      - task: test
+
+  lint:
+    desc: Run generic repository hygiene checks
+    cmds:
+      - prek run --all-files
+
+  test:foundry-script:
+    desc: Validate addon structure and FoundryScript diagnostics
+    cmds:
+      - scripts/test-foundry-script
+      - scripts/test-foundry-uids
+
+  test:project:
+    desc: Install test-project packages and run project-wiring tests
+    cmds:
+      - scripts/test-project
+
+  test:ci:
+    desc: Validate GitHub Actions workflow contracts
+    cmds:
+      - scripts/test-ci-workflows
+
+  test:package:
+    desc: Build and inspect a distributable addon zip
+    cmds:
+      - scripts/test-package
+
+  test:
+    desc: Run all local validation gates
+    deps:
+      - lint
+      - test:foundry-script
+      - test:project
+      - test:ci
+      - test:package
+
+  package:
+    desc: Create a distributable FoundryObservability addon zip
+    cmds:
+      - scripts/package-addon
