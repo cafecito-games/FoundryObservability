@@ -3,7 +3,10 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 addon="$repo_root/addons/FoundryObservability"
+integration="$repo_root/addons/FoundryObservabilityFoundryLib"
 project_dir="$repo_root/test_project"
+test_addon="$project_dir/addons/FoundryObservability"
+test_integration="$project_dir/addons/FoundryObservabilityFoundryLib"
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -14,10 +17,10 @@ resolve_foundry_bin() {
 	if [[ -n "${FOUNDRY_BIN:-}" ]]; then
 		[[ -x "$FOUNDRY_BIN" ]] || fail "FOUNDRY_BIN is not executable: $FOUNDRY_BIN"
 		printf '%s\n' "$FOUNDRY_BIN"
-	elif command -v foundry >/dev/null 2>&1; then
-		command -v foundry
 	elif [[ -x "/Users/christian/CafecitoGames/Foundry/bin/foundry.macos.editor.dev.arm64" ]]; then
 		printf '%s\n' "/Users/christian/CafecitoGames/Foundry/bin/foundry.macos.editor.dev.arm64"
+	elif command -v foundry >/dev/null 2>&1; then
+		command -v foundry
 	else
 		fail "Foundry executable not found; set FOUNDRY_BIN or put foundry on PATH"
 	fi
@@ -29,6 +32,8 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/export_plugin.fs" ]] || fail "export_plugin.fs is missing"
 [[ -f "$addon/FoundryObservability.fs" ]] || fail "FoundryObservability.fs is missing"
 [[ -f "$addon/FoundryObservabilityApi.fs" ]] || fail "FoundryObservabilityApi.fs is missing"
+[[ -f "$integration/plugin.cfg" ]] || fail "FoundryLib integration plugin.cfg is missing"
+[[ -f "$integration/FoundryLibObservabilitySink.fs" ]] || fail "FoundryLib observability sink is missing"
 
 rg -q '^name="FoundryObservability"$' "$addon/plugin.cfg" \
 	|| fail "plugin.cfg has the wrong addon name"
@@ -42,14 +47,54 @@ rg -q '^trait_name FoundryObservabilityApi$' "$addon/FoundryObservabilityApi.fs"
 	|| fail "public contract marker is missing"
 rg -q 'add_autoload_singleton\(' "$addon/export_plugin.fs" \
 	|| fail "editor plugin does not register the autoload"
+rg -q '^name="FoundryObservabilityFoundryLib"$' "$integration/plugin.cfg" \
+	|| fail "FoundryLib integration plugin has the wrong addon name"
+rg -q '^version="0\.1\.0"$' "$integration/plugin.cfg" \
+	|| fail "FoundryLib integration plugin must start at version 0.1.0"
+rg -q '^namespace games\.cafecito\.foundryobservability\.foundrylib$' "$integration/FoundryLibObservabilitySink.fs" \
+	|| fail "FoundryLib sink has the wrong namespace"
+rg -q '^class_name FoundryLibObservabilitySink$' "$integration/FoundryLibObservabilitySink.fs" \
+	|| fail "FoundryLib sink class declaration is missing"
+rg -q '^uses LogSink$' "$integration/FoundryLibObservabilitySink.fs" \
+	|| fail "FoundryLib sink does not implement LogSink"
 
-if rg -n --glob '*.fs' 'GDScript|GDscript|Godot|\.gdextension|\.godot' "$addon"; then
+if rg -n --glob '*.fs' 'GDScript|GDscript|Godot|\.gdextension|\.godot' "$addon" "$integration"; then
 	fail "addon sources contain legacy engine names"
+fi
+
+restore_test_addons() {
+	if [[ -d "$test_addon" && ! -L "$test_addon" ]]; then
+		rm -rf "$test_addon"
+	fi
+	if [[ ! -e "$test_addon" ]]; then
+		ln -s ../../addons/FoundryObservability "$test_addon"
+	fi
+	if [[ -d "$test_integration" && ! -L "$test_integration" ]]; then
+		rm -rf "$test_integration"
+	fi
+	if [[ ! -e "$test_integration" ]]; then
+		ln -s ../../addons/FoundryObservabilityFoundryLib "$test_integration"
+	fi
+}
+
+trap restore_test_addons EXIT
+
+if [[ -L "$test_addon" ]]; then
+	rm "$test_addon"
+	cp -R "$addon" "$test_addon"
+fi
+if [[ -L "$test_integration" ]]; then
+	rm "$test_integration"
+	cp -R "$integration" "$test_integration"
 fi
 
 foundry_bin=$(resolve_foundry_bin)
 import_log=$(mktemp "${TMPDIR:-/tmp}/foundryobservability-import.XXXXXX")
-trap 'rm -f "$import_log"' EXIT
+cleanup() {
+	rm -f "$import_log"
+	restore_test_addons
+}
+trap cleanup EXIT
 
 "$foundry_bin" --headless project import --project "$project_dir" >"$import_log" 2>&1 || {
 	cat "$import_log" >&2
@@ -64,7 +109,8 @@ fi
 	"$foundry_bin" --headless script lint \
 		--project "$project_dir" \
 		--fail-on=warning \
-		addons/FoundryObservability
+		addons/FoundryObservability \
+		addons/FoundryObservabilityFoundryLib
 )
 
 echo "FoundryScript contract checks passed"

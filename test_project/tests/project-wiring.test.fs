@@ -19,6 +19,16 @@ func test_project_enables_foundry_observability_editor_plugin() -> void:
 	Expect.that(
 			"res://addons/FoundryObservability/plugin.cfg" in enabled_plugins).to_be_true()
 
+func test_project_contains_optional_foundrylib_integration_without_enabling_it() -> void:
+	var integration_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservabilityFoundryLib/plugin.cfg")
+	Expect.that(integration_source).to_contain(
+			"name=\"FoundryObservabilityFoundryLib\"")
+	var enabled_plugins: PackedStringArray = ProjectSettings.get_setting(
+			"editor_plugins/enabled", PackedStringArray())
+	Expect.that(
+			"res://addons/FoundryObservabilityFoundryLib/plugin.cfg" in enabled_plugins).to_be_false()
+
 func test_project_enforces_strict_foundry_script_warnings() -> void:
 	Expect.that(ProjectSettings.get_setting(
 			"debug/foundry_script/warnings/inferred_declaration", 0)).to_equal(1)

@@ -14,10 +14,10 @@ fail() {
 if [[ -n "${FOUNDRY_BIN:-}" ]]; then
 	[[ -x "$FOUNDRY_BIN" ]] || fail "FOUNDRY_BIN is not executable: $FOUNDRY_BIN"
 	foundry_bin="$FOUNDRY_BIN"
-elif command -v foundry >/dev/null 2>&1; then
-	foundry_bin=$(command -v foundry)
 elif [[ -x "/Users/christian/CafecitoGames/Foundry/bin/foundry.macos.editor.dev.arm64" ]]; then
-	foundry_bin="/Users/christian/CafecitoGames/Foundry/bin/foundry.macos.editor.dev.arm64"
+		foundry_bin="/Users/christian/CafecitoGames/Foundry/bin/foundry.macos.editor.dev.arm64"
+elif command -v foundry >/dev/null 2>&1; then
+		foundry_bin=$(command -v foundry)
 else
 	fail "Foundry executable not found; set FOUNDRY_BIN or put foundry on PATH"
 fi
@@ -43,7 +43,7 @@ restore_test_addons() {
 trap restore_test_addons EXIT
 
 # Foundry's headless source scan intentionally skips directory symlinks. Materialize the local
-# addon for the duration of the runtime test, then restore the tracked development symlink.
+# addons for the duration of the runtime test, then restore the tracked development symlinks.
 if [[ -L "$core_addon" ]]; then
 	rm "$core_addon"
 	cp -R "$repo_root/addons/FoundryObservability" "$core_addon"
