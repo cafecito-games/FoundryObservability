@@ -397,9 +397,11 @@ func capture_log(
 ~~~
 
 Creates a first-class structured log record. It preserves the supplied source,
-timestamp, level, and scalar attributes, and applies global attributes from
-ObservabilityConfig before dispatch. A timestamp of -1 uses the current engine
-tick count. Log records remain distinct from message and exception events.
+timestamp, level, and scalar attributes. The core passes both per-record
+attributes and ObservabilityConfig global attributes to provider integrations;
+providers decide how to merge or map them. A timestamp of -1 uses the current
+engine tick count. Log records remain distinct from message and exception
+events.
 
 Example:
 
@@ -580,9 +582,10 @@ per-record scalar attributes. Reserved metadata is also available as
 `foundry.kind`, `foundry.source`, and `foundry.timestamp_msec` attributes.
 
 The Sentry SDK owns batching and delivery queues; `FoundryObservability.flush()`
-forwards to the native bridge. Native support is detected at capture time, so
-an older or incomplete bridge safely no-ops structured logs while ordinary
-messages and exceptions continue using the regular event path.
+forwards to the native bridge. Native support is detected at capture time. A
+current bridge sends structured logs through the native log API; an older or
+incomplete bridge falls back to the regular event path so existing log delivery
+continues while the native bridge is upgraded.
 
 ## Custom provider outline
 

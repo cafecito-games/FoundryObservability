@@ -116,7 +116,7 @@ func test_routes_log_events_to_native_structured_log_method() -> void:
 	provider.shutdown()
 
 
-func test_structured_log_is_safe_when_bridge_does_not_support_it() -> void:
+func test_structured_log_falls_back_for_older_bridge() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = EventOnlySentryBridge.new())
 	Expect.that(provider.configure(ObservabilityConfig.new(
 			p_global_attributes = {},
@@ -125,7 +125,7 @@ func test_structured_log_is_safe_when_bridge_does_not_support_it() -> void:
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_kind = &"log",
 			p_message = "unsupported",
-		))).to_equal("")
+		))).to_equal("sentry:1")
 	provider.shutdown()
 
 
