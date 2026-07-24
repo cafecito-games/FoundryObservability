@@ -71,6 +71,14 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(sentryTimeoutSeconds(milliseconds: 321), 0.321, accuracy: 0.0001)
     }
 
+    func testRejectsInvalidFeedbackAssociatedEventID() {
+        XCTAssertNil(sentryFeedbackAssociatedEventID(for: "not-a-sentry-id"))
+        XCTAssertNil(sentryFeedbackAssociatedEventID(for: "event-123"))
+        XCTAssertNotNil(
+            sentryFeedbackAssociatedEventID(for: "0123456789abcdef0123456789abcdef")
+        )
+    }
+
     func testBuildsExceptionEventWithMappedMetadata() {
         let event = makeSentryEvent(
             message: "boom",

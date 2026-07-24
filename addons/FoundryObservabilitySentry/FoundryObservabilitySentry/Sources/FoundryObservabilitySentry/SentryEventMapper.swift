@@ -88,6 +88,14 @@ func sentryTimeoutSeconds(milliseconds: Int) -> TimeInterval {
     TimeInterval(milliseconds) / 1000.0
 }
 
+func sentryFeedbackAssociatedEventID(for value: String) -> SentryId? {
+    if value.isEmpty {
+        return nil
+    }
+    let parsed = SentryId(uuidString: value)
+    return parsed.sentryIdString == SentryId.empty.sentryIdString ? nil : parsed
+}
+
 func mergedExtras(
     global: [String: Any],
     event: [String: Any],

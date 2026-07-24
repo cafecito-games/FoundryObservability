@@ -225,13 +225,9 @@ class SentryObservabilityBridge: RefCounted {
         let name = optionalStringValue(values["name"])
         let email = optionalStringValue(values["contact_email"])
         let associatedEventIDValue = stringValue(values["associated_event_id"])
-        var associatedEventID: SentryId?
-        if !associatedEventIDValue.isEmpty {
-            let parsed = SentryId(uuidString: associatedEventIDValue)
-            guard parsed.sentryIdString != SentryId.empty.sentryIdString else {
-                return ""
-            }
-            associatedEventID = parsed
+        let associatedEventID = sentryFeedbackAssociatedEventID(for: associatedEventIDValue)
+        if !associatedEventIDValue.isEmpty && associatedEventID == nil {
+            return ""
         }
 
         let feedback = SentryFeedback(

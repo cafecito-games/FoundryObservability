@@ -160,7 +160,10 @@ func test_rejects_bridge_without_feedback_method() -> void:
 	Expect.that(provider.configure(ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.FAILED)
+		))).to_equal(Error.OK)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "ordinary event remains supported",
+		))).to_equal("sentry:1")
 	Expect.that(provider.capture_feedback(ObservabilityFeedback.new(
 			p_message = "unsupported",
 		))).to_equal("")
@@ -172,6 +175,7 @@ func test_rejects_bridge_without_structured_log_method() -> void:
 	Expect.that(provider.configure(ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
+			p_logs_enabled = true,
 		))).to_equal(Error.FAILED)
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_kind = &"log",

@@ -4,10 +4,10 @@ namespace foundry.observability
 class_name ObservabilityFeedback
 extends RefCounted
 
-var _message: String = ""
-var _name: String = ""
-var _contact_email: String = ""
-var _associated_event_id: String = ""
+final var _message: String
+final var _name: String
+final var _contact_email: String
+final var _associated_event_id: String
 
 
 ## Creates feedback with a required message and optional identity and event context.

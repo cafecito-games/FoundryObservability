@@ -675,9 +675,10 @@ The native `send_default_pii` option defaults to false. Set
 `provider_options["send_default_pii"] = true` only when the project explicitly
 accepts the provider's default PII behavior; this option does not cause the
 feedback API to collect name or email unless those fields were supplied in the
-feedback object. Enabled Sentry configurations require a native bridge exposing
-`captureFeedback`, so an unavailable or mismatched provider fails safely before
-activation.
+feedback object. A feedback call requires a native bridge exposing
+`captureFeedback`; if an older bridge lacks it, that feedback call returns an
+empty ID while ordinary messages, exceptions, and logs continue to use the
+bridge's supported methods.
 
 ## Custom provider outline
 

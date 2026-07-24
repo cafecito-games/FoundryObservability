@@ -172,6 +172,11 @@ func test_feedback_rejects_invalid_message_and_optional_values() -> void:
 	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
 	Expect.that(service.capture_feedback(ObservabilityFeedback.new(
 			p_message = "Valid message",
+			p_contact_email = "player @example.com",
+		))).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.capture_feedback(ObservabilityFeedback.new(
+			p_message = "Valid message",
 			p_name = "Player\nOne",
 		))).to_equal("")
 	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)

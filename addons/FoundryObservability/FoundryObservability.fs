@@ -206,6 +206,8 @@ func _is_valid_email(email: String) -> bool:
 		return true
 	if not _is_valid_optional_text(email):
 		return false
+	if email.find(" ") >= 0:
+		return false
 	var at_index: int = email.find("@")
 	return at_index > 0 and at_index < email.length() - 1 and at_index == email.rfind("@")
 
