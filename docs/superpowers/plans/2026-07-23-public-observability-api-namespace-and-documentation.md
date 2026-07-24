@@ -322,7 +322,7 @@ scripts/test-package
 scripts/test-project
 ~~~
 
-Expected: all commands exit 0, all 18 consumer tests pass, and the package contains only addons/FoundryObservability with the adapter under foundrylib/.
+Expected: all commands exit 0, all 19 consumer tests pass, and the package contains only addons/FoundryObservability with the adapter under foundrylib/.
 
 - [ ] **Step 2: Run the full repository gate.**
 
