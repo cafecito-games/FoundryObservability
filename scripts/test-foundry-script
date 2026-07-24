@@ -72,9 +72,13 @@ fi
 
 materialize_sentry_addon() {
 	destination=$1
-	mkdir -p "$destination/bin/ios"
+	mkdir -p "$destination"
 	find "$sentry_addon" -maxdepth 1 -type f -exec cp {} "$destination/" \;
-	cp "$sentry_addon/bin/ios/.gitkeep" "$destination/bin/ios/"
+	for artifact_dir in ios macos_arm64 android/debug android/release; do
+		mkdir -p "$destination/bin/$artifact_dir"
+		cp -R "$sentry_addon/bin/$artifact_dir/." \
+			"$destination/bin/$artifact_dir/"
+	done
 }
 
 restore_test_addons() {
