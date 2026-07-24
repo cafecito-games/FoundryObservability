@@ -211,7 +211,7 @@ func _is_valid_email(email: String) -> bool:
 
 
 func _has_control_character(value: String) -> bool:
-	for index in range(value.length()):
+	for index: int in range(value.length()):
 		var codepoint: int = value.unicode_at(index)
 		if codepoint < 32 or codepoint == 127:
 			return true

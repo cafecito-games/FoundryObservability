@@ -32,6 +32,7 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/export_plugin.fs" ]] || fail "export_plugin.fs is missing"
 [[ -f "$addon/FoundryObservability.fs" ]] || fail "FoundryObservability.fs is missing"
 [[ -f "$addon/FoundryObservabilityApi.fs" ]] || fail "FoundryObservabilityApi.fs is missing"
+[[ -f "$addon/ObservabilityFeedback.fs" ]] || fail "ObservabilityFeedback.fs is missing"
 [[ -f "$addon/foundrylib/FoundryLibObservabilitySink.fs" ]] || fail "FoundryLib observability sink is missing"
 [[ -f "$sentry_addon/SentryObservabilityProvider.fs" ]] || fail "Sentry provider is missing"
 
@@ -45,6 +46,10 @@ rg -q '^class_name FoundryObservability extends Node$' "$addon/FoundryObservabil
 	|| fail "autoload class declaration is missing"
 rg -q '^trait_name FoundryObservabilityApi$' "$addon/FoundryObservabilityApi.fs" \
 	|| fail "public contract marker is missing"
+rg -q '^class_name ObservabilityFeedback$' "$addon/ObservabilityFeedback.fs" \
+	|| fail "feedback value type declaration is missing"
+rg -q 'capture_feedback' "$addon/FoundryObservabilityApi.fs" \
+	|| fail "public contract is missing capture_feedback"
 rg -q 'add_autoload_singleton\(' "$addon/export_plugin.fs" \
 	|| fail "editor plugin does not register the autoload"
 rg -q '^namespace foundry\.observability\.foundrylib$' "$addon/foundrylib/FoundryLibObservabilitySink.fs" \

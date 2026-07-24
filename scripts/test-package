@@ -10,6 +10,10 @@ fail() {
 
 rg -q 'capture_log' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing capture_log"
+rg -q 'capture_feedback' "$repo_root/docs/API.md" \
+	|| fail "API docs are missing capture_feedback"
+rg -q 'ObservabilityFeedback' "$repo_root/docs/API.md" \
+	|| fail "API docs are missing ObservabilityFeedback"
 rg -q 'logs_enabled' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing logs_enabled"
 rg -q 'Apple.*Android|Android.*Apple' "$repo_root/docs/API.md" \
@@ -27,6 +31,8 @@ grep -qx 'addons/FoundryObservability/FoundryObservability.fs' <<<"$listing" \
 	|| fail "package is missing the autoload"
 grep -qx 'addons/FoundryObservability/FoundryObservabilityApi.fs' <<<"$listing" \
 	|| fail "package is missing the public contract marker"
+grep -qx 'addons/FoundryObservability/ObservabilityFeedback.fs' <<<"$listing" \
+	|| fail "package is missing the feedback value type"
 grep -qx 'addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs' <<<"$listing" \
 	|| fail "package is missing the FoundryLib observability sink"
 

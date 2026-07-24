@@ -13,6 +13,8 @@ The first core slice is available now:
 - Provider replacement, flush, failure reporting, and idempotent shutdown.
 - First-class structured logs with level filtering, optional rate limiting, and
   global/per-record scalar attributes.
+- Explicit player feedback capture with validation, optional identity, and
+  optional association to a returned event ID.
 - A FoundryLib `LogSink` adapter included in the core addon.
 - An optional `FoundryObservabilitySentry` provider addon backed by
   Foundry-Swift/Sentry Cocoa on Apple platforms and Sentry Android on Android.
@@ -61,6 +63,9 @@ FoundryObservability.capture_log(
 		-1,
 		{"region": "iad"},
 )
+FoundryObservability.capture_feedback(ObservabilityFeedback.new(
+		p_message = "The tutorial was confusing.",
+))
 ```
 
 `MemoryObservabilityProvider` is intended for tests and local integration work.

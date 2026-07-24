@@ -53,10 +53,10 @@ func capture(event: ObservabilityEvent) -> String:
 
 
 ## Stores explicit feedback and returns a sequential memory feedback ID when enabled.
-func capture_feedback(feedback: ObservabilityFeedback) -> String:
+func capture_feedback(p_feedback: ObservabilityFeedback) -> String:
 	if not _enabled or _shutdown:
 		return ""
-	_feedback.append(feedback)
+	_feedback.append(p_feedback)
 	_feedback_sequence += 1
 	return "memory-feedback:%s" % _feedback_sequence
 
