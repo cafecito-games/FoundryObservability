@@ -8,6 +8,7 @@ uses FoundryObservabilityApi
 
 var captured_events: Array[ObservabilityEvent] = []
 var captured_logs: Array[Dictionary] = []
+var captured_feedback: Array[ObservabilityFeedback] = []
 
 
 func configure(_provider: ObservabilityProvider, _config: ObservabilityConfig? = null) -> int:
@@ -65,6 +66,11 @@ func capture_log(
 			"attributes": attributes.duplicate(true),
 		})
 	return "log:1"
+
+
+func capture_feedback(feedback: ObservabilityFeedback) -> String:
+	captured_feedback.append(feedback)
+	return "feedback:1"
 
 
 func flush(_timeout_msec: int = 2000) -> int:
