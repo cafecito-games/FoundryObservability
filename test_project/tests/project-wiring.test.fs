@@ -41,6 +41,24 @@ func test_project_uses_foundrylib_adapter_from_core_addon() -> void:
 	Expect.that(FileAccess.file_exists(
 			"res://addons/FoundryObservabilityFoundryLib/plugin.cfg")).to_be_false()
 
+func test_project_uses_foundry_observability_namespace() -> void:
+	var core_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/FoundryObservability.fs")
+	var api_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/FoundryObservabilityApi.fs")
+	var adapter_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs")
+	Expect.that(core_source).to_contain("namespace foundry.observability")
+	Expect.that(api_source).to_contain("namespace foundry.observability")
+	Expect.that(adapter_source).to_contain(
+			"namespace foundry.observability.foundrylib")
+	Expect.that(core_source.find(
+			"games.cafecito.foundryobservability")).to_equal(-1)
+	Expect.that(api_source.find(
+			"games.cafecito.foundryobservability")).to_equal(-1)
+	Expect.that(adapter_source.find(
+			"games.cafecito.foundryobservability")).to_equal(-1)
+
 func test_project_enforces_strict_foundry_script_warnings() -> void:
 	Expect.that(ProjectSettings.get_setting(
 			"debug/foundry_script/warnings/inferred_declaration", 0)).to_equal(1)
