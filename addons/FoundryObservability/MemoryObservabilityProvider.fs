@@ -17,7 +17,9 @@ var flush_count: int = 0
 var shutdown_count: int = 0
 
 var _events: Array[ObservabilityEvent] = []
+var _feedback: Array[ObservabilityFeedback] = []
 var _event_sequence: int = 0
+var _feedback_sequence: int = 0
 var _enabled: bool = false
 var _shutdown: bool = false
 
@@ -50,6 +52,15 @@ func capture(event: ObservabilityEvent) -> String:
 	return "memory:%s" % _event_sequence
 
 
+## Stores explicit feedback and returns a sequential memory feedback ID when enabled.
+func capture_feedback(feedback: ObservabilityFeedback) -> String:
+	if not _enabled or _shutdown:
+		return ""
+	_feedback.append(feedback)
+	_feedback_sequence += 1
+	return "memory-feedback:%s" % _feedback_sequence
+
+
 ## Records the timeout and returns flush_result.
 func flush(timeout_msec: int = 2000) -> int:
 	last_flush_timeout_msec = timeout_msec
@@ -70,6 +81,16 @@ func events() -> Array[ObservabilityEvent]:
 	return _events.duplicate()
 
 
+## Returns a shallow copy of explicitly captured feedback.
+func feedback() -> Array[ObservabilityFeedback]:
+	return _feedback.duplicate()
+
+
 ## Removes captured events without changing provider configuration.
 func clear() -> void:
 	_events.clear()
+
+
+## Removes captured feedback without changing provider configuration.
+func clear_feedback() -> void:
+	_feedback.clear()

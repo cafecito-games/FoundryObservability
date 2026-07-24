@@ -12,6 +12,8 @@ var _shutdown: bool = false
 var _log_window_second: int = -1
 var _log_window_count: int = 0
 
+const MAX_FEEDBACK_MESSAGE_LENGTH: int = 4096
+
 
 func _init() -> void:
 	_provider = NullObservabilityProvider.new()
@@ -145,7 +147,17 @@ func capture_log(
 			p_source = source,
 			p_timestamp_msec = event_timestamp,
 			p_attributes = attributes,
-		))
+	))
+
+
+## Captures explicitly submitted player feedback without creating an error event.
+func capture_feedback(feedback: ObservabilityFeedback) -> String:
+	if not _is_valid_feedback(feedback):
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return ""
+	if not is_enabled() or _provider == null:
+		return ""
+	return _capture_feedback(feedback)
 
 
 func _capture_event(event: ObservabilityEvent) -> String:
@@ -156,6 +168,54 @@ func _capture_event(event: ObservabilityEvent) -> String:
 	if event_id.is_empty():
 		_last_error = Error.FAILED
 	return event_id
+
+
+func _capture_feedback(feedback: ObservabilityFeedback) -> String:
+	if not is_enabled() or _provider == null:
+		return ""
+
+	var feedback_id: String = _provider.capture_feedback(feedback)
+	if feedback_id.is_empty():
+		_last_error = Error.FAILED
+	return feedback_id
+
+
+func _is_valid_feedback(feedback: ObservabilityFeedback) -> bool:
+	if feedback == null:
+		return false
+	var message: String = feedback.message()
+	if message.strip_edges().is_empty() or message.length() > MAX_FEEDBACK_MESSAGE_LENGTH:
+		return false
+	if not _is_valid_optional_text(feedback.name()):
+		return false
+	if not _is_valid_email(feedback.contact_email()):
+		return false
+	return _is_valid_optional_text(feedback.associated_event_id())
+
+
+func _is_valid_optional_text(value: String) -> bool:
+	if value.is_empty():
+		return true
+	if value.strip_edges().is_empty():
+		return false
+	return not _has_control_character(value)
+
+
+func _is_valid_email(email: String) -> bool:
+	if email.is_empty():
+		return true
+	if not _is_valid_optional_text(email):
+		return false
+	var at_index: int = email.find("@")
+	return at_index > 0 and at_index < email.length() - 1 and at_index == email.rfind("@")
+
+
+func _has_control_character(value: String) -> bool:
+	for index in range(value.length()):
+		var codepoint: int = value.unicode_at(index)
+		if codepoint < 32 or codepoint == 127:
+			return true
+	return false
 
 
 func _accept_log(timestamp_msec: int) -> bool:
