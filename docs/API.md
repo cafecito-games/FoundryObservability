@@ -1,9 +1,10 @@
 # FoundryObservability API
 
 FoundryObservability is the provider-neutral observability boundary for Foundry
-games. It normalizes messages, exceptions, and structured log records before
-dispatching them to a backend provider. It also exposes an explicit, separate
-player-feedback path; feedback is never collected implicitly by event capture.
+games. It normalizes messages, exceptions, structured log records, and custom
+metrics before dispatching them to a backend provider. It also exposes an
+explicit, separate player-feedback path; feedback is never collected
+implicitly by event capture.
 
 The public namespace is **foundry.observability**. The FoundryLib adapter lives
 in **foundry.observability.foundrylib**. Global class and trait names are
@@ -57,6 +58,12 @@ Value types:
 - ObservabilityException
 - ObservabilityEvent
 - ObservabilityFeedback
+- ObservabilityMetricType
+- ObservabilityMetric
+
+Optional provider capabilities:
+
+- ObservabilityMetricsProvider
 
 Built-in providers:
 
@@ -76,6 +83,9 @@ A provider configuration or flush failure is returned to the caller and stored
 by the service in last_error(). Capture methods return String event IDs rather
 than Error values. An empty capture ID means the event was not accepted; the
 service records Error.FAILED for an enabled provider that returns an empty ID.
+Metric capture methods return bool. Rejected invalid input stores
+Error.ERR_INVALID_PARAMETER, a provider without the optional metrics capability
+stores Error.ERR_UNAVAILABLE, and a provider rejection stores Error.FAILED.
 
 ### Timestamps
 
@@ -85,10 +95,11 @@ timestamp when translating it to a backend format.
 
 ### Defensive copies
 
-Configuration and event dictionaries are copied deeply when stored and when
-returned through accessors. This prevents callers from mutating a payload after
-it has been handed to the observability service. Memory provider events() copies
-the containing array; the event objects themselves are the captured objects.
+Configuration, event, and metric dictionaries are copied deeply when stored and
+when returned through accessors. This prevents callers from mutating a payload
+after it has been handed to the observability service. Memory provider list
+accessors copy the containing array; the payload objects themselves are the
+captured objects.
 
 ## ObservabilityLevel
 
@@ -131,6 +142,9 @@ ObservabilityConfig.new(
 		p_logs_enabled: bool = true,
 		p_log_minimum_level: int = ObservabilityLevel.TRACE,
 		p_log_rate_limit_per_second: int = 0,
+		p_metrics_enabled: bool = true,
+		p_metric_sample_rate: float = 1.0,
+		p_metric_filter: Callable = Callable(),
 )
 ~~~
 
@@ -145,6 +159,9 @@ Public fields:
 | logs_enabled | bool | Whether structured logs are accepted; enabled by default |
 | log_minimum_level | int | Lowest structured-log severity accepted; TRACE by default |
 | log_rate_limit_per_second | int | Maximum accepted logs per timestamp second; zero means unlimited |
+| metrics_enabled | bool | Whether custom metrics are accepted; enabled by default |
+| metric_sample_rate | float | Deterministic accepted fraction from 0.0 through 1.0 |
+| metric_filter | Callable | Optional predicate receiving each normalized metric before sampling |
 
 Accessors:
 
@@ -163,6 +180,14 @@ before dispatch. The rate limit uses each record's timestamp_msec in a fixed
 one-second window; a zero limit is unlimited. A disabled log configuration or a
 record below the configured level returns an empty ID without calling the
 provider.
+
+Metrics are independently enabled by default. metric_sample_rate must be finite
+and between 0.0 and 1.0 inclusive; invalid configuration returns
+Error.ERR_INVALID_PARAMETER without replacing the active provider. A valid
+metric_filter must return bool. Returning false drops the metric normally;
+returning another type stores Error.ERR_INVALID_PARAMETER. Filtering happens
+before deterministic accumulator-based sampling, and the sampling sequence
+resets on successful configuration and shutdown.
 
 A null config passed to FoundryObservability.configure is replaced with a
 disabled ObservabilityConfig.
@@ -271,6 +296,45 @@ optional values must contain no control characters; a contact email must have
 one non-empty local and domain portion. The associated event ID is opaque to
 the core and is forwarded only when the caller supplies it.
 
+## ObservabilityMetricType
+
+ObservabilityMetricType defines the provider-neutral metric kinds:
+
+| Constant | Value | Meaning |
+| --- | ---: | --- |
+| COUNTER | 0 | Non-negative whole-number occurrence count |
+| GAUGE | 1 | Current numeric measurement that may rise or fall |
+| DISTRIBUTION | 2 | Numeric sample used for aggregate statistics |
+
+## ObservabilityMetric
+
+ObservabilityMetric is the normalized provider-neutral metric payload.
+
+Constructor:
+
+~~~
+ObservabilityMetric.new(
+		p_type: int = ObservabilityMetricType.COUNTER,
+		p_name: String = "",
+		p_value: float = 0.0,
+		p_unit: String = "",
+		p_attributes: Dictionary = {},
+)
+~~~
+
+Accessors:
+
+~~~
+func type() -> int
+func name() -> String
+func value() -> float
+func unit() -> String
+func attributes() -> Dictionary
+~~~
+
+attributes are deep-copied on construction and access. The core validates and
+normalizes every metric before dispatch.
+
 ## ObservabilityProvider
 
 ObservabilityProvider is the trait backend integrations implement:
@@ -307,6 +371,21 @@ Method contracts:
 Providers must not report their own configuration, capture, or flush failures
 through the FoundryLib logging sink. Doing so would create recursive reporting.
 
+## ObservabilityMetricsProvider
+
+ObservabilityMetricsProvider is an optional provider capability:
+
+~~~
+trait_name ObservabilityMetricsProvider
+
+abstract func capture_metric(metric: ObservabilityMetric) -> bool
+~~~
+
+A provider implements this trait when it accepts normalized custom metrics.
+Existing providers that implement only ObservabilityProvider remain compatible:
+event, log, and feedback capture continue to work, while metric capture safely
+returns false and stores Error.ERR_UNAVAILABLE.
+
 ## FoundryObservabilityApi
 
 FoundryObservabilityApi is the provider-neutral service trait. It allows an
@@ -326,6 +405,10 @@ abstract func capture_message(message: String, level: int = ObservabilityLevel.I
 abstract func capture_log(message: String, level: int = ObservabilityLevel.INFO, source: StringName = &"game", timestamp_msec: int = -1, attributes: Dictionary = {}) -> String
 abstract func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String
 abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
+abstract func capture_metric(metric: ObservabilityMetric) -> bool
+abstract func capture_counter(metric_name: String, value: int = 1, attributes: Dictionary = {}) -> bool
+abstract func capture_gauge(metric_name: String, value: float, unit: String = "", attributes: Dictionary = {}) -> bool
+abstract func capture_distribution(metric_name: String, value: float, unit: String = "", attributes: Dictionary = {}) -> bool
 abstract func flush(timeout_msec: int = 2000) -> int
 abstract func shutdown() -> void
 ~~~
@@ -492,6 +575,76 @@ provider owns its transport, offline storage, and retry policy. Call
 FoundryObservability.flush() when the game reaches a suitable delivery point;
 the call is a best-effort provider flush within the supplied timeout.
 
+### capture_metric and metric conveniences
+
+~~~
+func capture_metric(metric: ObservabilityMetric) -> bool
+func capture_counter(
+		metric_name: String,
+		value: int = 1,
+		attributes: Dictionary = {},
+) -> bool
+func capture_gauge(
+		metric_name: String,
+		value: float,
+		unit: String = "",
+		attributes: Dictionary = {},
+) -> bool
+func capture_distribution(
+		metric_name: String,
+		value: float,
+		unit: String = "",
+		attributes: Dictionary = {},
+) -> bool
+~~~
+
+capture_metric validates, normalizes, filters, samples, and dispatches one
+custom metric. The convenience methods construct the corresponding
+ObservabilityMetric. A true result means the active provider accepted the
+metric into its local SDK or store; it does not guarantee remote delivery.
+
+Metric names must contain 1 through 200 characters, have no leading or trailing
+whitespace, and contain no control characters. Values must be finite. Counters
+must be non-negative whole numbers and cannot have a unit. Gauge and
+distribution units are optional, limited to 64 characters, and cannot contain
+whitespace or control characters.
+
+Attribute keys must be String or StringName values containing 1 through 200
+characters with no surrounding whitespace or control characters. Attribute
+values are limited to bool, int, finite float, String, and StringName. Global
+configuration attributes are merged first and per-metric attributes win on
+duplicate keys. Invalid global or per-metric metric attributes reject the
+metric with Error.ERR_INVALID_PARAMETER.
+
+Examples:
+
+~~~
+import foundry.observability
+
+FoundryObservability.capture_counter(
+		"match.started",
+		1,
+		{"mode": "ranked"},
+)
+FoundryObservability.capture_gauge(
+		"players.active",
+		12.0,
+		"player",
+)
+FoundryObservability.capture_distribution(
+		"matchmaking.duration",
+		187.5,
+		"millisecond",
+		{"region": "iad"},
+)
+~~~
+
+When metrics or the whole service are disabled, a metric filtered out, or a
+metric dropped by sampling, capture returns false without treating the drop as
+a provider failure. Providers own batching, transport, offline retry, and
+delivery. flush() forwards the timeout to the active provider so its SDK can
+attempt delivery.
+
 ### capture_exception
 
 ~~~
@@ -563,20 +716,25 @@ Public test controls:
 | last_flush_timeout_msec | Timeout from the most recent flush |
 | flush_count | Number of flush calls |
 | shutdown_count | Number of effective shutdown calls |
+| metric_capture_result | Whether custom metric capture accepts metrics |
 
 Public methods:
 
 ~~~
 func events() -> Array[ObservabilityEvent]
 func feedback() -> Array[ObservabilityFeedback]
+func metrics() -> Array[ObservabilityMetric]
 func clear() -> void
 func clear_feedback() -> void
+func clear_metrics() -> void
 ~~~
 
 events returns a copy of the captured event list. clear removes captured events
 without changing configuration. Successful capture returns sequential IDs in
 the form memory:N. Feedback is stored in a separate list and returns IDs in the
-form memory-feedback:N. Capture returns an empty ID while disabled or after shutdown.
+form memory-feedback:N. Metrics are stored in a third list and return true when
+accepted. Capture returns an empty ID or false while disabled or after
+shutdown.
 
 Example:
 
@@ -680,10 +838,23 @@ feedback object. A feedback call requires a native bridge exposing
 empty ID while ordinary messages, exceptions, and logs continue to use the
 bridge's supported methods.
 
+## Sentry custom-metric delivery
+
+The optional Sentry provider maps counters, gauges, and distributions directly
+to the native metrics APIs in Sentry Cocoa 9.23.0 and Sentry Android 8.50.1.
+It enables metrics from ObservabilityConfig.metrics_enabled and forwards the
+normalized name, numeric value, optional unit, and merged scalar attributes.
+Sentry's native SDK owns batching and transport; FoundryObservability.flush()
+uses the same native flush path as events and logs.
+
+Metric support is capability-based. When an older or unsupported native bridge
+does not expose captureMetric, metric capture returns false while ordinary
+events, structured logs, and feedback continue using their available paths.
+
 ## Custom provider outline
 
-A provider implements all methods in ObservabilityProvider and can translate
-ObservabilityEvent into any backend SDK:
+A provider implements all methods in ObservabilityProvider and may also
+implement ObservabilityMetricsProvider to translate metrics into its backend:
 
 ~~~
 namespace my_game.telemetry
@@ -692,7 +863,7 @@ import foundry.observability
 
 class_name MyProvider
 extends RefCounted
-uses ObservabilityProvider
+uses ObservabilityProvider, ObservabilityMetricsProvider
 
 func provider_name() -> StringName:
 	return &"my_provider"
@@ -708,6 +879,10 @@ func capture(event: ObservabilityEvent) -> String:
 
 func capture_feedback(feedback: ObservabilityFeedback) -> String:
 	return "my_provider:feedback"
+
+func capture_metric(metric: ObservabilityMetric) -> bool:
+	# Enqueue the normalized metric in the provider SDK.
+	return true
 
 func flush(timeout_msec: int = 2000) -> int:
 	return Error.OK
@@ -726,5 +901,6 @@ This core API does not include Sentry, Apple/Android native bindings, crash
 handlers, automatic identity collection, persistence, or retry queues,
 breadcrumbs, attachments, or performance transactions. Providers own native
 delivery, offline storage, retry policy, and flush behavior. The optional
-Sentry sibling addon contains its native bindings, structured-log delivery, and
-feedback delivery. A foundry-cpp project is not required by this API.
+Sentry sibling addon contains its native bindings, structured-log delivery,
+feedback delivery, and custom-metric delivery. A foundry-cpp project is not
+required by this API.

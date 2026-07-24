@@ -21,3 +21,7 @@
   attributes, and native Apple/Android Sentry log bridges.
 - Added explicit player feedback capture with message validation, optional
   identity and event association, and dedicated Apple/Android Sentry delivery.
+- Added provider-neutral counters, gauges, and distributions with validation,
+  global/per-metric scalar attributes, filtering, deterministic sampling, safe
+  optional provider capability detection, and native Apple/Android Sentry
+  delivery.

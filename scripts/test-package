@@ -16,6 +16,14 @@ rg -q 'ObservabilityFeedback' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing ObservabilityFeedback"
 rg -q 'logs_enabled' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing logs_enabled"
+for metric_api in capture_metric capture_counter capture_gauge capture_distribution; do
+	rg -q "$metric_api" "$repo_root/docs/API.md" \
+		|| fail "API docs are missing $metric_api"
+done
+rg -q 'metric_sample_rate' "$repo_root/docs/API.md" \
+	|| fail "API docs are missing metric_sample_rate"
+rg -q 'metric_filter' "$repo_root/docs/API.md" \
+	|| fail "API docs are missing metric_filter"
 rg -q 'Apple.*Android|Android.*Apple' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing Apple and Android provider behavior"
 
@@ -33,6 +41,12 @@ grep -qx 'addons/FoundryObservability/FoundryObservabilityApi.fs' <<<"$listing" 
 	|| fail "package is missing the public contract marker"
 grep -qx 'addons/FoundryObservability/ObservabilityFeedback.fs' <<<"$listing" \
 	|| fail "package is missing the feedback value type"
+grep -qx 'addons/FoundryObservability/ObservabilityMetric.fs' <<<"$listing" \
+	|| fail "package is missing the metric value type"
+grep -qx 'addons/FoundryObservability/ObservabilityMetricType.fs' <<<"$listing" \
+	|| fail "package is missing the metric type constants"
+grep -qx 'addons/FoundryObservability/ObservabilityMetricsProvider.fs' <<<"$listing" \
+	|| fail "package is missing the optional metrics provider contract"
 grep -qx 'addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs' <<<"$listing" \
 	|| fail "package is missing the FoundryLib observability sink"
 
