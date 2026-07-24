@@ -10,6 +10,7 @@ import io.sentry.SentryEvent;
 import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
 import io.sentry.logger.SentryLogParameters;
+import io.sentry.protocol.Feedback;
 import io.sentry.protocol.SentryId;
 import java.util.Collections;
 import java.util.Map;
@@ -67,6 +68,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
           getContext().getApplicationContext(),
           (SentryAndroidOptions options) -> {
             options.setDsn(dsn);
+            options.setSendDefaultPii(booleanValue(providerOptions.get("send_default_pii")));
             options.getLogs().setEnabled(logsEnabled);
             options.setDebug(booleanValue(providerOptions.get("debug")));
             setIfNotEmpty(options::setEnvironment, payload.get("environment"));
@@ -118,6 +120,32 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
         parameters,
         stringValue(values.get("message")));
     return "sentry-log:" + UUID.randomUUID();
+  }
+
+  @UsedByFoundry
+  public String captureFeedback(Dictionary payload) {
+    if (!isAvailable() || payload == null) {
+      return "";
+    }
+
+    String message = stringValue(payload.get("message"));
+    if (message.isEmpty()) {
+      return "";
+    }
+
+    try {
+      Feedback feedback = new Feedback(message);
+      setIfNotEmpty(feedback::setName, payload.get("name"));
+      setIfNotEmpty(feedback::setContactEmail, payload.get("contact_email"));
+      String associatedEventId = stringValue(payload.get("associated_event_id"));
+      if (!associatedEventId.isEmpty()) {
+        feedback.setAssociatedEventId(new SentryId(associatedEventId));
+      }
+      Sentry.captureFeedback(feedback);
+      return "sentry-feedback:" + UUID.randomUUID();
+    } catch (RuntimeException exception) {
+      return "";
+    }
   }
 
   @UsedByFoundry
