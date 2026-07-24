@@ -63,6 +63,14 @@ rg -q 'enableLogs' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must configure Sentry Logs"
 rg -q 'SentrySDK\.logger' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must use the Sentry structured logger"
+rg -q 'captureMetric' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge source must expose custom metric capture"
+rg -q 'enableMetrics' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge source must configure Sentry Metrics"
+for metric in count gauge distribution; do
+	rg -q "SentrySDK\\.metrics\\.${metric}" "$swift_sources/FoundryObservabilitySentry.swift" \
+		|| fail "bridge source is missing the ${metric} mapping"
+done
 for level in trace debug info warn error fatal; do
 	rg -q "SentrySDK\.logger\.${level}" "$swift_sources/FoundryObservabilitySentry.swift" \
 		|| fail "bridge source is missing the ${level} structured log mapping"
