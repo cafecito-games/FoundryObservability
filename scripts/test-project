@@ -61,6 +61,8 @@ fi
 if [[ -L "$sentry_addon" ]]; then
 	rm "$sentry_addon"
 	materialize_sentry_addon "$sentry_addon"
+elif [[ ! -e "$sentry_addon" ]]; then
+	materialize_sentry_addon "$sentry_addon"
 fi
 
 if [[ "${FOUNDRYOBSERVABILITY_SKIP_ANVIL_INSTALL:-0}" != "1" ]]; then

@@ -101,6 +101,8 @@ fi
 if [[ -L "$test_sentry_addon" ]]; then
 	rm "$test_sentry_addon"
 	materialize_sentry_addon "$test_sentry_addon"
+elif [[ ! -e "$test_sentry_addon" ]]; then
+	materialize_sentry_addon "$test_sentry_addon"
 fi
 
 foundry_bin=$(resolve_foundry_bin)
