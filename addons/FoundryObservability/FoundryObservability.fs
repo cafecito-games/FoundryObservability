@@ -79,6 +79,8 @@ func last_error() -> int:
 func capture_event(event: ObservabilityEvent) -> String:
 	if event == null:
 		return ""
+	if not is_enabled() or _provider == null:
+		return ""
 	if event.kind() == &"log":
 		if not _config.logs_enabled or event.level() < _config.log_minimum_level:
 			return ""
@@ -127,6 +129,8 @@ func capture_log(
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
 ) -> String:
+	if not is_enabled() or _provider == null:
+		return ""
 	if not _config.logs_enabled or level < _config.log_minimum_level:
 		return ""
 	var event_timestamp: int = timestamp_msec
