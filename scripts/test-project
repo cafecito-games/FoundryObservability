@@ -4,7 +4,6 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project_dir="$repo_root/test_project"
 core_addon="$project_dir/addons/FoundryObservability"
-integration_addon="$project_dir/addons/FoundryObservabilityFoundryLib"
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -32,12 +31,6 @@ restore_test_addons() {
 	if [[ ! -e "$core_addon" ]]; then
 		ln -s ../../addons/FoundryObservability "$core_addon"
 	fi
-	if [[ -d "$integration_addon" && ! -L "$integration_addon" ]]; then
-		rm -rf "$integration_addon"
-	fi
-	if [[ ! -e "$integration_addon" ]]; then
-		ln -s ../../addons/FoundryObservabilityFoundryLib "$integration_addon"
-	fi
 }
 
 trap restore_test_addons EXIT
@@ -47,10 +40,6 @@ trap restore_test_addons EXIT
 if [[ -L "$core_addon" ]]; then
 	rm "$core_addon"
 	cp -R "$repo_root/addons/FoundryObservability" "$core_addon"
-fi
-if [[ -L "$integration_addon" ]]; then
-	rm "$integration_addon"
-	cp -R "$repo_root/addons/FoundryObservabilityFoundryLib" "$integration_addon"
 fi
 
 if [[ "${FOUNDRYOBSERVABILITY_SKIP_ANVIL_INSTALL:-0}" != "1" ]]; then

@@ -21,7 +21,7 @@ func test_project_enables_foundry_observability_editor_plugin() -> void:
 
 func test_project_uses_foundrylib_adapter_from_core_addon() -> void:
 	var sink_source: String = FileAccess.get_file_as_string(
-			"res://addons/FoundryObservability/FoundryLibObservabilitySink.fs")
+			"res://addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs")
 	Expect.that(sink_source).to_contain(
 			"namespace games.cafecito.foundryobservability.foundrylib")
 	Expect.that(sink_source).to_contain(
