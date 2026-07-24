@@ -116,6 +116,57 @@ func test_routes_log_events_to_native_structured_log_method() -> void:
 	provider.shutdown()
 
 
+func test_captures_feedback_with_only_explicit_optional_fields() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {
+				"dsn": "https://public@example/1",
+				"send_default_pii": true,
+			},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.capture_feedback(ObservabilityFeedback.new(
+			p_message = "Anonymous feedback",
+		))).to_equal("sentry-feedback:1")
+	var anonymous_payload: Dictionary = bridge.captured_feedback_payloads[0]
+	Expect.that(anonymous_payload["message"]).to_equal("Anonymous feedback")
+	Expect.that(anonymous_payload.has("name")).to_be_false()
+	Expect.that(anonymous_payload.has("contact_email")).to_be_false()
+	Expect.that(anonymous_payload.has("associated_event_id")).to_be_false()
+	Expect.that(bridge.configured_payload["provider_options"]["send_default_pii"]).to_be_true()
+
+	Expect.that(provider.capture_feedback(ObservabilityFeedback.new(
+			p_message = "Identified feedback",
+			p_name = "Player One",
+			p_contact_email = "player@example.com",
+			p_associated_event_id = "event-123",
+		))).to_equal("sentry-feedback:2")
+	var identified_payload: Dictionary = bridge.captured_feedback_payloads[1]
+	Expect.that(identified_payload).to_equal({
+			"message": "Identified feedback",
+			"name": "Player One",
+			"contact_email": "player@example.com",
+			"associated_event_id": "event-123",
+		})
+	provider.shutdown()
+
+
+func test_rejects_bridge_without_feedback_method() -> void:
+	var provider := SentryObservabilityProvider.new(p_bridge = FeedbacklessSentryBridge.new())
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		))).to_equal(Error.FAILED)
+	Expect.that(provider.capture_feedback(ObservabilityFeedback.new(
+			p_message = "unsupported",
+		))).to_equal("")
+	provider.shutdown()
+
+
 func test_rejects_bridge_without_structured_log_method() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = EventOnlySentryBridge.new())
 	Expect.that(provider.configure(ObservabilityConfig.new(

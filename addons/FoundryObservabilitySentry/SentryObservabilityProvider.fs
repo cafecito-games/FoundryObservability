@@ -106,6 +106,11 @@ func capture(event: ObservabilityEvent) -> String:
 	return str(bridge.call(method, payload))
 
 
+## Temporary trait-compatible seam for the feedback behavior tests.
+func capture_feedback(_feedback: ObservabilityFeedback) -> String:
+	return ""
+
+
 ## Flushes native Sentry work within the requested timeout.
 func flush(timeout_msec: int = 2000) -> int:
 	var bridge: Object? = _resolve_bridge()
