@@ -41,13 +41,15 @@ general logging package to network or native provider availability.
 
 The core addon will contain:
 
-- `addons/FoundryObservability/FoundryLibObservabilitySink.fs`
+- `addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs`
 - the existing observability value types, provider contracts, providers, and
   autoload service
 
 The sink may retain its existing namespace,
 `games.cafecito.foundryobservability.foundrylib`, because that namespace
 describes the integration source rather than an independently installed addon.
+It will live under the matching `foundrylib/` subdirectory so FoundryScript's
+directory namespace checks remain warning-free.
 
 The separate directory and plugin descriptor
 `addons/FoundryObservabilityFoundryLib/` will be deleted. The core plugin will

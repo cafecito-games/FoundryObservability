@@ -11,7 +11,7 @@ The first core slice is available now:
 - Typed messages, exceptions, events, configuration, and severity levels.
 - A null provider by default and an in-memory provider for tests and local work.
 - Provider replacement, flush, failure reporting, and idempotent shutdown.
-- An optional FoundryLib `LogSink` adapter in a separate addon.
+- A FoundryLib `LogSink` adapter included in the core addon.
 
 Sentry, native Swift/Android bindings, crash detection, and crash reporting are
 not included yet. They will be built behind this stable core contract.
@@ -22,9 +22,9 @@ Copy `addons/FoundryObservability` into the `addons/` directory of a Foundry
 game project, enable the **FoundryObservability** editor plugin, and restart or
 reload the project. The plugin registers the **FoundryObservability** autoload.
 
-The release archive also contains `addons/FoundryObservabilityFoundryLib`.
-Install that addon only when the project uses FoundryLib logging; it is opt-in
-and does not register an autoload or editor plugin.
+FoundryLib is a required dependency of the addon because the included
+`FoundryLibObservabilitySink` integrates with FoundryLib's structured logging.
+Install the FoundryLib package before importing or enabling the addon.
 
 The public namespace is `games.cafecito.foundryobservability`.
 

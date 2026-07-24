@@ -4,7 +4,7 @@
 
 **Goal:** Move the FoundryLib LogSink adapter into the core FoundryObservability addon, remove the redundant integration addon, and update all package, test, script, and documentation contracts.
 
-**Architecture:** FoundryLib continues to own the general-purpose foundry.logging framework. FoundryObservability owns the inbound adapter at addons/FoundryObservability/FoundryLibObservabilitySink.fs; its class name and namespace remain unchanged. The test project retains its pinned FoundryLib package, enables only the core Observability plugin, and exercises the adapter from the core addon.
+**Architecture:** FoundryLib continues to own the general-purpose foundry.logging framework. FoundryObservability owns the inbound adapter at addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs; its class name and namespace remain unchanged, and its directory matches the namespace to satisfy FoundryScript linting. The test project retains its pinned FoundryLib package, enables only the core Observability plugin, and exercises the adapter from the core addon.
 
 **Tech Stack:** FoundryScript, Foundry headless CLI, FoundryLib foundry.logging, Bash contract scripts, Anvil package installation, Markdown, and tracked FoundryScript .uid files.
 
@@ -12,7 +12,7 @@
 
 ## File map
 
-- addons/FoundryObservability/FoundryLibObservabilitySink.fs and its .uid: the adapter in the core addon, retaining its public API.
+- addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs and its .uid: the adapter in the core addon, retaining its public API and matching namespace directory.
 - addons/FoundryObservabilityFoundryLib/: deleted; it is no longer an installable addon.
 - test_project/tests/project-wiring.test.fs: verifies the adapter is in core, FoundryLib is declared, and no separate plugin exists or is enabled.
 - test_project/addons/FoundryObservabilityFoundryLib: deleted tracked symlink; the core addon symlink remains.
@@ -32,7 +32,7 @@ Replace test_project_contains_optional_foundrylib_integration_without_enabling_i
 ~~~
 func test_project_uses_foundrylib_adapter_from_core_addon() -> void:
 	var sink_source: String = FileAccess.get_file_as_string(
-			"res://addons/FoundryObservability/FoundryLibObservabilitySink.fs")
+			"res://addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs")
 	Expect.that(sink_source).to_contain(
 			"namespace games.cafecito.foundryobservability.foundrylib")
 	Expect.that(sink_source).to_contain(
@@ -64,11 +64,11 @@ git commit -m "test: require FoundryLib adapter in core addon"
 
 ### Task 2: Move the adapter and remove the redundant addon
 
-**Files:** Create addons/FoundryObservability/FoundryLibObservabilitySink.fs and its .uid; delete the three files under addons/FoundryObservabilityFoundryLib/ and the tracked symlink test_project/addons/FoundryObservabilityFoundryLib.
+**Files:** Create addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs and its .uid; delete the three files under addons/FoundryObservabilityFoundryLib/ and the tracked symlink test_project/addons/FoundryObservabilityFoundryLib.
 
 - [ ] **Step 1: Add the sink at the core path with the unchanged API.**
 
-Create addons/FoundryObservability/FoundryLibObservabilitySink.fs with the existing sink source copied exactly. It must retain this namespace, class, and behavior:
+Create addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs with the existing sink source copied exactly. It must retain this namespace, class, and behavior:
 
 ~~~
 namespace games.cafecito.foundryobservability.foundrylib
@@ -117,7 +117,7 @@ func _map_level(level: int) -> int:
 
 Use the existing source verbatim rather than reformatting it; preserve its full formatting, defensive checks, rendered message handling, timestamp and field copying, explicit level mapping, and flush forwarding.
 
-Create addons/FoundryObservability/FoundryLibObservabilitySink.fs.uid containing:
+Create addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs.uid containing:
 
 ~~~
 uid://cgcvd1krt7on8
@@ -140,8 +140,8 @@ Do not remove test_project/addons/FoundryObservability.
 - [ ] **Step 4: Commit the move.**
 
 ~~~
-git add addons/FoundryObservability/FoundryLibObservabilitySink.fs \
-	addons/FoundryObservability/FoundryLibObservabilitySink.fs.uid
+git add addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs \
+	addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs.uid
 git commit -m "refactor: consolidate FoundryLib adapter into core addon"
 ~~~
 
@@ -149,7 +149,7 @@ git commit -m "refactor: consolidate FoundryLib adapter into core addon"
 
 **Files:** Modify scripts/test-foundry-script, scripts/test-foundry-uids, scripts/package-addon, scripts/test-package, and scripts/test-project.
 
-- [ ] **Step 1: Consolidate scripts/test-foundry-script.** Remove integration and test_integration variables and all separate-plugin checks. Check the sink at $addon/FoundryLibObservabilitySink.fs, scan only $addon, materialize and restore only $test_addon, and lint only:
+- [ ] **Step 1: Consolidate scripts/test-foundry-script.** Remove integration and test_integration variables and all separate-plugin checks. Check the sink at $addon/foundrylib/FoundryLibObservabilitySink.fs, scan only $addon, materialize and restore only $test_addon, and lint only:
 
 ~~~
 "$foundry_bin" --headless script lint \
@@ -182,7 +182,7 @@ done < <(find "$addon" -type f -name '*.fs' | sort)
 zip -qr "$archive" addons/FoundryObservability
 ~~~
 
-- [ ] **Step 4: Update scripts/test-package.** Require addons/FoundryObservability/FoundryLibObservabilitySink.fs, scan UIDs only under addons/FoundryObservability, and reject:
+- [ ] **Step 4: Update scripts/test-package.** Require addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs, scan UIDs only under addons/FoundryObservability, and reject:
 
 ~~~
 if grep -q '^addons/FoundryObservabilityFoundryLib/' <<<"$listing"; then

@@ -30,13 +30,12 @@ task package
 ```
 
 `task test:project` installs the packages declared in
-`test_project/packages.toml` with Anvil and runs both the core and optional
-FoundryLib integration suites. The installed `test_project/addons/foundrylib/`
-directory is generated and ignored by Git. The two local addon symlinks are
-materialized temporarily during headless runtime tests because Foundry's source
-scan intentionally skips directory symlinks.
+`test_project/packages.toml` with Anvil and runs both the core and FoundryLib
+sink suites. The installed `test_project/addons/foundrylib/` directory is
+generated and ignored by Git. The local core addon symlink is materialized
+temporarily during headless runtime tests because Foundry's source scan
+intentionally skips directory symlinks.
 
-`task package` creates a zip containing exactly these runtime payloads:
+`task package` creates a zip containing exactly this runtime payload:
 
 - `addons/FoundryObservability`
-- `addons/FoundryObservabilityFoundryLib`

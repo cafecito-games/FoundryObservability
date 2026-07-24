@@ -1,7 +1,9 @@
 # FoundryObservability API
 
-The core API lives in the `games.cafecito.foundryobservability` namespace. It
-does not depend on FoundryLib, Sentry, or native SDKs.
+The core API lives in the `games.cafecito.foundryobservability` namespace. Its
+provider and event contracts remain provider-neutral, while the addon requires
+FoundryLib's `foundry.logging` package for its included logging adapter. It
+does not depend on Sentry or native SDKs.
 
 ## Setup
 
@@ -16,6 +18,9 @@ var provider: ObservabilityProvider = MemoryObservabilityProvider.new()
 FoundryObservability.configure(provider, config)
 FoundryObservability.capture_message("game started")
 ```
+
+Install the FoundryLib package before importing or enabling the addon. The test
+project uses the package declared in `test_project/packages.toml`.
 
 The null provider is active before configuration. `MemoryObservabilityProvider`
 is deterministic and intended for tests or local integration work.
@@ -141,11 +146,11 @@ disabled null-provider state, and is also called from `_exit_tree()`.
 Provider failures are stored in the status API and are not emitted through
 FoundryLib logging, preventing recursive error reporting.
 
-## Optional FoundryLib integration
+## FoundryLib integration
 
-Install `addons/FoundryObservabilityFoundryLib` alongside the core addon when
-using FoundryLib's structured logging. The adapter is explicit; it does not
-install itself:
+The core addon includes the explicit `FoundryLibObservabilitySink` adapter.
+FoundryLib must be installed as a project package before the source is
+imported; the adapter does not install itself or register an autoload.
 
 ```foundryscript
 import foundry.logging
