@@ -1,6 +1,6 @@
 namespace foundry.observability.sentry.tests
 
-class_name EventOnlySentryBridge
+class_name FeedbacklessSentryBridge
 extends RefCounted
 
 
@@ -16,8 +16,8 @@ func capture(_payload: Dictionary) -> String:
 	return "sentry:1"
 
 
-func captureFeedback(_payload: Dictionary) -> String:
-	return "sentry-feedback:1"
+func captureLog(_payload: Dictionary) -> String:
+	return "sentry-log:1"
 
 
 func flush(_timeout_msec: int) -> int:

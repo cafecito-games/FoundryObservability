@@ -2,7 +2,8 @@
 
 FoundryObservability is the provider-neutral observability boundary for Foundry
 games. It normalizes messages, exceptions, and structured log records before
-dispatching them to a backend provider.
+dispatching them to a backend provider. It also exposes an explicit, separate
+player-feedback path; feedback is never collected implicitly by event capture.
 
 The public namespace is **foundry.observability**. The FoundryLib adapter lives
 in **foundry.observability.foundrylib**. Global class and trait names are
@@ -55,6 +56,7 @@ Value types:
 - ObservabilityConfig
 - ObservabilityException
 - ObservabilityEvent
+- ObservabilityFeedback
 
 Built-in providers:
 
@@ -237,6 +239,38 @@ func exception() -> ObservabilityException?
 attributes are deep-copied on construction and access. exception is optional and
 is returned as the original payload object.
 
+## ObservabilityFeedback
+
+ObservabilityFeedback is the explicit player-submitted payload used by
+capture_feedback(). It is separate from ObservabilityEvent and is never created
+by automatic error, message, or log capture.
+
+Constructor:
+
+~~~
+ObservabilityFeedback.new(
+		p_message: String,
+		p_name: String = "",
+		p_contact_email: String = "",
+		p_associated_event_id: String = "",
+)
+~~~
+
+Accessors:
+
+~~~
+func message() -> String
+func name() -> String
+func contact_email() -> String
+func associated_event_id() -> String
+~~~
+
+The message is required, must contain non-whitespace text, and is limited to
+4096 Unicode characters. Optional values are omitted when empty. Non-empty
+optional values must contain no control characters; a contact email must have
+one non-empty local and domain portion. The associated event ID is opaque to
+the core and is forwarded only when the caller supplies it.
+
 ## ObservabilityProvider
 
 ObservabilityProvider is the trait backend integrations implement:
@@ -248,6 +282,7 @@ abstract func provider_name() -> StringName
 abstract func is_available() -> bool
 abstract func configure(config: ObservabilityConfig) -> int
 abstract func capture(event: ObservabilityEvent) -> String
+abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
 abstract func flush(timeout_msec: int = 2000) -> int
 abstract func shutdown() -> void
 ~~~
@@ -261,6 +296,9 @@ Method contracts:
   FoundryObservability configures a candidate before making it active.
 - capture translates one normalized event and returns a provider event ID.
   Return an empty string when the event cannot be accepted.
+- capture_feedback translates an explicit player feedback payload through the
+  provider's dedicated feedback API and returns a provider ID. It must not
+  convert feedback into an ordinary error event.
 - flush attempts to deliver pending data within timeout_msec. It returns an
   Error value; the service stores that value in last_error().
 - shutdown releases provider resources. Implementations must make repeated
@@ -287,6 +325,7 @@ abstract func capture_event(event: ObservabilityEvent) -> String
 abstract func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String
 abstract func capture_log(message: String, level: int = ObservabilityLevel.INFO, source: StringName = &"game", timestamp_msec: int = -1, attributes: Dictionary = {}) -> String
 abstract func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String
+abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
 abstract func flush(timeout_msec: int = 2000) -> int
 abstract func shutdown() -> void
 ~~~
@@ -420,6 +459,39 @@ FoundryObservability.capture_log(
 Providers that do not support structured logs may safely return an empty ID;
 the service records the failed capture status when the provider is enabled.
 
+### capture_feedback
+
+~~~
+func capture_feedback(feedback: ObservabilityFeedback) -> String
+~~~
+
+Accepts an explicitly constructed feedback payload and returns a provider ID.
+Null or invalid feedback returns an empty string and stores
+Error.ERR_INVALID_PARAMETER. Invalid feedback includes a missing or
+oversized message, malformed email, or control characters in optional values.
+When the service is disabled, the submission is ignored without collecting or
+forwarding it. When an enabled provider returns an empty ID, the service stores
+Error.FAILED.
+
+Example:
+
+~~~
+import foundry.observability
+
+var feedback := ObservabilityFeedback.new(
+		p_message = "The tutorial was confusing.",
+		p_name = "Player One",
+		p_contact_email = "player@example.com",
+		p_associated_event_id = previous_event_id,
+)
+var feedback_id: String = FoundryObservability.capture_feedback(feedback)
+~~~
+
+The core does not persist feedback or implement an offline retry queue. A
+provider owns its transport, offline storage, and retry policy. Call
+FoundryObservability.flush() when the game reaches a suitable delivery point;
+the call is a best-effort provider flush within the supplied timeout.
+
 ### capture_exception
 
 ~~~
@@ -496,12 +568,15 @@ Public methods:
 
 ~~~
 func events() -> Array[ObservabilityEvent]
+func feedback() -> Array[ObservabilityFeedback]
 func clear() -> void
+func clear_feedback() -> void
 ~~~
 
 events returns a copy of the captured event list. clear removes captured events
 without changing configuration. Successful capture returns sequential IDs in
-the form memory:N. Capture returns an empty ID while disabled or after shutdown.
+the form memory:N. Feedback is stored in a separate list and returns IDs in the
+form memory-feedback:N. Capture returns an empty ID while disabled or after shutdown.
 
 Example:
 
@@ -588,6 +663,23 @@ method is absent, so mismatched native and FoundryScript provider versions are
 detected before the provider becomes active. Ordinary messages and exceptions
 continue using the regular event path.
 
+## Sentry feedback delivery
+
+The optional Sentry provider maps capture_feedback() to Sentry's dedicated
+feedback API, not to an error event. The Apple bridge uses Sentry Cocoa's
+`SentryFeedback`; Android uses Sentry Android's `Feedback`. Both preserve the
+message and caller-supplied optional name, contact email, and associated event
+ID. Anonymous feedback is valid, and empty optional fields are omitted.
+
+The native `send_default_pii` option defaults to false. Set
+`provider_options["send_default_pii"] = true` only when the project explicitly
+accepts the provider's default PII behavior; this option does not cause the
+feedback API to collect name or email unless those fields were supplied in the
+feedback object. A feedback call requires a native bridge exposing
+`captureFeedback`; if an older bridge lacks it, that feedback call returns an
+empty ID while ordinary messages, exceptions, and logs continue to use the
+bridge's supported methods.
+
 ## Custom provider outline
 
 A provider implements all methods in ObservabilityProvider and can translate
@@ -614,6 +706,9 @@ func configure(config: ObservabilityConfig) -> int:
 func capture(event: ObservabilityEvent) -> String:
 	return "my_provider:event"
 
+func capture_feedback(feedback: ObservabilityFeedback) -> String:
+	return "my_provider:feedback"
+
 func flush(timeout_msec: int = 2000) -> int:
 	return Error.OK
 
@@ -628,7 +723,8 @@ interpret them.
 ## Deliberate boundary
 
 This core API does not include Sentry, Apple/Android native bindings, crash
-handlers, persistence, retries, user identity, breadcrumbs, attachments, or
-performance transactions. The optional Sentry sibling addon contains its
-native bindings and structured-log delivery. A foundry-cpp project is not
-required by this API.
+handlers, automatic identity collection, persistence, or retry queues,
+breadcrumbs, attachments, or performance transactions. Providers own native
+delivery, offline storage, retry policy, and flush behavior. The optional
+Sentry sibling addon contains its native bindings, structured-log delivery, and
+feedback delivery. A foundry-cpp project is not required by this API.

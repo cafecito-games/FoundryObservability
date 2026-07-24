@@ -105,6 +105,103 @@ func test_memory_provider_captures_messages_and_exceptions() -> void:
 	service.shutdown()
 
 
+func test_feedback_value_preserves_fields() -> void:
+	var feedback := ObservabilityFeedback.new(
+			p_message = "The tutorial was confusing.",
+			p_name = "Player One",
+			p_contact_email = "player@example.com",
+			p_associated_event_id = "event-123",
+		)
+
+	Expect.that(feedback.message()).to_equal("The tutorial was confusing.")
+	Expect.that(feedback.name()).to_equal("Player One")
+	Expect.that(feedback.contact_email()).to_equal("player@example.com")
+	Expect.that(feedback.associated_event_id()).to_equal("event-123")
+
+
+func test_memory_provider_captures_feedback_separately_from_events() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	var feedback := ObservabilityFeedback.new(p_message = "Please add remappable controls.")
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	Expect.that(service.capture_feedback(feedback)).to_equal("memory-feedback:1")
+	Expect.that(provider.events()).to_have_size(0)
+	Expect.that(provider.feedback()).to_have_size(1)
+	Expect.that(provider.feedback()[0].message()).to_equal("Please add remappable controls.")
+	service.shutdown()
+
+
+func test_feedback_accepts_anonymous_and_identified_submissions() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	Expect.that(service.capture_feedback(ObservabilityFeedback.new(
+			p_message = "Anonymous feedback",
+		))).to_equal("memory-feedback:1")
+	Expect.that(service.capture_feedback(ObservabilityFeedback.new(
+			p_message = "Identified feedback",
+			p_name = "Player One",
+			p_contact_email = "player@example.com",
+			p_associated_event_id = "event-123",
+		))).to_equal("memory-feedback:2")
+	Expect.that(provider.feedback()[1].name()).to_equal("Player One")
+	Expect.that(provider.feedback()[1].contact_email()).to_equal("player@example.com")
+	Expect.that(provider.feedback()[1].associated_event_id()).to_equal("event-123")
+	service.shutdown()
+
+
+func test_feedback_rejects_invalid_message_and_optional_values() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+
+	Expect.that(service.capture_feedback(ObservabilityFeedback.new(p_message = ""))).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.capture_feedback(ObservabilityFeedback.new(p_message = "   "))).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.capture_feedback(ObservabilityFeedback.new(
+			p_message = _repeated("x", 4097),
+		))).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.capture_feedback(ObservabilityFeedback.new(
+			p_message = "Valid message",
+			p_contact_email = "not-an-email",
+		))).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.capture_feedback(ObservabilityFeedback.new(
+			p_message = "Valid message",
+			p_contact_email = "player @example.com",
+		))).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.capture_feedback(ObservabilityFeedback.new(
+			p_message = "Valid message",
+			p_name = "Player\nOne",
+		))).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(provider.feedback()).to_have_size(0)
+	service.shutdown()
+
+
+func test_feedback_does_not_collect_when_disabled_or_unavailable() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	var feedback := ObservabilityFeedback.new(p_message = "Do not send this while disabled.")
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(p_enabled = false))).to_equal(Error.OK)
+	Expect.that(service.capture_feedback(feedback)).to_equal("")
+	Expect.that(provider.feedback()).to_have_size(0)
+	service.shutdown()
+
+	var unavailable_service: FoundryObservability = _service()
+	var unavailable: NullObservabilityProvider = NullObservabilityProvider.new()
+	Expect.that(unavailable_service.configure(unavailable, ObservabilityConfig.new(p_enabled = true))).to_equal(Error.OK)
+	Expect.that(unavailable_service.capture_feedback(feedback)).to_equal("")
+	Expect.that(unavailable_service.last_error()).to_equal(Error.FAILED)
+	unavailable_service.shutdown()
+
+
 func test_structured_logs_are_enabled_by_default_and_preserve_shape() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
@@ -289,3 +386,10 @@ func test_shutdown_is_idempotent() -> void:
 func _service() -> FoundryObservability:
 	var tree: SceneTree = Engine.get_main_loop() as SceneTree
 	return tree.root.get_node("FoundryObservability") as FoundryObservability
+
+
+func _repeated(value: String, count: int) -> String:
+	var result := ""
+	for _index in range(count):
+		result += value
+	return result

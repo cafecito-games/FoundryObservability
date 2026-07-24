@@ -139,6 +139,7 @@ class SentryObservabilityBridge: RefCounted {
             options.dist = dist
         }
         options.debug = boolValue(dictionaryValue(values["provider_options"])["debug"])
+        options.sendDefaultPii = boolValue(dictionaryValue(values["provider_options"])["send_default_pii"])
         options.enableLogs = logsEnabled
         options.enabled = true
 
@@ -210,6 +211,38 @@ class SentryObservabilityBridge: RefCounted {
     }
 
     @Callable
+    func captureFeedback(payload: VariantDictionary) -> String {
+        guard isAvailable() else {
+            return ""
+        }
+
+        let values = foundationDictionary(from: payload)
+        let message = stringValue(values["message"])
+        guard !message.isEmpty else {
+            return ""
+        }
+
+        let name = optionalStringValue(values["name"])
+        let email = optionalStringValue(values["contact_email"])
+        let associatedEventIDValue = stringValue(values["associated_event_id"])
+        let associatedEventID = sentryFeedbackAssociatedEventID(for: associatedEventIDValue)
+        if !associatedEventIDValue.isEmpty && associatedEventID == nil {
+            return ""
+        }
+
+        let feedback = SentryFeedback(
+            message: message,
+            name: name,
+            email: email,
+            source: .custom,
+            associatedEventId: associatedEventID,
+            attachments: nil
+        )
+        SentrySDK.capture(feedback: feedback)
+        return "sentry-feedback:\(UUID().uuidString)"
+    }
+
+    @Callable
     func flush(_ timeoutMsec: Int) -> Int {
         guard isAvailable() else {
             return bridgeErrorFailed
@@ -234,4 +267,9 @@ class SentryObservabilityBridge: RefCounted {
         configured = false
         logsEnabled = false
     }
+}
+
+private func optionalStringValue(_ value: Any?) -> String? {
+    let string = stringValue(value)
+    return string.isEmpty ? nil : string
 }

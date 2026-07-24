@@ -27,6 +27,8 @@ abstract func capture_log(
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
 ) -> String
+## Captures explicit player feedback and returns a provider ID, or an empty string on no-op/failure.
+abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
 ## Flushes pending work within timeout_msec and returns an Error value.
 abstract func flush(timeout_msec: int = 2000) -> int
 ## Flushes and shuts down the service; repeated calls are safe.

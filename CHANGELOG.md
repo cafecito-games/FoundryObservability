@@ -19,3 +19,5 @@
 - Added first-class structured log delivery with default-enabled capture,
   severity filtering, timestamp-window rate limiting, global/per-record scalar
   attributes, and native Apple/Android Sentry log bridges.
+- Added explicit player feedback capture with message validation, optional
+  identity and event association, and dedicated Apple/Android Sentry delivery.

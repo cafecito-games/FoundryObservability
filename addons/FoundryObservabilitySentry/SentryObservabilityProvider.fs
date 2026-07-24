@@ -106,6 +106,25 @@ func capture(event: ObservabilityEvent) -> String:
 	return str(bridge.call(method, payload))
 
 
+## Translates explicit feedback to the native dedicated feedback API.
+func capture_feedback(feedback: ObservabilityFeedback) -> String:
+	if feedback == null or not _enabled or _shutdown:
+		return ""
+
+	var bridge: Object? = _resolve_bridge()
+	if bridge == null or not is_available() or not bridge.has_method("captureFeedback"):
+		return ""
+
+	var payload: Dictionary = {"message": feedback.message()}
+	if not feedback.name().is_empty():
+		payload["name"] = feedback.name()
+	if not feedback.contact_email().is_empty():
+		payload["contact_email"] = feedback.contact_email()
+	if not feedback.associated_event_id().is_empty():
+		payload["associated_event_id"] = feedback.associated_event_id()
+	return str(bridge.call("captureFeedback", payload))
+
+
 ## Flushes native Sentry work within the requested timeout.
 func flush(timeout_msec: int = 2000) -> int:
 	var bridge: Object? = _resolve_bridge()

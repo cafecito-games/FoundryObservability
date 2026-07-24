@@ -26,6 +26,11 @@ func capture(_event: ObservabilityEvent) -> String:
 	return ""
 
 
+## Performs a safe no-op and returns an empty feedback ID.
+func capture_feedback(_feedback: ObservabilityFeedback) -> String:
+	return ""
+
+
 ## Performs a safe no-op and returns Error.OK.
 func flush(_timeout_msec: int = 2000) -> int:
 	return Error.OK

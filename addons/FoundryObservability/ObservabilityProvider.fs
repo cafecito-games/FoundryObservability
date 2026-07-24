@@ -11,6 +11,8 @@ abstract func is_available() -> bool
 abstract func configure(config: ObservabilityConfig) -> int
 ## Captures one normalized event and returns a backend ID or an empty string.
 abstract func capture(event: ObservabilityEvent) -> String
+## Captures explicit player feedback and returns a backend ID or an empty string.
+abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
 ## Flushes pending events within the requested timeout in milliseconds.
 abstract func flush(timeout_msec: int = 2000) -> int
 ## Releases provider resources; repeated calls must be safe.

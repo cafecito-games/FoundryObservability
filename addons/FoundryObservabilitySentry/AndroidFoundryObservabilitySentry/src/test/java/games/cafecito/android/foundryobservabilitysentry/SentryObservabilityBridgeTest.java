@@ -106,6 +106,60 @@ public class SentryObservabilityBridgeTest {
     bridge.shutdown();
   }
 
+  @Test
+  public void configuredBridgeCapturesFeedbackWithOptionalAssociation() {
+    SentryObservabilityBridge bridge = newBridge();
+
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("provider_options", java.util.Map.of("send_default_pii", true));
+
+    assertEquals(0, bridge.configure(configuration));
+
+    Dictionary feedback = new Dictionary();
+    feedback.put("message", "The tutorial was confusing.");
+    feedback.put("name", "Player One");
+    feedback.put("contact_email", "player@example.com");
+    feedback.put("associated_event_id", "0123456789abcdef0123456789abcdef");
+
+    assertFalse(bridge.captureFeedback(feedback).isEmpty());
+    bridge.shutdown();
+  }
+
+  @Test
+  public void rejectsFeedbackWithoutMessage() {
+    SentryObservabilityBridge bridge = newBridge();
+
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    assertEquals(0, bridge.configure(configuration));
+
+    Dictionary feedback = new Dictionary();
+    feedback.put("name", "Player One");
+
+    assertEquals("", bridge.captureFeedback(feedback));
+    bridge.shutdown();
+  }
+
+  @Test
+  public void rejectsFeedbackWithInvalidAssociatedEventId() {
+    SentryObservabilityBridge bridge = newBridge();
+
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    assertEquals(0, bridge.configure(configuration));
+
+    Dictionary feedback = new Dictionary();
+    feedback.put("message", "Feedback with a bad association");
+    feedback.put("associated_event_id", "not-a-sentry-id");
+
+    assertEquals("", bridge.captureFeedback(feedback));
+    bridge.shutdown();
+  }
+
   private static SentryObservabilityBridge newBridge() {
     return new SentryObservabilityBridge(
         Foundry.getInstance(RuntimeEnvironment.getApplication()));
