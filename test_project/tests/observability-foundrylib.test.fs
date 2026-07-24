@@ -40,6 +40,9 @@ func test_maps_structured_logs_to_observability_events() -> void:
 	Expect.that(event.attributes()).to_equal({
 			"logger_name": "combat", "id": 7, "weapon": "axe"
 		})
+	Expect.that(event.source()).to_equal(&"foundry.logging")
+	Expect.that(event.attributes()["logger_name"]).to_equal("combat")
+	Expect.that(event.attributes()["id"]).to_equal(7)
 	service.shutdown()
 
 
@@ -70,6 +73,51 @@ func test_filters_records_below_minimum_level() -> void:
 	Expect.that(provider.events()).to_have_size(1)
 	Expect.that(provider.events()[0].message()).to_equal("kept")
 	service.shutdown()
+
+
+func test_sink_uses_service_log_filtering() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_log_minimum_level = ObservabilityLevel.ERROR,
+		))).to_equal(Error.OK)
+	var sink := FoundryLibObservabilitySink.new(
+			p_service = service,
+			p_minimum_level = ObservabilityLevel.TRACE,
+		)
+	sink.emit(LogRecord.new(LogLevel.WARN, "combat", "filtered", {}, 10))
+	sink.emit(LogRecord.new(LogLevel.ERROR, "combat", "kept", {}, 20))
+
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].message()).to_equal("kept")
+	service.shutdown()
+
+
+func test_sink_calls_first_class_log_method() -> void:
+	var recording := RecordingObservabilityApi.new()
+	var sink := FoundryLibObservabilitySink.new(
+			p_service = recording,
+			p_minimum_level = ObservabilityLevel.TRACE,
+		)
+	sink.emit(LogRecord.new(
+			p_level = LogLevel.WARN,
+			p_logger_name = "combat",
+			p_message_template = "player {id} missed",
+			p_fields = {"id": 7},
+			p_timestamp_msec = 99,
+		))
+
+	Expect.that(recording.captured_events).to_have_size(0)
+	Expect.that(recording.captured_logs).to_have_size(1)
+	Expect.that(recording.captured_logs[0]).to_equal({
+			"message": "player 7 missed",
+			"level": ObservabilityLevel.WARN,
+			"source": &"foundry.logging",
+			"timestamp_msec": 99,
+			"attributes": {"logger_name": "combat", "id": 7},
+		})
 
 
 func test_flush_forwards_to_observability_service() -> void:
