@@ -23,8 +23,7 @@ func _exit_tree() -> void:
 
 class AndroidExportPlugin extends EditorExportPlugin:
 	const _DEPENDENCIES_FILE: String = (
-			"res://addons/FoundryObservabilitySentry/"
-			+ "AndroidFoundryObservabilitySentry/android-dependencies.txt"
+			"res://addons/FoundryObservabilitySentry/android-dependencies.txt"
 	)
 	const _ANDROID_DEBUG_AAR: String = (
 			"res://addons/FoundryObservabilitySentry/bin/android/debug/"

@@ -1,0 +1,1 @@
+io.sentry:sentry-android:8.50.1

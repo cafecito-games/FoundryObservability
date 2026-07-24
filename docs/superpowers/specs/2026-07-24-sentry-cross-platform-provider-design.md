@@ -118,8 +118,10 @@ Create the Android module at
   `org.godotengine.plugin.v2.SentryObservabilityBridge`.
 - Sentry manifest metadata disabling automatic initialization until the
   provider receives its configuration.
-- `android-dependencies.txt` containing the Sentry Android Maven coordinate
-  used by the export plugin.
+- `addons/FoundryObservabilitySentry/android-dependencies.txt` containing the
+  Sentry Android Maven coordinate used by both Gradle and the export plugin.
+  Keeping this file at the addon root makes it part of the runtime package
+  while the Gradle module reads it from its parent directory.
 
 `configure` will close an active Sentry client before applying new settings,
 validate the DSN when enabled, map environment/release/dist/debug settings,

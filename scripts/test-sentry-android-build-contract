@@ -33,7 +33,7 @@ for method in configure isAvailable capture flush shutdown; do
 	rg -q "[[:space:]]$method\\(" "$bridge_source" \
 		|| fail "bridge is missing $method"
 done
-rg -q 'io\.sentry:sentry-android:8\.50\.1' "$android_source/android-dependencies.txt" \
+rg -q 'io\.sentry:sentry-android:8\.50\.1' "$repo_root/addons/FoundryObservabilitySentry/android-dependencies.txt" \
 	|| fail "Sentry Android dependency is not pinned to 8.50.1"
 rg -q 'SentryAndroid\.init' "$bridge_source" || fail "bridge must initialize Sentry Android"
 rg -q 'Sentry\.captureEvent' "$bridge_source" || fail "bridge must capture Sentry events"

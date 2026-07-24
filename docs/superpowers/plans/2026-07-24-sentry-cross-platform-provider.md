@@ -102,7 +102,7 @@ git commit -m "feat: resolve Android Sentry bridge"
 - Create: `addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/gradle.properties`
 - Create: `addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/consumer-rules.pro`
 - Create: `addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/src/main/AndroidManifest.xml`
-- Create: `addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/android-dependencies.txt`
+- Create: `addons/FoundryObservabilitySentry/android-dependencies.txt`
 - Create: `addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/src/test/java/games/cafecito/android/foundryobservabilitysentry/SentryEventMapperTest.java`
 - Copy: `gradlew` and `gradle/wrapper/*` from the AuthenticationKit Android reference
 
@@ -131,7 +131,7 @@ dependencyResolutionManagement {
 rootProject.name = "AndroidFoundryObservabilitySentry"
 ```
 
-Create `gradle.properties` with `android.useAndroidX=true` and `consumer-rules.pro` with `# FoundryObservabilitySentry consumer rules.`. Put exactly `io.sentry:sentry-android:8.50.1` in `android-dependencies.txt`.
+Create `gradle.properties` with `android.useAndroidX=true` and `consumer-rules.pro` with `# FoundryObservabilitySentry consumer rules.`. Put exactly `io.sentry:sentry-android:8.50.1` in the addon-root `addons/FoundryObservabilitySentry/android-dependencies.txt`; configure Gradle to read it as `file('../android-dependencies.txt')` so the runtime package can include it.
 
 Create `build.gradle` with Android Gradle Plugin `8.13.2`, namespace `games.cafecito.android.foundryobservabilitysentry`, compile/target SDK 36, min SDK 24, Java 17 source/target compatibility, release minification disabled, and these dependencies:
 
@@ -149,7 +149,7 @@ dependencies {
 }
 ```
 
-Read `android-dependencies.txt` into `runtimeDependencies` exactly as the AuthenticationKit module does, ignoring blank/comment lines. Do not copy AuthenticationKit Java sources.
+Read `../android-dependencies.txt` into `runtimeDependencies` exactly as the AuthenticationKit module does, ignoring blank/comment lines. Do not copy AuthenticationKit Java sources.
 
 - [ ] **Step 2: Add the manifest**
 
@@ -359,7 +359,7 @@ Keep all four iOS entries and empty dependency maps unchanged. Do not add Foundr
 
 - [ ] **Step 3: Add Android export behavior**
 
-Register an `AndroidExportPlugin` beside the existing iOS export plugin. It must return `FoundryObservabilitySentryAndroid` from `_get_name()`, choose `bin/android/debug/FoundryObservabilitySentry-debug.aar` for debug and the release path otherwise, read non-empty non-comment lines from `res://addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/android-dependencies.txt`, return them from `_get_android_dependencies`, and support only `Android`. Preserve the existing iOS class and iOS-only support check.
+Register an `AndroidExportPlugin` beside the existing iOS export plugin. It must return `FoundryObservabilitySentryAndroid` from `_get_name()`, choose `bin/android/debug/FoundryObservabilitySentry-debug.aar` for debug and the release path otherwise, read non-empty non-comment lines from `res://addons/FoundryObservabilitySentry/android-dependencies.txt`, return them from `_get_android_dependencies`, and support only `Android`. Preserve the existing iOS class and iOS-only support check.
 
 - [ ] **Step 4: Extend native build tasks**
 
@@ -408,7 +408,7 @@ Add assertions requiring these archive entries:
 grep -qx 'addons/FoundryObservabilitySentry/bin/macos_arm64/.gitkeep' "$sentry_listing" || fail "Sentry package is missing macOS artifacts"
 grep -qx 'addons/FoundryObservabilitySentry/bin/android/debug/.gitkeep' "$sentry_listing" || fail "Sentry package is missing Android debug artifacts"
 grep -qx 'addons/FoundryObservabilitySentry/bin/android/release/.gitkeep' "$sentry_listing" || fail "Sentry package is missing Android release artifacts"
-grep -qx 'addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/android-dependencies.txt' "$sentry_listing" || fail "Sentry package is missing Android dependencies"
+grep -qx 'addons/FoundryObservabilitySentry/android-dependencies.txt' "$sentry_listing" || fail "Sentry package is missing Android dependencies"
 ```
 
 Run `scripts/test-package`; expected failure is that the package script currently copies only `bin/ios`.
