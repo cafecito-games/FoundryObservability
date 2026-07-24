@@ -194,6 +194,61 @@ func test_metrics_apply_deterministic_sampling_after_filtering() -> void:
 	service.shutdown()
 
 
+func test_metrics_support_sampling_boundaries_and_memory_clearing() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_metric_sample_rate = 0.0,
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_counter("sampled.metric")).to_be_false()
+	Expect.that(provider.metrics()).to_have_size(0)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_metric_sample_rate = 1.0,
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_counter("sampled.metric")).to_be_true()
+	Expect.that(provider.metrics()).to_have_size(1)
+	provider.clear_metrics()
+	Expect.that(provider.metrics()).to_have_size(0)
+	service.shutdown()
+
+
+func test_metrics_reject_non_boolean_filter_results() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_metric_filter = Callable(self, "_invalid_metric_filter"),
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_counter("combat.hit")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(provider.metrics()).to_have_size(0)
+	service.shutdown()
+
+
+func test_metrics_isolate_provider_rejection_and_shutdown() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	provider.metric_capture_result = false
+
+	Expect.that(service.capture_counter("provider.rejected")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	Expect.that(service.capture_message("events still work")).to_equal("memory:1")
+
+	provider.metric_capture_result = true
+	Expect.that(service.capture_counter("provider.accepted")).to_be_true()
+	service.shutdown()
+	Expect.that(service.capture_counter("after.shutdown")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+
+
 func test_metricless_provider_keeps_event_capture_operational() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MetriclessObservabilityProvider.new()
@@ -577,3 +632,7 @@ func _repeated(value: String, count: int) -> String:
 
 func _keep_combat_metric(metric: ObservabilityMetric) -> bool:
 	return metric.name().begins_with("combat.")
+
+
+func _invalid_metric_filter(_metric: ObservabilityMetric) -> String:
+	return "not a bool"
