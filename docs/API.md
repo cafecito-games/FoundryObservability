@@ -582,10 +582,10 @@ per-record scalar attributes. Reserved metadata is also available as
 `foundry.kind`, `foundry.source`, and `foundry.timestamp_msec` attributes.
 
 The Sentry SDK owns batching and delivery queues; `FoundryObservability.flush()`
-forwards to the native bridge. Native support is detected at capture time. A
-current bridge sends structured logs through the native log API; an older or
-incomplete bridge falls back to the regular event path so existing log delivery
-continues while the native bridge is upgraded.
+forwards to the native bridge. Native support is detected at capture time, so
+an incomplete bridge safely no-ops structured logs. Ordinary messages and
+exceptions continue using the regular event path. This addon requires its
+native bridge and FoundryScript provider versions to be updated together.
 
 ## Custom provider outline
 

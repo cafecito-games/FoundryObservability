@@ -98,8 +98,9 @@ func capture(event: ObservabilityEvent) -> String:
 			}
 	var method: String = "capture"
 	if event.kind() == &"log":
-		if bridge.has_method("captureLog"):
-			method = "captureLog"
+		method = "captureLog"
+		if not bridge.has_method(method):
+			return ""
 	return str(bridge.call(method, payload))
 
 
