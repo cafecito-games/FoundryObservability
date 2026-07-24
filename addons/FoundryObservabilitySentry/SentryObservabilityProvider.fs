@@ -121,6 +121,9 @@ func shutdown() -> void:
 func _resolve_bridge() -> Object?:
 	if _bridge != null:
 		return _bridge
+	if Engine.has_singleton(_NATIVE_CLASS):
+		_bridge = Engine.get_singleton(_NATIVE_CLASS)
+		return _bridge
 	if not ClassDB.class_exists(_NATIVE_CLASS) or not ClassDB.can_instantiate(_NATIVE_CLASS):
 		return null
 	_bridge = ClassDB.instantiate(_NATIVE_CLASS)
