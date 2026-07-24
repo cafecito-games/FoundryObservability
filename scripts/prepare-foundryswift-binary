@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+native_dir=${FOUNDRY_SENTRY_NATIVE_DIR:-"$repo_root/addons/FoundryObservabilitySentry/FoundryObservabilitySentry"}
+derived_data=${FOUNDRY_SENTRY_DERIVED_DATA:-"$repo_root/.build/sentry-xcodebuild"}
+scheme=${FOUNDRY_SENTRY_SCHEME:-FoundryObservabilitySentry_iOS}
+resolved_file="$native_dir/FoundryObservabilitySentry.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+
+fail() {
+	echo "FAIL: $*" >&2
+	exit 1
+}
+
+for command_name in gh jq rg shasum unzip xcodebuild xcodegen; do
+	command -v "$command_name" >/dev/null 2>&1 \
+		|| fail "required command is missing: $command_name"
+done
+
+[[ -d "$native_dir" ]] || fail "native Sentry package is missing: $native_dir"
+(cd "$native_dir" && xcodegen generate)
+
+resolve_log=$(mktemp "${TMPDIR:-/tmp}/foundryobservability-sentry-resolve.XXXXXX")
+download_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundryobservability-sentry-download.XXXXXX")
+cleanup() {
+	rm -f "$resolve_log"
+	rm -rf "$download_dir"
+}
+trap cleanup EXIT
+
+set +e
+(
+	cd "$native_dir"
+	xcodebuild -resolvePackageDependencies \
+		-scheme "$scheme" \
+		-derivedDataPath "$derived_data"
+) >"$resolve_log" 2>&1
+resolve_status=$?
+set -e
+
+checkout="$derived_data/SourcePackages/checkouts/Foundry-Swift-Binary"
+if [[ "$resolve_status" -ne 0 && ! -d "$checkout" ]]; then
+	cat "$resolve_log" >&2
+	fail "xcodebuild did not create the Foundry-Swift-Binary checkout"
+fi
+if [[ "$resolve_status" -ne 0 ]] && ! rg -iq 'binary artifact|does not contain|artifactbundle|xcframework' "$resolve_log"; then
+	cat "$resolve_log" >&2
+	fail "package resolution failed for an unexpected reason"
+fi
+
+manifest="$checkout/binaries.json"
+[[ -f "$manifest" ]] || fail "Foundry-Swift-Binary checkout is missing binaries.json"
+[[ -f "$resolved_file" ]] || fail "Package.resolved is missing: $resolved_file"
+
+version=$(jq -er '.version' "$manifest")
+source_repo=$(jq -er '.sourceRepo' "$manifest")
+resolved_version=$(jq -er '.pins[] | select(.identity == "foundry-swift-binary") | .state.version' "$resolved_file")
+[[ "${version#v}" == "${resolved_version#v}" ]] \
+	|| fail "binary manifest version $version does not match Package.resolved $resolved_version"
+
+binaries_dir="$checkout/Binaries"
+marker="$binaries_dir/.foundry-swift-binary-version"
+ready=true
+if [[ ! -f "$marker" || "$(<"$marker")" != "$version" ]]; then
+	ready=false
+fi
+while IFS= read -r local_path; do
+	[[ -e "$checkout/$local_path" ]] || ready=false
+done < <(jq -er '.artifacts[].localPath' "$manifest")
+
+if [[ "$ready" == true ]]; then
+	echo "Foundry-Swift-Binary $version artifacts already present."
+	exit 0
+fi
+
+mkdir -p "$binaries_dir"
+gh release download "${version#v}" --repo "$source_repo" --dir "$download_dir" --clobber
+while IFS=$'\t' read -r file local_path checksum; do
+	archive="$download_dir/$file"
+	[[ -f "$archive" ]] || fail "downloaded artifact is missing: $archive"
+	actual=$(shasum -a 256 "$archive" | awk '{print $1}')
+	[[ -z "$checksum" || "$actual" == "$checksum" ]] \
+		|| fail "checksum mismatch for $file"
+	rm -rf "$checkout/$local_path"
+	unzip -q "$archive" -d "$binaries_dir"
+	[[ -e "$checkout/$local_path" ]] || fail "artifact did not unpack to $local_path"
+done < <(jq -er '.artifacts[] | [.file, .localPath, (.checksum // "")] | @tsv' "$manifest")
+
+printf '%s\n' "$version" >"$marker"
+echo "Foundry-Swift-Binary $version artifacts are ready in $binaries_dir."

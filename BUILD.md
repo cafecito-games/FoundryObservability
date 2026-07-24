@@ -6,7 +6,9 @@
 - Go with the `anvil` package tool available on `PATH`
 - Task
 - Python 3.12+ with the dependencies in `requirements.txt`
-- `prek`, `ripgrep`, `zip`, and `unzip`
+- Xcode 15+, Swift 6, and XcodeGen
+- GitHub CLI (`gh`) authenticated for Foundry-Swift release downloads
+- `jq`, `prek`, `ripgrep`, `zip`, and `unzip`
 
 The repository scripts use the local Foundry development binary at
 `/Users/christian/CafecitoGames/Foundry/bin/foundry.macos.editor.dev.arm64`
@@ -25,8 +27,11 @@ task test:foundry-script
 task test:project
 task test:ci
 task test:package
+task test:sentry-swift
 task test
 task package
+task package:sentry
+task ios:sentry
 ```
 
 `task test:project` installs the packages declared in
@@ -36,9 +41,16 @@ generated and ignored by Git. The local core addon symlink is materialized
 temporarily during headless runtime tests because Foundry's source scan
 intentionally skips directory symlinks.
 
-`task package` creates a zip containing exactly this runtime payload:
+`task package` creates the core and Sentry addon zips. The core archive contains
+exactly this runtime payload:
 
 - `addons/FoundryObservability`
 
-Current public source namespaces are `foundry.observability` and
-`foundry.observability.foundrylib`.
+The Sentry archive contains the runtime `FoundryObservabilitySentry` addon and
+the built iOS xcframework, but not the Swift source or generated Xcode project.
+Run `task ios:sentry` first when rebuilding the native artifact. That task
+downloads and checksum-verifies the prebuilt Foundry-Swift alpha.2 framework
+and macro artifact into derived data, then compiles only the Sentry bridge.
+
+Current public source namespaces are `foundry.observability`,
+`foundry.observability.foundrylib`, and `foundry.observability.sentry`.

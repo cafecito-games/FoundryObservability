@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+
+fail() {
+	echo "FAIL: $*" >&2
+	exit 1
+}
+
+taskfile="$repo_root/Taskfile.yml"
+native_root="$repo_root/addons/FoundryObservabilitySentry/FoundryObservabilitySentry"
+project_yml="$native_root/project.yml"
+pbxproj="$native_root/FoundryObservabilitySentry.xcodeproj/project.pbxproj"
+swift_sources="$native_root/Sources/FoundryObservabilitySentry"
+tests="$native_root/Tests/FoundryObservabilitySentryTests"
+descriptor="$repo_root/addons/FoundryObservabilitySentry/FoundryObservabilitySentry.foundryextension"
+export_plugin="$repo_root/addons/FoundryObservabilitySentry/export_plugin.fs"
+package_swift="$native_root/Package.swift"
+
+[[ -f "$taskfile" ]] || fail "Taskfile.yml is missing"
+[[ -f "$project_yml" ]] || fail "Sentry project.yml is missing"
+[[ -f "$pbxproj" ]] || fail "generated Sentry Xcode project is missing"
+[[ -f "$descriptor" ]] || fail "Sentry FoundryExtension descriptor is missing"
+[[ -f "$export_plugin" ]] || fail "Sentry export plugin is missing"
+[[ -f "$package_swift" ]] || fail "Sentry Package.swift is missing"
+[[ -f "$swift_sources/FoundryObservabilitySentry.swift" ]] || fail "Sentry bridge source is missing"
+[[ -f "$swift_sources/SentryEventMapper.swift" ]] || fail "Sentry mapper source is missing"
+[[ -f "$tests/SentryEventMapperTests.swift" ]] || fail "Sentry mapper tests are missing"
+
+rg -q 'platform=iOS' "$taskfile" || fail "Taskfile must build an iOS device framework"
+rg -q 'platform=iOS Simulator' "$taskfile" || fail "Taskfile must build an iOS simulator framework"
+rg -q 'ARCHS=arm64 CODE_SIGNING_ALLOWED=NO' "$taskfile" \
+	|| fail "Taskfile must disable simulator code signing"
+rg -q 'xcodebuild -create-xcframework' "$taskfile" \
+	|| fail "Taskfile must create an iOS xcframework"
+rg -q 'xcodebuild clean' "$taskfile" \
+	|| fail "Taskfile must clean stale native build intermediates"
+rg -q 'FoundryObservabilitySentry\.xcframework' "$taskfile" \
+	|| fail "Taskfile must create the Sentry xcframework"
+rg -q 'Foundry-Swift-Binary' "$project_yml" \
+	|| fail "native project must use Foundry-Swift-Binary"
+rg -q 'exactVersion: 0\.1\.0-alpha\.2' "$project_yml" \
+	|| fail "native project must pin Foundry-Swift alpha.2"
+rg -q 'exactVersion: 9\.23\.0' "$project_yml" \
+	|| fail "native project must pin Sentry Cocoa 9.23.0"
+rg -q 'exact: "9\.23\.0"' "$package_swift" \
+	|| fail "SwiftPM mapper tests must pin Sentry Cocoa 9.23.0"
+rg -q 'GENERATE_INFOPLIST_FILE = YES' "$pbxproj" \
+	|| fail "generated Xcode project is missing generated Info.plist settings"
+
+rg -q '#initFoundryExtension' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge source must register the Foundry entry point"
+rg -q 'foundry_observability_sentry_entry_point' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge source has the wrong entry symbol"
+rg -q '@Foundry' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge source must expose a Foundry class"
+rg -q '@Callable' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge source must expose callable bridge methods"
+
+for variant in ios.debug ios.release ios.simulator.debug ios.simulator.release; do
+	rg -q "^${variant}[[:space:]]*=" "$descriptor" \
+		|| fail "descriptor is missing ${variant}"
+	rg -q "^${variant}[[:space:]]*=[[:space:]]*\{\}" "$descriptor" \
+		|| fail "descriptor ${variant} dependencies must be an empty map"
+done
+rg -q 'FoundryObservabilitySentry\.xcframework' "$descriptor" "$export_plugin" \
+	|| fail "descriptor and export plugin must reference the Sentry xcframework"
+if rg -q 'FoundrySwift' "$descriptor" "$export_plugin"; then
+	fail "Sentry descriptor/export plugin must not own FoundrySwift"
+fi
+rg -q 'get_os_name\(\) == "iOS"' "$export_plugin" \
+	|| fail "Sentry export plugin must be iOS-only"
+
+echo "Sentry iOS build contract tests passed"

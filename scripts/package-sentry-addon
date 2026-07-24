@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+sentry_source="$repo_root/addons/FoundryObservabilitySentry"
+source_version=$(awk -F'"' '/^version=/{print $2; exit}' "$sentry_source/plugin.cfg")
+version="${VERSION:-$source_version}"
+
+fail() {
+	echo "FAIL: $*" >&2
+	exit 1
+}
+
+[[ -d "$sentry_source" ]] || fail "Sentry addon directory is missing"
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+	|| fail "version must be numeric semver: $version"
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundryobservability-sentry-package.XXXXXX")
+trap 'rm -rf "$tmp_dir"' EXIT
+mkdir -p "$tmp_dir/addons/FoundryObservabilitySentry/bin/ios"
+
+find "$sentry_source" -maxdepth 1 -type f -exec cp {} "$tmp_dir/addons/FoundryObservabilitySentry/" \;
+cp -R "$sentry_source/bin/ios/." "$tmp_dir/addons/FoundryObservabilitySentry/bin/ios/"
+
+if [[ "$version" != "$source_version" ]]; then
+	awk -v version="$version" '
+		/^version="/ { print "version=\"" version "\""; next }
+		{ print }
+	' "$sentry_source/plugin.cfg" >"$tmp_dir/addons/FoundryObservabilitySentry/plugin.cfg"
+fi
+
+find "$tmp_dir" -name '.DS_Store' -delete
+mkdir -p "$repo_root/dist"
+archive="$repo_root/dist/FoundryObservabilitySentry-${version}.zip"
+rm -f "$archive"
+(
+	cd "$tmp_dir"
+	zip -qr "$archive" addons/FoundryObservabilitySentry
+)
+
+echo "$archive"

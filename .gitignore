@@ -10,8 +10,13 @@ export_presets.cfg
 test_project/.foundry/
 test_project/addons/foundrylib/
 test_project/addons/vest/
+test_project/addons/FoundryObservabilitySentry
 test_project/vest.log
 .build/
+.swiftpm/
+**/xcuserdata/
+**/DerivedData/
+addons/FoundryObservabilitySentry/bin/ios/*.xcframework/
 .task/
 dist/
 .venv/

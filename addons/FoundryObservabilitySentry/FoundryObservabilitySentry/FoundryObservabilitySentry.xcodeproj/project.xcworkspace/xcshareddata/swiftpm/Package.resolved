@@ -1,0 +1,24 @@
+{
+  "originHash" : "942abd92c48956b65729de320a3344179d0e61584dd602f56a347aebac11b7f2",
+  "pins" : [
+    {
+      "identity" : "foundry-swift-binary",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/cafecito-games/Foundry-Swift-Binary.git",
+      "state" : {
+        "revision" : "ba20d76029ef31057ee5af62bfee82c16fca13c7",
+        "version" : "0.1.0-alpha.2"
+      }
+    },
+    {
+      "identity" : "sentry-cocoa",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/getsentry/sentry-cocoa.git",
+      "state" : {
+        "revision" : "afa7510e05b99f35c1febe47566bfd868fa53fb9",
+        "version" : "9.23.0"
+      }
+    }
+  ],
+  "version" : 3
+}

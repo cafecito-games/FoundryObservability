@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project_dir="$repo_root/test_project"
 core_addon="$project_dir/addons/FoundryObservability"
+sentry_addon="$project_dir/addons/FoundryObservabilitySentry"
+sentry_source="$repo_root/addons/FoundryObservabilitySentry"
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -24,12 +26,27 @@ fi
 command -v anvil >/dev/null 2>&1 \
 	|| fail "anvil is required; install github.com/cafecito-games/foundry-tools/cmd/anvil"
 
+materialize_sentry_addon() {
+	destination=$1
+	mkdir -p "$destination/bin/ios"
+	find "$sentry_source" -maxdepth 1 -type f -exec cp {} "$destination/" \;
+	cp "$sentry_source/bin/ios/.gitkeep" "$destination/bin/ios/"
+}
+
 restore_test_addons() {
 	if [[ -d "$core_addon" && ! -L "$core_addon" ]]; then
 		rm -rf "$core_addon"
 	fi
 	if [[ ! -e "$core_addon" ]]; then
 		ln -s ../../addons/FoundryObservability "$core_addon"
+	fi
+	if [[ -d "$repo_root/addons/FoundryObservabilitySentry" ]]; then
+		if [[ -d "$sentry_addon" && ! -L "$sentry_addon" ]]; then
+			rm -rf "$sentry_addon"
+		fi
+		if [[ ! -e "$sentry_addon" ]]; then
+			ln -s ../../addons/FoundryObservabilitySentry "$sentry_addon"
+		fi
 	fi
 }
 
@@ -40,6 +57,12 @@ trap restore_test_addons EXIT
 if [[ -L "$core_addon" ]]; then
 	rm "$core_addon"
 	cp -R "$repo_root/addons/FoundryObservability" "$core_addon"
+fi
+if [[ -L "$sentry_addon" ]]; then
+	rm "$sentry_addon"
+	materialize_sentry_addon "$sentry_addon"
+elif [[ ! -e "$sentry_addon" ]]; then
+	materialize_sentry_addon "$sentry_addon"
 fi
 
 if [[ "${FOUNDRYOBSERVABILITY_SKIP_ANVIL_INSTALL:-0}" != "1" ]]; then

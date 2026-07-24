@@ -5,6 +5,8 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 addon="$repo_root/addons/FoundryObservability"
 project_dir="$repo_root/test_project"
 test_addon="$project_dir/addons/FoundryObservability"
+sentry_addon="$repo_root/addons/FoundryObservabilitySentry"
+test_sentry_addon="$project_dir/addons/FoundryObservabilitySentry"
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -31,6 +33,7 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/FoundryObservability.fs" ]] || fail "FoundryObservability.fs is missing"
 [[ -f "$addon/FoundryObservabilityApi.fs" ]] || fail "FoundryObservabilityApi.fs is missing"
 [[ -f "$addon/foundrylib/FoundryLibObservabilitySink.fs" ]] || fail "FoundryLib observability sink is missing"
+[[ -f "$sentry_addon/SentryObservabilityProvider.fs" ]] || fail "Sentry provider is missing"
 
 rg -q '^name="FoundryObservability"$' "$addon/plugin.cfg" \
 	|| fail "plugin.cfg has the wrong addon name"
@@ -67,12 +70,25 @@ if rg -n --glob '*.fs' 'GDScript|GDscript|Godot|\.gdextension|\.godot' "$addon";
 	fail "addon sources contain legacy engine names"
 fi
 
+materialize_sentry_addon() {
+	destination=$1
+	mkdir -p "$destination/bin/ios"
+	find "$sentry_addon" -maxdepth 1 -type f -exec cp {} "$destination/" \;
+	cp "$sentry_addon/bin/ios/.gitkeep" "$destination/bin/ios/"
+}
+
 restore_test_addons() {
 	if [[ -d "$test_addon" && ! -L "$test_addon" ]]; then
 		rm -rf "$test_addon"
 	fi
 	if [[ ! -e "$test_addon" ]]; then
 		ln -s ../../addons/FoundryObservability "$test_addon"
+	fi
+	if [[ -d "$test_sentry_addon" && ! -L "$test_sentry_addon" ]]; then
+		rm -rf "$test_sentry_addon"
+	fi
+	if [[ ! -e "$test_sentry_addon" ]]; then
+		ln -s ../../addons/FoundryObservabilitySentry "$test_sentry_addon"
 	fi
 }
 
@@ -81,6 +97,12 @@ trap restore_test_addons EXIT
 if [[ -L "$test_addon" ]]; then
 	rm "$test_addon"
 	cp -R "$addon" "$test_addon"
+fi
+if [[ -L "$test_sentry_addon" ]]; then
+	rm "$test_sentry_addon"
+	materialize_sentry_addon "$test_sentry_addon"
+elif [[ ! -e "$test_sentry_addon" ]]; then
+	materialize_sentry_addon "$test_sentry_addon"
 fi
 
 foundry_bin=$(resolve_foundry_bin)
@@ -105,6 +127,13 @@ fi
 		--project "$project_dir" \
 		--fail-on=warning \
 		addons/FoundryObservability
+)
+(
+	cd "$project_dir"
+	"$foundry_bin" --headless script lint \
+		--project "$project_dir" \
+		--fail-on=warning \
+		addons/FoundryObservabilitySentry
 )
 
 echo "FoundryScript contract checks passed"

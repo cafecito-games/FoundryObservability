@@ -10,7 +10,9 @@ fail() {
 
 command -v unzip >/dev/null 2>&1 || fail "unzip is required"
 archive=$("$repo_root/scripts/package-addon")
+sentry_archive=$("$repo_root/scripts/package-sentry-addon")
 listing=$(unzip -Z1 "$archive")
+sentry_listing=$(unzip -Z1 "$sentry_archive")
 
 grep -qx 'addons/FoundryObservability/plugin.cfg' <<<"$listing" \
 	|| fail "package is missing plugin.cfg"
@@ -37,4 +39,28 @@ done < <(
 	find "$repo_root/addons/FoundryObservability" -type f -name '*.fs' | sort
 )
 
-echo "Package contract checks passed: $archive"
+grep -qx 'addons/FoundryObservabilitySentry/plugin.cfg' <<<"$sentry_listing" \
+	|| fail "Sentry package is missing plugin.cfg"
+grep -qx 'addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs' <<<"$sentry_listing" \
+	|| fail "Sentry package is missing the FoundryScript provider"
+grep -qx 'addons/FoundryObservabilitySentry/FoundryObservabilitySentry.foundryextension' <<<"$sentry_listing" \
+	|| fail "Sentry package is missing the FoundryExtension descriptor"
+grep -qx 'addons/FoundryObservabilitySentry/bin/ios/.gitkeep' <<<"$sentry_listing" \
+	|| fail "Sentry package is missing the iOS artifact directory"
+
+if grep -q 'addons/FoundryObservabilitySentry/FoundryObservabilitySentry/' <<<"$sentry_listing"; then
+	fail "Sentry package contains SwiftPM source or generated project state"
+fi
+if rg -n '(^|/)(test_project|\.foundry|\.git|\.build|\.swiftpm|xcuserdata)(/|$)|\.DS_Store$' <<<"$sentry_listing"; then
+	fail "Sentry package contains repository or generated state"
+fi
+
+while IFS= read -r resource; do
+	relative=${resource#"$repo_root/"}
+	grep -qx "$relative.uid" <<<"$sentry_listing" \
+		|| fail "$relative.uid is missing from the Sentry package"
+done < <(
+	find "$repo_root/addons/FoundryObservabilitySentry" -maxdepth 1 -type f -name '*.fs' | sort
+)
+
+echo "Package contract checks passed: $archive and $sentry_archive"
