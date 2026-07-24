@@ -8,9 +8,11 @@ var configure_result: int = Error.OK
 var flush_result: int = Error.OK
 var configured_payload: Dictionary = {}
 var captured_payloads: Array[Dictionary] = []
+var captured_log_payloads: Array[Dictionary] = []
 var flush_timeouts: Array[int] = []
 var shutdown_count: int = 0
 var next_event_id: int = 1
+var next_log_id: int = 1
 
 
 func configure(payload: Dictionary) -> int:
@@ -26,6 +28,13 @@ func capture(payload: Dictionary) -> String:
 	captured_payloads.append(payload.duplicate(true))
 	var event_id: String = "sentry:%s" % next_event_id
 	next_event_id += 1
+	return event_id
+
+
+func captureLog(payload: Dictionary) -> String:
+	captured_log_payloads.append(payload.duplicate(true))
+	var event_id: String = "sentry-log:%s" % next_log_id
+	next_log_id += 1
 	return event_id
 
 

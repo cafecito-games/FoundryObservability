@@ -58,6 +58,9 @@ func configure(config: ObservabilityConfig) -> int:
 			"dist": config.dist,
 			"global_attributes": config.global_attributes(),
 			"provider_options": options,
+			"logs_enabled": config.logs_enabled,
+			"log_minimum_level": config.log_minimum_level,
+			"log_rate_limit_per_second": config.log_rate_limit_per_second,
 		}
 	var result: Variant = bridge.call("configure", payload)
 	if not (result is int):
@@ -83,7 +86,7 @@ func capture(event: ObservabilityEvent) -> String:
 			"message": event.message(),
 			"source": String(event.source()),
 			"timestamp_msec": event.timestamp_msec(),
-			"attributes": event.attributes(),
+				"attributes": event.attributes(),
 		}
 	var exception: ObservabilityException? = event.exception()
 	if exception != null:
@@ -93,7 +96,12 @@ func capture(event: ObservabilityEvent) -> String:
 				"stack_trace": exception.stack_trace(),
 				"attributes": exception.attributes(),
 			}
-	return str(bridge.call("capture", payload))
+	var method: String = "capture"
+	if event.kind() == &"log":
+		method = "captureLog"
+		if not bridge.has_method(method):
+			return ""
+	return str(bridge.call(method, payload))
 
 
 ## Flushes native Sentry work within the requested timeout.
