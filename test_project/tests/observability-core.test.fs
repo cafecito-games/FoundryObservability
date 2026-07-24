@@ -94,6 +94,161 @@ func test_metric_types_and_value_copy_attributes() -> void:
 		})
 
 
+func test_metric_convenience_methods_store_normalized_payloads() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {"build": 42, "shared": "global"},
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_counter(
+			"match.started", 2, {"shared": "metric"},
+		)).to_be_true()
+	Expect.that(service.capture_gauge(
+			"players.active", 7.0, "player",
+		)).to_be_true()
+	Expect.that(service.capture_distribution(
+			"match.duration", 125.5, "millisecond", {"region": "iad"},
+		)).to_be_true()
+
+	Expect.that(provider.metrics()).to_have_size(3)
+	Expect.that(provider.metrics()[0].type()).to_equal(ObservabilityMetricType.COUNTER)
+	Expect.that(provider.metrics()[0].attributes()).to_equal({
+			"build": 42, "shared": "metric",
+		})
+	Expect.that(provider.metrics()[1].type()).to_equal(ObservabilityMetricType.GAUGE)
+	Expect.that(provider.metrics()[2].type()).to_equal(ObservabilityMetricType.DISTRIBUTION)
+	Expect.that(provider.metrics()[2].unit()).to_equal("millisecond")
+	service.shutdown()
+
+
+func test_metrics_reject_invalid_names_values_units_and_attributes() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+
+	Expect.that(service.capture_counter("", 1)).to_be_false()
+	Expect.that(service.capture_counter(" padded", 1)).to_be_false()
+	Expect.that(service.capture_counter(_repeated("x", 201), 1)).to_be_false()
+	Expect.that(service.capture_counter("match.started", -1)).to_be_false()
+	Expect.that(service.capture_gauge("players.active", NAN)).to_be_false()
+	Expect.that(service.capture_distribution("match.duration", INF)).to_be_false()
+	Expect.that(service.capture_gauge("players.active", 1.0, "player count")).to_be_false()
+	Expect.that(service.capture_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.COUNTER,
+			p_name = "match.started",
+			p_value = 1.0,
+			p_unit = "item",
+		))).to_be_false()
+	Expect.that(service.capture_counter(
+			"match.started", 1, {"nested": {"unsupported": true}},
+		)).to_be_false()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {42: "unsupported key"},
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_counter("match.started")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(provider.metrics()).to_have_size(0)
+	Expect.that(service.capture_message("events still work")).to_equal("memory:1")
+	service.shutdown()
+
+
+func test_metrics_honor_disabled_configuration_and_filter() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_metrics_enabled = false,
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_counter("combat.hit")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(provider.metrics()).to_have_size(0)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_metric_filter = Callable(self, "_keep_combat_metric"),
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_counter("menu.opened")).to_be_false()
+	Expect.that(service.capture_counter("combat.hit")).to_be_true()
+	Expect.that(provider.metrics()).to_have_size(1)
+	service.shutdown()
+
+
+func test_metrics_apply_deterministic_sampling_after_filtering() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_metric_sample_rate = 0.25,
+		))).to_equal(Error.OK)
+
+	for index: int in range(8):
+		service.capture_counter("sampled.metric", index + 1)
+
+	Expect.that(provider.metrics()).to_have_size(2)
+	Expect.that(provider.metrics()[0].value()).to_equal(4.0)
+	Expect.that(provider.metrics()[1].value()).to_equal(8.0)
+	service.shutdown()
+
+
+func test_metricless_provider_keeps_event_capture_operational() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MetriclessObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+
+	Expect.that(service.capture_counter("unsupported.metric")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(service.capture_message("ordinary event")).to_equal("metricless:1")
+	service.shutdown()
+
+
+func test_metrics_do_not_affect_events_feedback_logs_or_flush() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_log_rate_limit_per_second = 1,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_counter("match.started")).to_be_true()
+	Expect.that(service.capture_log(
+			"first", ObservabilityLevel.INFO, &"game", 1000,
+		)).to_equal("memory:1")
+	Expect.that(service.capture_log(
+			"dropped", ObservabilityLevel.INFO, &"game", 1000,
+		)).to_equal("")
+	Expect.that(service.capture_feedback(ObservabilityFeedback.new(
+			p_message = "feedback",
+		))).to_equal("memory-feedback:1")
+	Expect.that(provider.metrics()).to_have_size(1)
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.feedback()).to_have_size(1)
+	Expect.that(service.flush(321)).to_equal(Error.OK)
+	Expect.that(provider.last_flush_timeout_msec).to_equal(321)
+	service.shutdown()
+
+
+func test_invalid_metric_configuration_keeps_active_provider() -> void:
+	var service: FoundryObservability = _service()
+	var working := MemoryObservabilityProvider.new()
+	var candidate := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(working, ObservabilityConfig.new())).to_equal(Error.OK)
+
+	Expect.that(service.configure(candidate, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_metric_sample_rate = 1.5,
+		))).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.capture_message("still active")).to_equal("memory:1")
+	Expect.that(working.events()).to_have_size(1)
+	Expect.that(candidate.events()).to_have_size(0)
+	service.shutdown()
+
+
 func test_default_null_provider_is_safe() -> void:
 	var service: FoundryObservability = _service()
 
@@ -418,3 +573,7 @@ func _repeated(value: String, count: int) -> String:
 	for _index in range(count):
 		result += value
 	return result
+
+
+func _keep_combat_metric(metric: ObservabilityMetric) -> bool:
+	return metric.name().begins_with("combat.")

@@ -29,6 +29,14 @@ abstract func capture_log(
 ) -> String
 ## Captures explicit player feedback and returns a provider ID, or an empty string on no-op/failure.
 abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
+## Captures a normalized custom metric and reports whether a provider accepted it.
+abstract func capture_metric(metric: ObservabilityMetric) -> bool
+## Creates and captures a counter metric.
+abstract func capture_counter(metric_name: String, value: int = 1, attributes: Dictionary = {}) -> bool
+## Creates and captures a gauge metric.
+abstract func capture_gauge(metric_name: String, value: float, unit: String = "", attributes: Dictionary = {}) -> bool
+## Creates and captures a distribution metric.
+abstract func capture_distribution(metric_name: String, value: float, unit: String = "", attributes: Dictionary = {}) -> bool
 ## Flushes pending work within timeout_msec and returns an Error value.
 abstract func flush(timeout_msec: int = 2000) -> int
 ## Flushes and shuts down the service; repeated calls are safe.
