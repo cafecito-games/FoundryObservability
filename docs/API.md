@@ -15,8 +15,8 @@ addons/FoundryObservability directory. Enable the FoundryObservability editor
 plugin. The plugin registers the FoundryObservability autoload.
 
 The addon currently requires FoundryLib because its core package includes the
-FoundryLib LogSink adapter. The first production backend, Sentry, is not part
-of this release.
+FoundryLib LogSink adapter. The optional FoundryObservabilitySentry sibling
+addon provides the first production backend for Apple and Android exports.
 
 The smallest setup is:
 
@@ -126,6 +126,9 @@ ObservabilityConfig.new(
 		p_dist: String = "",
 		p_global_attributes: Dictionary = {},
 		p_provider_options: Dictionary = {},
+		p_logs_enabled: bool = true,
+		p_log_minimum_level: int = ObservabilityLevel.TRACE,
+		p_log_rate_limit_per_second: int = 0,
 )
 ~~~
 
@@ -137,6 +140,9 @@ Public fields:
 | environment | String | Deployment environment such as production or staging |
 | release | String | Game release identifier |
 | dist | String | Optional distribution variant |
+| logs_enabled | bool | Whether structured logs are accepted; enabled by default |
+| log_minimum_level | int | Lowest structured-log severity accepted; TRACE by default |
+| log_rate_limit_per_second | int | Maximum accepted logs per timestamp second; zero means unlimited |
 
 Accessors:
 
@@ -148,6 +154,13 @@ func provider_options() -> Dictionary
 Both accessors return deep copies. global_attributes are shared metadata for a
 provider integration. provider_options are opaque to the core and are passed
 to provider implementations through the config object.
+
+Structured logs are enabled by default independently of messages and
+exceptions. The core applies log_minimum_level and log_rate_limit_per_second
+before dispatch. The rate limit uses each record's timestamp_msec in a fixed
+one-second window; a zero limit is unlimited. A disabled log configuration or a
+record below the configured level returns an empty ID without calling the
+provider.
 
 A null config passed to FoundryObservability.configure is replaced with a
 disabled ObservabilityConfig.
@@ -272,6 +285,7 @@ abstract func provider_name() -> StringName
 abstract func last_error() -> int
 abstract func capture_event(event: ObservabilityEvent) -> String
 abstract func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String
+abstract func capture_log(message: String, level: int = ObservabilityLevel.INFO, source: StringName = &"game", timestamp_msec: int = -1, attributes: Dictionary = {}) -> String
 abstract func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String
 abstract func flush(timeout_msec: int = 2000) -> int
 abstract func shutdown() -> void
@@ -369,6 +383,40 @@ var event_id: String = FoundryObservability.capture_message(
 		{"arena": "north"},
 )
 ~~~
+
+### capture_log
+
+~~~
+func capture_log(
+		message: String,
+		level: int = ObservabilityLevel.INFO,
+		source: StringName = &"game",
+		timestamp_msec: int = -1,
+		attributes: Dictionary = {},
+) -> String
+~~~
+
+Creates a first-class structured log record. It preserves the supplied source,
+timestamp, level, and scalar attributes, and applies global attributes from
+ObservabilityConfig before dispatch. A timestamp of -1 uses the current engine
+tick count. Log records remain distinct from message and exception events.
+
+Example:
+
+~~~
+import foundry.observability
+
+FoundryObservability.capture_log(
+		"match started",
+		ObservabilityLevel.INFO,
+		&"matchmaking",
+		-1,
+		{"region": "iad", "party_size": 4},
+)
+~~~
+
+Providers that do not support structured logs may safely return an empty ID;
+the service records the failed capture status when the provider is enabled.
 
 ### capture_exception
 
@@ -492,7 +540,7 @@ FoundryLibObservabilitySink.new(
 ~~~
 
 emit filters records below minimum_level or when its target service is null.
-Eligible records become log events with:
+Eligible records are sent through FoundryObservability.capture_log() with:
 
 | Field | Value |
 | --- | --- |
@@ -519,6 +567,22 @@ Level mapping:
 flush forwards to FoundryObservability.flush() with its default timeout.
 Provider failures are stored in the service status API and are not emitted
 through FoundryLib, preventing recursive error reporting.
+
+## Sentry structured-log delivery
+
+The optional `FoundryObservabilitySentry` addon maps `kind = log` records to
+the native structured logging API of the pinned Sentry SDK instead of ordinary
+error events. Apple uses Sentry Cocoa 9.23.0 and enables `SentrySDK.logger`;
+Android uses Sentry Android 8.50.1 and enables `Sentry.logger()` through
+`SentryLogParameters` and `SentryAttributes.fromMap`. Both bridges preserve
+the normalized level, message, source, timestamp, global attributes, and
+per-record scalar attributes. Reserved metadata is also available as
+`foundry.kind`, `foundry.source`, and `foundry.timestamp_msec` attributes.
+
+The Sentry SDK owns batching and delivery queues; `FoundryObservability.flush()`
+forwards to the native bridge. Native support is detected at capture time, so
+an older or incomplete bridge safely no-ops structured logs while ordinary
+messages and exceptions continue using the regular event path.
 
 ## Custom provider outline
 
@@ -561,4 +625,6 @@ interpret them.
 
 This core API does not include Sentry, Apple/Android native bindings, crash
 handlers, persistence, retries, user identity, breadcrumbs, attachments, or
-performance transactions. A foundry-cpp project is not required by this API.
+performance transactions. The optional Sentry sibling addon contains its
+native bindings and structured-log delivery. A foundry-cpp project is not
+required by this API.

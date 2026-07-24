@@ -11,6 +11,8 @@ The first core slice is available now:
 - Typed messages, exceptions, events, configuration, and severity levels.
 - A null provider by default and an in-memory provider for tests and local work.
 - Provider replacement, flush, failure reporting, and idempotent shutdown.
+- First-class structured logs with level filtering, optional rate limiting, and
+  global/per-record scalar attributes.
 - A FoundryLib `LogSink` adapter included in the core addon.
 - An optional `FoundryObservabilitySentry` provider addon backed by
   Foundry-Swift/Sentry Cocoa on Apple platforms and Sentry Android on Android.
@@ -52,6 +54,13 @@ var config := ObservabilityConfig.new(
 var provider: ObservabilityProvider = MemoryObservabilityProvider.new()
 FoundryObservability.configure(provider, config)
 FoundryObservability.capture_message("game started")
+FoundryObservability.capture_log(
+		"match started",
+		ObservabilityLevel.INFO,
+		&"matchmaking",
+		-1,
+		{"region": "iad"},
+)
 ```
 
 `MemoryObservabilityProvider` is intended for tests and local integration work.

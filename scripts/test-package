@@ -8,6 +8,13 @@ fail() {
 	exit 1
 }
 
+rg -q 'capture_log' "$repo_root/docs/API.md" \
+	|| fail "API docs are missing capture_log"
+rg -q 'logs_enabled' "$repo_root/docs/API.md" \
+	|| fail "API docs are missing logs_enabled"
+rg -q 'Apple.*Android|Android.*Apple' "$repo_root/docs/API.md" \
+	|| fail "API docs are missing Apple and Android provider behavior"
+
 command -v unzip >/dev/null 2>&1 || fail "unzip is required"
 archive=$("$repo_root/scripts/package-addon")
 sentry_archive=$("$repo_root/scripts/package-sentry-addon")
