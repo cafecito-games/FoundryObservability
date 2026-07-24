@@ -57,6 +57,16 @@ rg -q '@Foundry' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose a Foundry class"
 rg -q '@Callable' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose callable bridge methods"
+rg -q 'captureLog' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge source must expose structured log capture"
+rg -q 'enableLogs' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge source must configure Sentry Logs"
+rg -q 'SentrySDK\.logger' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge source must use the Sentry structured logger"
+for level in trace debug info warn error fatal; do
+	rg -q "SentrySDK\.logger\.${level}" "$swift_sources/FoundryObservabilitySentry.swift" \
+		|| fail "bridge source is missing the ${level} structured log mapping"
+done
 
 for variant in ios.debug ios.release ios.simulator.debug ios.simulator.release; do
 	rg -q "^${variant}[[:space:]]*=" "$descriptor" \
