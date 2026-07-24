@@ -44,6 +44,8 @@ func configure(config: ObservabilityConfig) -> int:
 	var bridge: Object? = _resolve_bridge()
 	if config.enabled and bridge == null:
 		return Error.FAILED
+	if config.enabled and config.logs_enabled and (bridge == null or not bridge.has_method("captureLog")):
+		return Error.FAILED
 
 	_enabled = false
 	_shutdown = false

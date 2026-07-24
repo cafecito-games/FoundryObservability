@@ -116,17 +116,32 @@ func test_routes_log_events_to_native_structured_log_method() -> void:
 	provider.shutdown()
 
 
-func test_structured_log_is_safe_when_bridge_does_not_support_it() -> void:
+func test_rejects_bridge_without_structured_log_method() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = EventOnlySentryBridge.new())
 	Expect.that(provider.configure(ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.OK)
+		))).to_equal(Error.FAILED)
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_kind = &"log",
 			p_message = "unsupported",
 		))).to_equal("")
 	provider.shutdown()
+
+
+func test_service_reports_structured_log_bridge_mismatch() -> void:
+	var service: FoundryObservability = _service()
+	var provider := SentryObservabilityProvider.new(p_bridge = EventOnlySentryBridge.new())
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		))).to_equal(Error.FAILED)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	Expect.that(service.capture_log("unsupported")).to_equal("")
+	provider.shutdown()
+	service.shutdown()
 
 
 func test_shutdown_is_idempotent() -> void:
@@ -141,3 +156,8 @@ func test_shutdown_is_idempotent() -> void:
 	provider.shutdown()
 
 	Expect.that(bridge.shutdown_count).to_equal(1)
+
+
+func _service() -> FoundryObservability:
+	var tree: SceneTree = Engine.get_main_loop() as SceneTree
+	return tree.root.get_node("FoundryObservability") as FoundryObservability

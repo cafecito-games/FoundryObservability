@@ -88,10 +88,10 @@ record timestamp. No second manual adapter is required.
 ### Sentry FoundryScript provider
 
 The provider forwards `logs_enabled` and the log configuration in the normal
-configuration payload. For a `log` event it calls `captureLog` when the bridge
-exposes that method. A missing method is treated as unsupported capability and
-returns an empty ID safely. Existing `capture`, `flush`, and shutdown behavior
-is unchanged.
+configuration payload. When structured logs are enabled, configuration fails
+if the bridge does not expose `captureLog`. For a `log` event it calls that
+method directly. Existing `capture`, `flush`, and shutdown behavior is
+unchanged; no legacy event fallback is retained.
 
 ### Apple bridge
 
