@@ -2,7 +2,7 @@ namespace foundry.observability.sentry
 
 import foundry.observability
 
-## FoundryScript adapter for the optional iOS Sentry native bridge.
+## FoundryScript adapter for the optional cross-platform Sentry native bridge.
 class_name SentryObservabilityProvider
 extends RefCounted
 uses ObservabilityProvider
@@ -120,6 +120,9 @@ func shutdown() -> void:
 
 func _resolve_bridge() -> Object?:
 	if _bridge != null:
+		return _bridge
+	if Engine.has_singleton(_NATIVE_CLASS):
+		_bridge = Engine.get_singleton(_NATIVE_CLASS)
 		return _bridge
 	if not ClassDB.class_exists(_NATIVE_CLASS) or not ClassDB.can_instantiate(_NATIVE_CLASS):
 		return null

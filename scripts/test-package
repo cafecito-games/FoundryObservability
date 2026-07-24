@@ -47,6 +47,14 @@ grep -qx 'addons/FoundryObservabilitySentry/FoundryObservabilitySentry.foundryex
 	|| fail "Sentry package is missing the FoundryExtension descriptor"
 grep -qx 'addons/FoundryObservabilitySentry/bin/ios/.gitkeep' <<<"$sentry_listing" \
 	|| fail "Sentry package is missing the iOS artifact directory"
+grep -qx 'addons/FoundryObservabilitySentry/bin/macos_arm64/.gitkeep' <<<"$sentry_listing" \
+	|| fail "Sentry package is missing the macOS artifact directory"
+grep -qx 'addons/FoundryObservabilitySentry/bin/android/debug/.gitkeep' <<<"$sentry_listing" \
+	|| fail "Sentry package is missing the Android debug artifact directory"
+grep -qx 'addons/FoundryObservabilitySentry/bin/android/release/.gitkeep' <<<"$sentry_listing" \
+	|| fail "Sentry package is missing the Android release artifact directory"
+grep -qx 'addons/FoundryObservabilitySentry/android-dependencies.txt' <<<"$sentry_listing" \
+	|| fail "Sentry package is missing Android dependency coordinates"
 
 if grep -q 'addons/FoundryObservabilitySentry/FoundryObservabilitySentry/' <<<"$sentry_listing"; then
 	fail "Sentry package contains SwiftPM source or generated project state"

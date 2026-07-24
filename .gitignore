@@ -17,6 +17,12 @@ test_project/vest.log
 **/xcuserdata/
 **/DerivedData/
 addons/FoundryObservabilitySentry/bin/ios/*.xcframework/
+addons/FoundryObservabilitySentry/bin/macos_arm64/*.framework/
+addons/FoundryObservabilitySentry/bin/android/debug/*.aar
+addons/FoundryObservabilitySentry/bin/android/release/*.aar
+addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/.gradle/
+addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/build/
+addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/local.properties
 .task/
 dist/
 .venv/

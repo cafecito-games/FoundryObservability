@@ -17,10 +17,13 @@ fail() {
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundryobservability-sentry-package.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
-mkdir -p "$tmp_dir/addons/FoundryObservabilitySentry/bin/ios"
-
+mkdir -p "$tmp_dir/addons/FoundryObservabilitySentry"
 find "$sentry_source" -maxdepth 1 -type f -exec cp {} "$tmp_dir/addons/FoundryObservabilitySentry/" \;
-cp -R "$sentry_source/bin/ios/." "$tmp_dir/addons/FoundryObservabilitySentry/bin/ios/"
+for artifact_dir in ios macos_arm64 android/debug android/release; do
+	mkdir -p "$tmp_dir/addons/FoundryObservabilitySentry/bin/$artifact_dir"
+	cp -R "$sentry_source/bin/$artifact_dir/." \
+		"$tmp_dir/addons/FoundryObservabilitySentry/bin/$artifact_dir/"
+done
 
 if [[ "$version" != "$source_version" ]]; then
 	awk -v version="$version" '

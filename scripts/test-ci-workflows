@@ -23,14 +23,14 @@ foundry_script_test_line=$(awk '/^[[:space:]]+- task: test:foundry-script$/{ pri
 	|| fail "Taskfile.yml must install project packages before FoundryScript lint"
 
 for workflow in "$pr_workflow" "$release_workflow"; do
-	rg -q 'actions/checkout@v7([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/checkout@v7"
-	rg -q 'actions/setup-python@v7([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/setup-python@v7"
-	rg -q 'actions/setup-go@v7([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/setup-go@v7"
-	rg -q 'go-task/setup-task@v2([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use go-task/setup-task@v2"
+	rg -q 'actions/checkout@v7\.0\.1([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/checkout@v7.0.1"
+	rg -q 'actions/setup-python@v7\.0\.0([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/setup-python@v7.0.0"
+	rg -q 'actions/setup-go@v7\.0\.0([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/setup-go@v7.0.0"
+	rg -q 'go-task/setup-task@v2\.1\.0([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use go-task/setup-task@v2.1.0"
 	rg -q 'v0\.1\.0-alpha\.7' "$workflow" \
 		|| fail "$(basename "$workflow") must pin Foundry v0.1.0-alpha.7"
 	rg -q 'project import --project' "$workflow" \
@@ -54,5 +54,21 @@ rg -q 'GITHUB_OUTPUT' "$release_workflow" \
 	|| fail "release workflow must compute its version through GITHUB_OUTPUT"
 rg -q 'gh release create' "$release_workflow" \
 	|| fail "release workflow must publish a GitHub release"
+
+rg -q '^  build-android:' "$pr_workflow" \
+	|| fail "pull-request workflow must build the Android Sentry addon"
+
+rg -q 'actions/setup-java@v5\.6\.0([[:space:]]|$)' "$pr_workflow" \
+	|| fail "pull-request workflow must set up Java 17 for Android"
+rg -q 'android-actions/setup-android@v4\.0\.1([[:space:]]|$)' "$pr_workflow" \
+	|| fail "pull-request workflow must set up the Android SDK"
+rg -q "java-version: ['\"]?17['\"]?" "$pr_workflow" \
+	|| fail "pull-request workflow must use Java 17 for Android"
+rg -q 'sdkmanager --licenses' "$pr_workflow" \
+	|| fail "pull-request workflow must accept Android SDK licenses"
+rg -q 'platforms;android-36' "$pr_workflow" \
+	|| fail "pull-request workflow must install Android SDK Platform 36"
+rg -q 'task android:sentry' "$pr_workflow" \
+	|| fail "pull-request workflow must build the Android Sentry AARs"
 
 echo "CI workflow contract checks passed"

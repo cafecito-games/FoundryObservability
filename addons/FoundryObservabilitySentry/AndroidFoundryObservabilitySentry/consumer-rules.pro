@@ -1,0 +1,1 @@
+# FoundryObservabilitySentry consumer rules.

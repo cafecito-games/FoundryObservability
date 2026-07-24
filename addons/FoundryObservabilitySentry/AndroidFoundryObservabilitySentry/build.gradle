@@ -1,0 +1,56 @@
+plugins {
+    id 'com.android.library' version '8.13.2'
+}
+
+repositories {
+    google()
+    mavenCentral()
+    maven { url 'https://central.sonatype.com/repository/maven-snapshots/' }
+}
+
+def runtimeDependencies = file('../android-dependencies.txt')
+    .readLines()
+    .collect { it.trim() }
+    .findAll { line -> line && !line.startsWith('#') }
+
+android {
+    namespace 'games.cafecito.android.foundryobservabilitysentry'
+    compileSdk 36
+
+    defaultConfig {
+        minSdk 24
+        targetSdk 36
+        consumerProguardFiles 'consumer-rules.pro'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        abortOnError true
+    }
+
+    testOptions {
+        unitTests.includeAndroidResources = true
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    compileOnly "games.cafecito.foundry:foundry:0.1.0-alpha3-SNAPSHOT"
+    compileOnly "games.cafecito.foundry:foundry-debug:0.1.0-alpha3-SNAPSHOT"
+    compileOnly "games.cafecito.foundry:foundry-tools:0.1.0-alpha3-SNAPSHOT"
+    runtimeDependencies.each { coordinate -> implementation coordinate }
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation "games.cafecito.foundry:foundry:0.1.0-alpha3-SNAPSHOT"
+    testImplementation "games.cafecito.foundry:foundry-debug:0.1.0-alpha3-SNAPSHOT"
+    testImplementation "games.cafecito.foundry:foundry-tools:0.1.0-alpha3-SNAPSHOT"
+    testImplementation 'org.robolectric:robolectric:4.14.1'
+}

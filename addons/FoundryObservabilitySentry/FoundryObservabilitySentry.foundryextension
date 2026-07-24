@@ -7,9 +7,11 @@ ios.debug = "res://addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilit
 ios.release = "res://addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework"
 ios.simulator.debug = "res://addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework"
 ios.simulator.release = "res://addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework"
+macos.arm64 = "res://addons/FoundryObservabilitySentry/bin/macos_arm64/FoundryObservabilitySentry.framework"
 
 [dependencies]
 ios.debug = {}
 ios.release = {}
 ios.simulator.debug = {}
 ios.simulator.release = {}
+macos.arm64 = {}

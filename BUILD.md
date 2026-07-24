@@ -7,6 +7,7 @@
 - Task
 - Python 3.12+ with the dependencies in `requirements.txt`
 - Xcode 15+, Swift 6, and XcodeGen
+- Java 17 and Android SDK Platform 36
 - GitHub CLI (`gh`) authenticated for Foundry-Swift release downloads
 - `jq`, `prek`, `ripgrep`, `zip`, and `unzip`
 
@@ -28,10 +29,12 @@ task test:project
 task test:ci
 task test:package
 task test:sentry-swift
+scripts/test-sentry-android-build-contract
 task test
 task package
 task package:sentry
 task ios:sentry
+task android:sentry
 ```
 
 `task test:project` installs the packages declared in
@@ -47,8 +50,10 @@ exactly this runtime payload:
 - `addons/FoundryObservability`
 
 The Sentry archive contains the runtime `FoundryObservabilitySentry` addon and
-the built iOS xcframework, but not the Swift source or generated Xcode project.
-Run `task ios:sentry` first when rebuilding the native artifact. That task
+any built artifacts under `bin/ios`, `bin/macos_arm64`, and `bin/android`, but
+not the Swift source, Android source module, or generated native project state.
+Run `task ios:sentry` to build the iOS and macOS Apple artifacts and
+`task android:sentry` to build the Android debug/release AARs. The Apple task
 downloads and checksum-verifies the prebuilt Foundry-Swift alpha.2 framework
 and macro artifact into derived data, then compiles only the Sentry bridge.
 
