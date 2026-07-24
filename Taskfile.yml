@@ -43,6 +43,11 @@ tasks:
     cmds:
       - scripts/test-sentry-ios-build-contract
 
+  test:sentry-android-contract:
+    desc: Validate Sentry Android build and export contracts
+    cmds:
+      - scripts/test-sentry-android-build-contract
+
   test:
     desc: Run all local validation gates
     deps:
@@ -51,6 +56,7 @@ tasks:
       - test:package
       - test:sentry-swift
       - test:sentry-contract
+      - test:sentry-android-contract
     cmds:
       - task: test:project
       - task: test:foundry-script
@@ -101,3 +107,23 @@ tasks:
           -framework "{{.DERIVED_DATA}}/Build/Products/Release-iphoneos/FoundryObservabilitySentry.framework"
           -framework "{{.DERIVED_DATA}}/Build/Products/Release-iphonesimulator/FoundryObservabilitySentry.framework"
           -output ../bin/ios/FoundryObservabilitySentry.xcframework
+      - xcodebuild build
+          -scheme FoundryObservabilitySentry_macOS
+          -destination "generic/platform=macOS"
+          -configuration Release
+          -derivedDataPath "{{.DERIVED_DATA}}"
+          -skipPackagePluginValidation -skipMacroValidation
+          ARCHS=arm64
+      - mkdir -p ../bin/macos_arm64
+      - rm -rf ../bin/macos_arm64/FoundryObservabilitySentry.framework
+      - cp -R "{{.DERIVED_DATA}}/Build/Products/Release/FoundryObservabilitySentry.framework"
+          ../bin/macos_arm64/
+
+  android:sentry:
+    desc: Build FoundryObservabilitySentry Android AARs
+    dir: addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry
+    cmds:
+      - ./gradlew test lintRelease assembleDebug assembleRelease
+      - mkdir -p ../bin/android/debug ../bin/android/release
+      - cp build/outputs/aar/AndroidFoundryObservabilitySentry-debug.aar ../bin/android/debug/FoundryObservabilitySentry-debug.aar
+      - cp build/outputs/aar/AndroidFoundryObservabilitySentry-release.aar ../bin/android/release/FoundryObservabilitySentry-release.aar

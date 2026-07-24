@@ -40,4 +40,18 @@ rg -q 'Sentry\.captureEvent' "$bridge_source" || fail "bridge must capture Sentr
 rg -q 'Sentry\.flush' "$bridge_source" || fail "bridge must flush Sentry events"
 rg -q 'Sentry\.close' "$bridge_source" || fail "bridge must close Sentry"
 
+export_plugin="$repo_root/addons/FoundryObservabilitySentry/export_plugin.fs"
+rg -q '_get_android_libraries' "$export_plugin" \
+	|| fail "export plugin must add Android AARs"
+rg -q '_get_android_dependencies' "$export_plugin" \
+	|| fail "export plugin must add Android dependencies"
+rg -q 'get_os_name\(\) == "Android"' "$export_plugin" \
+	|| fail "Android export plugin must be Android-only"
+rg -q 'FoundryObservabilitySentry-debug\.aar' "$export_plugin" \
+	|| fail "debug AAR path is missing"
+rg -q 'FoundryObservabilitySentry-release\.aar' "$export_plugin" \
+	|| fail "release AAR path is missing"
+rg -q 'android-dependencies\.txt' "$export_plugin" \
+	|| fail "Android dependency file is missing"
+
 echo "Sentry Android resolver contract checks passed"

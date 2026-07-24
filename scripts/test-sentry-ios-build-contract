@@ -72,4 +72,13 @@ fi
 rg -q 'get_os_name\(\) == "iOS"' "$export_plugin" \
 	|| fail "Sentry export plugin must be iOS-only"
 
+rg -q '^macos\.arm64[[:space:]]*=' "$descriptor" \
+	|| fail "descriptor must declare macOS arm64"
+rg -q '^macos\.arm64[[:space:]]*=[[:space:]]*\{\}' "$descriptor" \
+	|| fail "macOS dependencies must be an empty map"
+rg -q 'generic/platform=macOS' "$taskfile" \
+	|| fail "Taskfile must build a macOS framework"
+rg -q 'bin/macos_arm64/FoundryObservabilitySentry\.framework' "$taskfile" \
+	|| fail "Taskfile must copy the macOS framework"
+
 echo "Sentry iOS build contract tests passed"
