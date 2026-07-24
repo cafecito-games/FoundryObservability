@@ -6,7 +6,7 @@
 
 **Architecture:** Keep `FoundryObservability` provider-neutral. Add a sibling addon whose FoundryScript provider forwards normalized dictionaries to a `SentryObservabilityBridge` native class. Build the native class as an iOS device/simulator xcframework; link the prebuilt FoundrySwift artifacts from `Foundry-Swift-Binary` and keep the shared FoundrySwift runtime supplied by its sibling addon.
 
-**Tech Stack:** FoundryScript, Foundry testlib, Swift 6, Foundry-Swift-Binary `0.1.0-alpha.2`, Sentry Cocoa `9.13.0`, XcodeGen, XCTest, Task, shell contract tests.
+**Tech Stack:** FoundryScript, Foundry testlib, Swift 6, Foundry-Swift-Binary `0.1.0-alpha.2`, Sentry Cocoa `9.23.0`, XcodeGen, XCTest, Task, shell contract tests.
 
 ---
 
@@ -271,7 +271,7 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [.library(name: "FoundryObservabilitySentry", type: .dynamic, targets: ["FoundryObservabilitySentry"])],
     dependencies: [
-        .package(url: "https://github.com/getsentry/sentry-cocoa.git", exact: "9.13.0"),
+        .package(url: "https://github.com/getsentry/sentry-cocoa.git", exact: "9.23.0"),
     ],
     targets: [
         .target(name: "FoundryObservabilitySentry", dependencies: [

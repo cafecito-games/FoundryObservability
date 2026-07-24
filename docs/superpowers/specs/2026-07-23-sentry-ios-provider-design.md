@@ -213,7 +213,7 @@ only the Sentry xcframework to iOS exports.
 The Swift package uses:
 
 - `Foundry-Swift-Binary` exact `0.1.0-alpha.2` for the shared Foundry bindings.
-- `getsentry/sentry-cocoa` exact `9.13.0` for the Sentry SDK.
+- `getsentry/sentry-cocoa` exact `9.23.0` for the Sentry SDK.
 - Swift language mode 6.
 - iOS deployment target 17.0, matching the FoundrySwift binary and migration
   reference.

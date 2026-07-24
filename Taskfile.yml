@@ -47,12 +47,13 @@ tasks:
     desc: Run all local validation gates
     deps:
       - lint
-      - test:foundry-script
-      - test:project
       - test:ci
       - test:package
       - test:sentry-swift
       - test:sentry-contract
+    cmds:
+      - task: test:foundry-script
+      - task: test:project
 
   package:
     desc: Create distributable FoundryObservability addon zips
@@ -76,6 +77,10 @@ tasks:
           ../../../scripts/prepare-foundryswift-binary
       - xcodebuild -resolvePackageDependencies
           -scheme FoundryObservabilitySentry_iOS
+          -derivedDataPath "{{.DERIVED_DATA}}"
+      - xcodebuild clean
+          -scheme FoundryObservabilitySentry_iOS
+          -configuration Release
           -derivedDataPath "{{.DERIVED_DATA}}"
       - mkdir -p ../bin/ios
       - xcodebuild build

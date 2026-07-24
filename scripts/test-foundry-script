@@ -70,6 +70,13 @@ if rg -n --glob '*.fs' 'GDScript|GDscript|Godot|\.gdextension|\.godot' "$addon";
 	fail "addon sources contain legacy engine names"
 fi
 
+materialize_sentry_addon() {
+	destination=$1
+	mkdir -p "$destination/bin/ios"
+	find "$sentry_addon" -maxdepth 1 -type f -exec cp {} "$destination/" \;
+	cp "$sentry_addon/bin/ios/.gitkeep" "$destination/bin/ios/"
+}
+
 restore_test_addons() {
 	if [[ -d "$test_addon" && ! -L "$test_addon" ]]; then
 		rm -rf "$test_addon"
@@ -93,7 +100,7 @@ if [[ -L "$test_addon" ]]; then
 fi
 if [[ -L "$test_sentry_addon" ]]; then
 	rm "$test_sentry_addon"
-	cp -R "$sentry_addon" "$test_sentry_addon"
+	materialize_sentry_addon "$test_sentry_addon"
 fi
 
 foundry_bin=$(resolve_foundry_bin)

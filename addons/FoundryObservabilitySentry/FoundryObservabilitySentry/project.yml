@@ -10,7 +10,7 @@ packages:
     exactVersion: 0.1.0-alpha.2
   Sentry:
     url: https://github.com/getsentry/sentry-cocoa.git
-    exactVersion: 9.13.0
+    exactVersion: 9.23.0
 targets:
   FoundryObservabilitySentry:
     type: framework

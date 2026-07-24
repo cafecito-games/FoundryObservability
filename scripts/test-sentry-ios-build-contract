@@ -34,14 +34,18 @@ rg -q 'ARCHS=arm64 CODE_SIGNING_ALLOWED=NO' "$taskfile" \
 	|| fail "Taskfile must disable simulator code signing"
 rg -q 'xcodebuild -create-xcframework' "$taskfile" \
 	|| fail "Taskfile must create an iOS xcframework"
+rg -q 'xcodebuild clean' "$taskfile" \
+	|| fail "Taskfile must clean stale native build intermediates"
 rg -q 'FoundryObservabilitySentry\.xcframework' "$taskfile" \
 	|| fail "Taskfile must create the Sentry xcframework"
 rg -q 'Foundry-Swift-Binary' "$project_yml" \
 	|| fail "native project must use Foundry-Swift-Binary"
 rg -q 'exactVersion: 0\.1\.0-alpha\.2' "$project_yml" \
 	|| fail "native project must pin Foundry-Swift alpha.2"
-rg -q 'sentry-cocoa.*9\.13\.0|exact: "9\.13\.0"' "$project_yml" "$package_swift" \
-	|| fail "native metadata must pin Sentry Cocoa 9.13.0"
+rg -q 'exactVersion: 9\.23\.0' "$project_yml" \
+	|| fail "native project must pin Sentry Cocoa 9.23.0"
+rg -q 'exact: "9\.23\.0"' "$package_swift" \
+	|| fail "SwiftPM mapper tests must pin Sentry Cocoa 9.23.0"
 rg -q 'GENERATE_INFOPLIST_FILE = YES' "$pbxproj" \
 	|| fail "generated Xcode project is missing generated Info.plist settings"
 

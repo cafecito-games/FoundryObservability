@@ -15,3 +15,4 @@
 - Added the optional `FoundryObservabilitySentry` sibling addon with an iOS
   Foundry-Swift alpha.2 bridge, Sentry Cocoa integration, event mapping, and
   device/simulator xcframework packaging.
+- Pinned Sentry Cocoa to `9.23.0`.
