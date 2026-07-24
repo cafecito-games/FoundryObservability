@@ -3,7 +3,7 @@ namespace foundry.observability.foundrylib
 import foundry.logging
 import foundry.observability
 
-## Forwards selected FoundryLib records into the core observability API.
+## Forwards filtered FoundryLib records into the core observability API.
 class_name FoundryLibObservabilitySink
 extends RefCounted
 uses LogSink
@@ -12,11 +12,13 @@ var _service: FoundryObservabilityApi
 var _minimum_level: int
 
 
+## Creates a sink targeting service and filtering records below p_minimum_level.
 func _init(p_service: FoundryObservabilityApi, p_minimum_level: int = ObservabilityLevel.ERROR) -> void:
 	_service = p_service
 	_minimum_level = p_minimum_level
 
 
+## Renders, enriches, maps, and forwards one eligible log record without recursive failure logging.
 func emit(record: LogRecord) -> void:
 	if record == null or record.level < _minimum_level or _service == null:
 		return
@@ -35,6 +37,7 @@ func emit(record: LogRecord) -> void:
 	_service.capture_event(event)
 
 
+## Forwards a default service flush request when a target service is available.
 func flush() -> void:
 	if _service == null:
 		return

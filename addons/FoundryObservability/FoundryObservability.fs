@@ -16,6 +16,8 @@ func _init() -> void:
 	_config = ObservabilityConfig.new(false)
 
 
+## Configures a provider and activates it only after successful setup.
+## A failed candidate configuration leaves the current provider unchanged.
 func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = null) -> int:
 	if provider == null:
 		_last_error = Error.FAILED
@@ -46,24 +48,29 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	return Error.OK
 
 
+## Returns whether the active configuration permits event capture.
 func is_enabled() -> bool:
 	return _config.enabled
 
 
+## Returns whether the active provider can currently accept events.
 func is_available() -> bool:
 	return _provider != null and _provider.is_available()
 
 
+## Returns the active provider identifier, including null before configuration.
 func provider_name() -> StringName:
 	if _provider == null:
 		return &"null"
 	return _provider.provider_name()
 
 
+## Returns the most recent provider, capture, configuration, or flush error.
 func last_error() -> int:
 	return _last_error
 
 
+## Captures an event and returns its provider ID, or an empty string on no-op or failure.
 func capture_event(event: ObservabilityEvent) -> String:
 	if event == null or not is_enabled() or _provider == null:
 		return ""
@@ -74,6 +81,7 @@ func capture_event(event: ObservabilityEvent) -> String:
 	return event_id
 
 
+## Creates a game-sourced message event using the current engine timestamp.
 func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String:
 	return capture_event(
 		ObservabilityEvent.new(
@@ -87,6 +95,7 @@ func capture_message(message: String, level: int = ObservabilityLevel.INFO, attr
 	)
 
 
+## Creates a game-sourced ERROR event containing the supplied exception payload.
 func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String:
 	if exception == null:
 		_last_error = Error.FAILED
@@ -104,6 +113,7 @@ func capture_exception(exception: ObservabilityException, attributes: Dictionary
 	)
 
 
+## Flushes pending provider work within timeout_msec and stores the returned error.
 func flush(timeout_msec: int = 2000) -> int:
 	if _provider == null:
 		return Error.OK
@@ -113,6 +123,7 @@ func flush(timeout_msec: int = 2000) -> int:
 	return result
 
 
+## Flushes and shuts down once, then restores the disabled null-provider state.
 func shutdown() -> void:
 	if _shutdown:
 		return
@@ -126,5 +137,6 @@ func shutdown() -> void:
 	_last_error = Error.OK
 
 
+## Shuts down the service when its autoload leaves the scene tree.
 func _exit_tree() -> void:
 	shutdown()

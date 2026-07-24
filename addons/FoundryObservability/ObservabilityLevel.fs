@@ -4,15 +4,21 @@ namespace foundry.observability
 class_name ObservabilityLevel
 extends RefCounted
 
+## Most verbose severity; numeric value 10.
 const TRACE: int = 10
+## Debug severity; numeric value 20.
 const DEBUG: int = 20
+## Informational severity; numeric value 30.
 const INFO: int = 30
+## Warning severity; numeric value 40.
 const WARN: int = 40
+## Error severity; numeric value 50.
 const ERROR: int = 50
+## Fatal severity; numeric value 60.
 const FATAL: int = 60
 
 
-## Returns the display name for a severity value.
+## Returns an uppercase severity name, or LEVEL(value) for an unknown value.
 static func name(level: int) -> String:
 	match level:
 		TRACE:

@@ -10,7 +10,7 @@ var _stack_trace: String = ""
 var _attributes: Dictionary = {}
 
 
-## Creates an exception payload from script or native failure data.
+## Creates an exception payload from type, message, stack, and copied attributes.
 func _init(
 		p_type_name: String = "Error",
 		p_message: String = "",
@@ -23,17 +23,21 @@ func _init(
 	_attributes = p_attributes.duplicate(true)
 
 
+## Returns the source exception type name.
 func type_name() -> String:
 	return _type_name
 
 
+## Returns the exception message.
 func message() -> String:
 	return _message
 
 
+## Returns the captured stack trace, if available.
 func stack_trace() -> String:
 	return _stack_trace
 
 
+## Returns a deep copy of exception attributes.
 func attributes() -> Dictionary:
 	return _attributes.duplicate(true)
