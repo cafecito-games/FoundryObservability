@@ -16,8 +16,17 @@ func test_maps_structured_logs_to_observability_events() -> void:
 	var fields: Dictionary = {"id": 7, "weapon": "axe"}
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
-	var sink: FoundryLibObservabilitySink = FoundryLibObservabilitySink.new(service, ObservabilityLevel.INFO)
-	var record: LogRecord = LogRecord.new(LogLevel.WARN, "combat", "player {id} missed", fields, 99)
+	var sink: FoundryLibObservabilitySink = FoundryLibObservabilitySink.new(
+			p_service = service,
+			p_minimum_level = ObservabilityLevel.INFO,
+		)
+	var record: LogRecord = LogRecord.new(
+			p_level = LogLevel.WARN,
+			p_logger_name = "combat",
+			p_message_template = "player {id} missed",
+			p_fields = fields,
+			p_timestamp_msec = 99,
+		)
 	sink.emit(record)
 	fields["id"] = 8
 
@@ -39,9 +48,24 @@ func test_filters_records_below_minimum_level() -> void:
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
-	var sink: FoundryLibObservabilitySink = FoundryLibObservabilitySink.new(service, ObservabilityLevel.ERROR)
-	sink.emit(LogRecord.new(LogLevel.WARN, "combat", "ignored", {}, 1))
-	sink.emit(LogRecord.new(LogLevel.ERROR, "combat", "kept", {}, 2))
+	var sink: FoundryLibObservabilitySink = FoundryLibObservabilitySink.new(
+			p_service = service,
+			p_minimum_level = ObservabilityLevel.ERROR,
+		)
+	sink.emit(LogRecord.new(
+			p_level = LogLevel.WARN,
+			p_logger_name = "combat",
+			p_message_template = "ignored",
+			p_fields = {},
+			p_timestamp_msec = 1,
+		))
+	sink.emit(LogRecord.new(
+			p_level = LogLevel.ERROR,
+			p_logger_name = "combat",
+			p_message_template = "kept",
+			p_fields = {},
+			p_timestamp_msec = 2,
+		))
 
 	Expect.that(provider.events()).to_have_size(1)
 	Expect.that(provider.events()[0].message()).to_equal("kept")
@@ -54,7 +78,7 @@ func test_flush_forwards_to_observability_service() -> void:
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
 	provider.flush_result = Error.FAILED
-	var sink: FoundryLibObservabilitySink = FoundryLibObservabilitySink.new(service)
+	var sink: FoundryLibObservabilitySink = FoundryLibObservabilitySink.new(p_service = service)
 	sink.flush()
 
 	Expect.that(provider.flush_count).to_equal(1)

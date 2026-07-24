@@ -36,7 +36,11 @@ autoload:
 ```foundryscript
 import foundry.observability
 
-var config := ObservabilityConfig.new(true, "production", "1.0.0")
+var config := ObservabilityConfig.new(
+		p_enabled = true,
+		p_environment = "production",
+		p_release = "1.0.0",
+	)
 var provider: ObservabilityProvider = MemoryObservabilityProvider.new()
 FoundryObservability.configure(provider, config)
 FoundryObservability.capture_message("game started")

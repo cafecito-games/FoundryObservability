@@ -27,12 +27,12 @@ func emit(record: LogRecord) -> void:
 	attributes["logger_name"] = record.logger_name
 	var event_level: int = _map_level(record.level)
 	var event: ObservabilityEvent = ObservabilityEvent.new(
-			&"log",
-			event_level,
-			LogFormatter.render_message(record),
-			&"foundry.logging",
-			record.timestamp_msec,
-			attributes,
+			p_kind = &"log",
+			p_level = event_level,
+			p_message = LogFormatter.render_message(record),
+			p_source = &"foundry.logging",
+			p_timestamp_msec = record.timestamp_msec,
+			p_attributes = attributes,
 		)
 	_service.capture_event(event)
 

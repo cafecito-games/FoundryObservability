@@ -19,12 +19,23 @@ func test_levels_are_ordered_and_named() -> void:
 
 func test_exception_and_event_copy_attributes() -> void:
 	var source := {"request_id": "abc", "nested": {"attempt": 1}}
-	var exception := ObservabilityException.new("InvalidState", "bad state", "stack", source)
+	var exception := ObservabilityException.new(
+			p_type_name = "InvalidState",
+			p_message = "bad state",
+			p_stack_trace = "stack",
+			p_attributes = source,
+		)
 	source["request_id"] = "changed"
 	var event_source := {"scene": "battle"}
 	var event := ObservabilityEvent.new(
-			&"exception", ObservabilityLevel.ERROR, "bad state",
-			&"game", 1234, event_source, exception)
+			p_kind = &"exception",
+			p_level = ObservabilityLevel.ERROR,
+			p_message = "bad state",
+			p_source = &"game",
+			p_timestamp_msec = 1234,
+			p_attributes = event_source,
+			p_exception = exception,
+		)
 	event_source["scene"] = "changed"
 	var exposed: Dictionary = event.attributes()
 	exposed["new_field"] = true
@@ -42,7 +53,13 @@ func test_config_copies_attributes_and_options() -> void:
 	var attributes := {"build": 42}
 	var options := {"provider_key": "value"}
 	var config := ObservabilityConfig.new(
-			true, "production", "1.2.3", "arm64", attributes, options)
+			p_enabled = true,
+			p_environment = "production",
+			p_release = "1.2.3",
+			p_dist = "arm64",
+			p_global_attributes = attributes,
+			p_provider_options = options,
+		)
 	attributes["build"] = 99
 	options["provider_key"] = "changed"
 
@@ -72,7 +89,11 @@ func test_memory_provider_captures_messages_and_exceptions() -> void:
 	Expect.that(service.is_enabled()).to_be_true()
 	Expect.that(service.is_available()).to_be_true()
 	Expect.that(service.capture_message("hello", ObservabilityLevel.WARN, {"screen": "title"})).to_equal("memory:1")
-	Expect.that(service.capture_exception(ObservabilityException.new("Error", "boom", "trace"))).to_equal("memory:2")
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "Error",
+			p_message = "boom",
+			p_stack_trace = "trace",
+		))).to_equal("memory:2")
 	Expect.that(provider.events()).to_have_size(2)
 	Expect.that(provider.events()[0].kind()).to_equal(&"message")
 	Expect.that(provider.events()[0].level()).to_equal(ObservabilityLevel.WARN)
@@ -87,7 +108,7 @@ func test_memory_provider_captures_messages_and_exceptions() -> void:
 func test_disabled_capture_and_flush_are_forwarded() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
-	var disabled: ObservabilityConfig = ObservabilityConfig.new(false)
+	var disabled: ObservabilityConfig = ObservabilityConfig.new(p_enabled = false)
 
 	Expect.that(service.configure(provider, disabled)).to_equal(Error.OK)
 	Expect.that(service.is_enabled()).to_be_false()
@@ -106,7 +127,7 @@ func test_enabled_unavailable_provider_reports_capture_failure() -> void:
 	var service: FoundryObservability = _service()
 	var provider: NullObservabilityProvider = NullObservabilityProvider.new()
 
-	Expect.that(service.configure(provider, ObservabilityConfig.new(true))).to_equal(Error.OK)
+	Expect.that(service.configure(provider, ObservabilityConfig.new(p_enabled = true))).to_equal(Error.OK)
 	Expect.that(service.is_enabled()).to_be_true()
 	Expect.that(service.is_available()).to_be_false()
 	Expect.that(service.capture_message("unavailable")).to_equal("")
@@ -135,7 +156,7 @@ func test_active_provider_reconfiguration_does_not_shutdown_it() -> void:
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
-	var disabled: ObservabilityConfig = ObservabilityConfig.new(false)
+	var disabled: ObservabilityConfig = ObservabilityConfig.new(p_enabled = false)
 	Expect.that(service.configure(provider, disabled)).to_equal(Error.OK)
 	Expect.that(service.is_enabled()).to_be_false()
 	Expect.that(provider.shutdown_count).to_equal(0)

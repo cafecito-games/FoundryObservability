@@ -24,9 +24,9 @@ The smallest setup is:
 import foundry.observability
 
 var config := ObservabilityConfig.new(
-		true,
-		"production",
-		"1.0.0",
+		p_enabled = true,
+		p_environment = "production",
+		p_release = "1.0.0",
 )
 var provider: ObservabilityProvider = MemoryObservabilityProvider.new()
 var result: int = FoundryObservability.configure(provider, config)
@@ -120,12 +120,12 @@ Constructor:
 
 ~~~
 ObservabilityConfig.new(
-		enabled: bool = true,
-		environment: String = "",
-		release: String = "",
-		dist: String = "",
-		global_attributes: Dictionary = {},
-		provider_options: Dictionary = {},
+		p_enabled: bool = true,
+		p_environment: String = "",
+		p_release: String = "",
+		p_dist: String = "",
+		p_global_attributes: Dictionary = {},
+		p_provider_options: Dictionary = {},
 )
 ~~~
 
@@ -160,10 +160,10 @@ Constructor:
 
 ~~~
 ObservabilityException.new(
-		type_name: String = "Error",
-		message: String = "",
-		stack_trace: String = "",
-		attributes: Dictionary = {},
+		p_type_name: String = "Error",
+		p_message: String = "",
+		p_stack_trace: String = "",
+		p_attributes: Dictionary = {},
 )
 ~~~
 
@@ -187,13 +187,13 @@ Constructor:
 
 ~~~
 ObservabilityEvent.new(
-		kind: StringName = &"message",
-		level: int = ObservabilityLevel.INFO,
-		message: String = "",
-		source: StringName = &"",
-		timestamp_msec: int = 0,
-		attributes: Dictionary = {},
-		exception: ObservabilityException? = null,
+		p_kind: StringName = &"message",
+		p_level: int = ObservabilityLevel.INFO,
+		p_message: String = "",
+		p_source: StringName = &"",
+		p_timestamp_msec: int = 0,
+		p_attributes: Dictionary = {},
+		p_exception: ObservabilityException? = null,
 )
 ~~~
 
@@ -390,10 +390,10 @@ Example:
 import foundry.observability
 
 var exception := ObservabilityException.new(
-		"NetworkError",
-		"Matchmaking request failed",
-		stack_trace,
-		{"region": "iad"},
+		p_type_name = "NetworkError",
+		p_message = "Matchmaking request failed",
+		p_stack_trace = stack_trace,
+		p_attributes = {"region": "iad"},
 )
 FoundryObservability.capture_exception(exception)
 ~~~
@@ -459,7 +459,7 @@ Example:
 import foundry.observability
 
 var provider := MemoryObservabilityProvider.new()
-FoundryObservability.configure(provider, ObservabilityConfig.new(true))
+FoundryObservability.configure(provider, ObservabilityConfig.new(p_enabled = true))
 FoundryObservability.capture_message("test event")
 var captured: Array[ObservabilityEvent] = provider.events()
 ~~~
@@ -476,8 +476,8 @@ import foundry.observability
 import foundry.observability.foundrylib
 
 var sink := FoundryLibObservabilitySink.new(
-		FoundryObservability,
-		ObservabilityLevel.ERROR,
+		p_service = FoundryObservability,
+		p_minimum_level = ObservabilityLevel.ERROR,
 )
 Log.add_sink(sink)
 ~~~
@@ -486,8 +486,8 @@ Constructor:
 
 ~~~
 FoundryLibObservabilitySink.new(
-		service: FoundryObservabilityApi,
-		minimum_level: int = ObservabilityLevel.ERROR,
+		p_service: FoundryObservabilityApi,
+		p_minimum_level: int = ObservabilityLevel.ERROR,
 )
 ~~~
 

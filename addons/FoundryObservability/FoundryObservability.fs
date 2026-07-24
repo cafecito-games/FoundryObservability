@@ -13,7 +13,7 @@ var _shutdown: bool = false
 
 func _init() -> void:
 	_provider = NullObservabilityProvider.new()
-	_config = ObservabilityConfig.new(false)
+	_config = ObservabilityConfig.new(p_enabled = false)
 
 
 ## Configures a provider and activates it only after successful setup.
@@ -25,7 +25,7 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 
 	var candidate_config: ObservabilityConfig = config
 	if candidate_config == null:
-		candidate_config = ObservabilityConfig.new(false)
+		candidate_config = ObservabilityConfig.new(p_enabled = false)
 
 	var result: int = provider.configure(candidate_config)
 	if result != Error.OK:
@@ -85,12 +85,12 @@ func capture_event(event: ObservabilityEvent) -> String:
 func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String:
 	return capture_event(
 		ObservabilityEvent.new(
-			&"message",
-			level,
-			message,
-			&"game",
-			Time.get_ticks_msec(),
-			attributes,
+			p_kind = &"message",
+			p_level = level,
+			p_message = message,
+			p_source = &"game",
+			p_timestamp_msec = Time.get_ticks_msec(),
+			p_attributes = attributes,
 		),
 	)
 
@@ -102,13 +102,13 @@ func capture_exception(exception: ObservabilityException, attributes: Dictionary
 		return ""
 	return capture_event(
 		ObservabilityEvent.new(
-			&"exception",
-			ObservabilityLevel.ERROR,
-			exception.message(),
-			&"game",
-			Time.get_ticks_msec(),
-			attributes,
-			exception,
+			p_kind = &"exception",
+			p_level = ObservabilityLevel.ERROR,
+			p_message = exception.message(),
+			p_source = &"game",
+			p_timestamp_msec = Time.get_ticks_msec(),
+			p_attributes = attributes,
+			p_exception = exception,
 		),
 	)
 
@@ -133,7 +133,7 @@ func shutdown() -> void:
 	if _provider != null:
 		_provider.shutdown()
 	_provider = NullObservabilityProvider.new()
-	_config = ObservabilityConfig.new(false)
+	_config = ObservabilityConfig.new(p_enabled = false)
 	_last_error = Error.OK
 
 
