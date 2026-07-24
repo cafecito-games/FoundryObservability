@@ -139,7 +139,11 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       setIfNotEmpty(feedback::setContactEmail, payload.get("contact_email"));
       String associatedEventId = stringValue(payload.get("associated_event_id"));
       if (!associatedEventId.isEmpty()) {
-        feedback.setAssociatedEventId(new SentryId(associatedEventId));
+        SentryId associatedId = new SentryId(associatedEventId);
+        if (SentryId.EMPTY_ID.equals(associatedId)) {
+          return "";
+        }
+        feedback.setAssociatedEventId(associatedId);
       }
       Sentry.captureFeedback(feedback);
       return "sentry-feedback:" + UUID.randomUUID();

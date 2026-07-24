@@ -143,6 +143,23 @@ public class SentryObservabilityBridgeTest {
     bridge.shutdown();
   }
 
+  @Test
+  public void rejectsFeedbackWithInvalidAssociatedEventId() {
+    SentryObservabilityBridge bridge = newBridge();
+
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    assertEquals(0, bridge.configure(configuration));
+
+    Dictionary feedback = new Dictionary();
+    feedback.put("message", "Feedback with a bad association");
+    feedback.put("associated_event_id", "not-a-sentry-id");
+
+    assertEquals("", bridge.captureFeedback(feedback));
+    bridge.shutdown();
+  }
+
   private static SentryObservabilityBridge newBridge() {
     return new SentryObservabilityBridge(
         Foundry.getInstance(RuntimeEnvironment.getApplication()));
