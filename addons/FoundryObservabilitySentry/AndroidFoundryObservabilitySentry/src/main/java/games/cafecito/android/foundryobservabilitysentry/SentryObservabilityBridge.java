@@ -5,12 +5,15 @@ import games.cafecito.foundry.Foundry;
 import games.cafecito.foundry.plugin.FoundryPlugin;
 import games.cafecito.foundry.plugin.UsedByFoundry;
 import io.sentry.Sentry;
+import io.sentry.SentryAttributes;
 import io.sentry.SentryEvent;
 import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
+import io.sentry.logger.SentryLogParameters;
 import io.sentry.protocol.SentryId;
 import java.util.Collections;
 import java.util.Map;
+import java.util.UUID;
 
 public final class SentryObservabilityBridge extends FoundryPlugin {
   static final int BRIDGE_ERROR_OK = 0;
@@ -19,6 +22,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
   private Map<String, Object> globalAttributes = Collections.emptyMap();
   private boolean configured;
   private boolean didShutdown;
+  private boolean logsEnabled;
 
   public SentryObservabilityBridge(Foundry foundry) {
     super(foundry);
@@ -34,6 +38,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     closeActiveClient();
     configured = false;
     didShutdown = false;
+    logsEnabled = false;
 
     if (payload == null) {
       return BRIDGE_ERROR_FAILED;
@@ -54,6 +59,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     }
 
     try {
+      logsEnabled = booleanValue(payload.get("logs_enabled"));
       Map<?, ?> providerOptions = payload.get("provider_options") instanceof Map
           ? (Map<?, ?>) payload.get("provider_options")
           : Collections.emptyMap();
@@ -61,6 +67,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
           getContext().getApplicationContext(),
           (SentryAndroidOptions options) -> {
             options.setDsn(dsn);
+            options.getLogs().setEnabled(logsEnabled);
             options.setDebug(booleanValue(providerOptions.get("debug")));
             setIfNotEmpty(options::setEnvironment, payload.get("environment"));
             setIfNotEmpty(options::setRelease, payload.get("release"));
@@ -89,6 +96,31 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
   }
 
   @UsedByFoundry
+  public String captureLog(Dictionary payload) {
+    if (!isAvailable() || !logsEnabled || payload == null) {
+      return "";
+    }
+
+    Map<?, ?> values = payload;
+    Map<?, ?> eventAttributes = values.get("attributes") instanceof Map
+        ? (Map<?, ?>) values.get("attributes")
+        : Collections.emptyMap();
+    Map<String, Object> attributes = SentryLogMapper.mergedAttributes(
+        globalAttributes,
+        eventAttributes,
+        stringValue(values.get("kind")),
+        stringValue(values.get("source")),
+        longValue(values.get("timestamp_msec"), 0L));
+    SentryLogParameters parameters = SentryLogParameters.create(
+        SentryAttributes.fromMap(attributes));
+    Sentry.logger().log(
+        SentryLogMapper.sentryLevel(intValue(values.get("level"), 50)),
+        parameters,
+        stringValue(values.get("message")));
+    return "sentry-log:" + UUID.randomUUID();
+  }
+
+  @UsedByFoundry
   public int flush(int timeoutMsec) {
     if (!isAvailable()) {
       return BRIDGE_ERROR_FAILED;
@@ -111,6 +143,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       Sentry.close();
     }
     configured = false;
+    logsEnabled = false;
   }
 
   static String eventIdString(SentryId eventId) {
@@ -132,5 +165,33 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   private static String stringValue(Object value) {
     return value instanceof String ? (String) value : "";
+  }
+
+  private static int intValue(Object value, int fallback) {
+    if (value instanceof Number) {
+      return ((Number) value).intValue();
+    }
+    if (value instanceof String) {
+      try {
+        return Integer.parseInt((String) value);
+      } catch (NumberFormatException ignored) {
+        return fallback;
+      }
+    }
+    return fallback;
+  }
+
+  private static long longValue(Object value, long fallback) {
+    if (value instanceof Number) {
+      return ((Number) value).longValue();
+    }
+    if (value instanceof String) {
+      try {
+        return Long.parseLong((String) value);
+      } catch (NumberFormatException ignored) {
+        return fallback;
+      }
+    }
+    return fallback;
   }
 }
