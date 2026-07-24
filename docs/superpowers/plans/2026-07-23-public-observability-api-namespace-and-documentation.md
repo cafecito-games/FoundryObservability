@@ -139,18 +139,17 @@ if rg -n --glob '*.fs' 'games\\.cafecito\\.foundryobservability' "$addon" "$proj
 fi
 ~~~
 
-- [ ] **Step 4: Run the namespace tests and lint.**
+- [ ] **Step 4: Run the namespace consumer tests.**
 
 If a local generated test_project/.foundry cache still reports stale classes from the old namespace, move that exact generated directory aside and let Foundry rebuild it before rerunning tests. Do not commit generated state.
 
 Run:
 
 ~~~
-scripts/test-foundry-script
 scripts/test-project
 ~~~
 
-Expected: the new namespace contract, all existing core/sink/project-wiring tests, and FoundryScript lint pass.
+Expected: the new namespace contract and all existing core/sink/project-wiring tests pass. The full script contract is rerun after current documentation is updated in Task 4.
 
 - [ ] **Step 5: Commit the namespace rename.**
 
@@ -225,15 +224,15 @@ In MemoryObservabilityProvider.fs, document configure_result, flush_result, last
 
 In foundrylib/FoundryLibObservabilitySink.fs, document the class, constructor parameters, emit(), and flush(). State that emit filters below the configured minimum, copies fields, adds logger_name, renders the message, maps known levels, preserves timestamps, and forwards through FoundryObservabilityApi. State that it never reports provider failures recursively through FoundryLib.
 
-- [ ] **Step 5: Run lint after inline documentation.**
+- [ ] **Step 5: Run the consumer tests after inline documentation.**
 
 Run:
 
 ~~~
-scripts/test-foundry-script
+scripts/test-project
 ~~~
 
-Expected: no parse errors, mixed namespace warnings, or warning-level diagnostics. Comments must not change runtime behavior.
+Expected: all consumer tests pass. The full lint contract is rerun after current documentation is updated in Task 4.
 
 - [ ] **Step 6: Commit inline documentation.**
 
@@ -298,11 +297,12 @@ Historical docs/superpowers specs and plans remain exempt.
 Run:
 
 ~~~
+scripts/test-foundry-script
 rg -n 'games\\.cafecito\\.foundryobservability' README.md BUILD.md CONTRIBUTING.md CHANGELOG.md docs/API.md
 git diff --check
 ~~~
 
-Expected: the namespace scan exits with no matches and diff checks report no whitespace errors.
+Expected: the script contract passes, the namespace scan exits with no matches, and diff checks report no whitespace errors.
 
 - [ ] **Step 6: Commit the reference documentation.**
 
@@ -335,8 +335,10 @@ Expected: prek, FoundryScript lint, UID checks, project consumer tests, CI workf
 - [ ] **Step 3: Confirm current namespace coverage and clean state.**
 
 ~~~
-if rg -n 'games\\.cafecito\\.foundryobservability' \
-	addons test_project/tests scripts README.md BUILD.md CONTRIBUTING.md CHANGELOG.md docs/API.md; then
+if rg -n --glob '*.fs' '^(namespace|import) games\\.cafecito\\.foundryobservability' addons test_project/tests; then
+	exit 1
+fi
+if rg -n 'games\\.cafecito\\.foundryobservability' README.md BUILD.md CONTRIBUTING.md CHANGELOG.md docs/API.md; then
 	exit 1
 fi
 git diff --check
