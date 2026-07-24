@@ -8,6 +8,7 @@ import static org.junit.Assert.assertTrue;
 import games.cafecito.foundry.Dictionary;
 import games.cafecito.foundry.Foundry;
 import io.sentry.Sentry;
+import io.sentry.protocol.SentryId;
 import org.junit.After;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -32,6 +33,13 @@ public class SentryObservabilityBridgeTest {
 
     assertEquals(1, bridge.configure(payload));
     assertFalse(bridge.isAvailable());
+  }
+
+  @Test
+  public void mapsEmptySentryIdToAnEmptyProviderId() {
+    assertEquals("", SentryObservabilityBridge.eventIdString(SentryId.EMPTY_ID));
+    assertEquals("", SentryObservabilityBridge.eventIdString(null));
+    assertNotEquals("", SentryObservabilityBridge.eventIdString(new SentryId()));
   }
 
   @Test

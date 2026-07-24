@@ -8,6 +8,7 @@ import io.sentry.Sentry;
 import io.sentry.SentryEvent;
 import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
+import io.sentry.protocol.SentryId;
 import java.util.Collections;
 import java.util.Map;
 
@@ -84,7 +85,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       return "";
     }
     SentryEvent event = SentryEventMapper.makeEvent(payload, globalAttributes);
-    return Sentry.captureEvent(event).toString();
+    return eventIdString(Sentry.captureEvent(event));
   }
 
   @UsedByFoundry
@@ -110,6 +111,10 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       Sentry.close();
     }
     configured = false;
+  }
+
+  static String eventIdString(SentryId eventId) {
+    return eventId == null || SentryId.EMPTY_ID.equals(eventId) ? "" : eventId.toString();
   }
 
   private static void setIfNotEmpty(

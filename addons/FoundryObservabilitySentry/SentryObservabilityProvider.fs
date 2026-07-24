@@ -2,7 +2,7 @@ namespace foundry.observability.sentry
 
 import foundry.observability
 
-## FoundryScript adapter for the optional iOS Sentry native bridge.
+## FoundryScript adapter for the optional cross-platform Sentry native bridge.
 class_name SentryObservabilityProvider
 extends RefCounted
 uses ObservabilityProvider
