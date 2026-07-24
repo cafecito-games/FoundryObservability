@@ -23,14 +23,14 @@ foundry_script_test_line=$(awk '/^[[:space:]]+- task: test:foundry-script$/{ pri
 	|| fail "Taskfile.yml must install project packages before FoundryScript lint"
 
 for workflow in "$pr_workflow" "$release_workflow"; do
-	rg -q 'actions/checkout@v6([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/checkout@v6"
-	rg -q 'actions/setup-python@v6([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/setup-python@v6"
-	rg -q 'actions/setup-go@v6([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/setup-go@v6"
-	rg -q 'go-task/setup-task@v2([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use go-task/setup-task@v2"
+	rg -q 'actions/checkout@v7\.0\.1([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/checkout@v7.0.1"
+	rg -q 'actions/setup-python@v7\.0\.0([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/setup-python@v7.0.0"
+	rg -q 'actions/setup-go@v7\.0\.0([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/setup-go@v7.0.0"
+	rg -q 'go-task/setup-task@v2\.1\.0([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use go-task/setup-task@v2.1.0"
 	rg -q 'v0\.1\.0-alpha\.7' "$workflow" \
 		|| fail "$(basename "$workflow") must pin Foundry v0.1.0-alpha.7"
 	rg -q 'project import --project' "$workflow" \
@@ -58,9 +58,9 @@ rg -q 'gh release create' "$release_workflow" \
 rg -q '^  build-android:' "$pr_workflow" \
 	|| fail "pull-request workflow must build the Android Sentry addon"
 
-rg -q 'actions/setup-java@v5([[:space:]]|$)' "$pr_workflow" \
+rg -q 'actions/setup-java@v5\.6\.0([[:space:]]|$)' "$pr_workflow" \
 	|| fail "pull-request workflow must set up Java 17 for Android"
-rg -q 'android-actions/setup-android@v4([[:space:]]|$)' "$pr_workflow" \
+rg -q 'android-actions/setup-android@v4\.0\.1([[:space:]]|$)' "$pr_workflow" \
 	|| fail "pull-request workflow must set up the Android SDK"
 rg -q "java-version: ['\"]?17['\"]?" "$pr_workflow" \
 	|| fail "pull-request workflow must use Java 17 for Android"
