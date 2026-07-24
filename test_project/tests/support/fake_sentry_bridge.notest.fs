@@ -10,6 +10,7 @@ var configured_payload: Dictionary = {}
 var captured_payloads: Array[Dictionary] = []
 var captured_log_payloads: Array[Dictionary] = []
 var captured_feedback_payloads: Array[Dictionary] = []
+var captured_metric_payloads: Array[Dictionary] = []
 var flush_timeouts: Array[int] = []
 var shutdown_count: int = 0
 var next_event_id: int = 1
@@ -45,6 +46,11 @@ func captureFeedback(payload: Dictionary) -> String:
 	var feedback_id: String = "sentry-feedback:%s" % next_feedback_id
 	next_feedback_id += 1
 	return feedback_id
+
+
+func captureMetric(payload: Dictionary) -> bool:
+	captured_metric_payloads.append(payload.duplicate(true))
+	return true
 
 
 func flush(timeout_msec: int) -> int:

@@ -11,14 +11,19 @@ var _last_error: int = Error.OK
 var _shutdown: bool = false
 var _log_window_second: int = -1
 var _log_window_count: int = 0
+var _metric_sample_accumulator: float = 0.0
 
 const MAX_FEEDBACK_MESSAGE_LENGTH: int = 4096
+const MAX_METRIC_NAME_LENGTH: int = 200
+const MAX_METRIC_UNIT_LENGTH: int = 64
+const MAX_METRIC_ATTRIBUTE_KEY_LENGTH: int = 200
 
 
 func _init() -> void:
 	_provider = NullObservabilityProvider.new()
 	_config = ObservabilityConfig.new(p_enabled = false)
 	_reset_log_rate_limit()
+	_reset_metric_sampling()
 
 
 ## Configures a provider and activates it only after successful setup.
@@ -31,6 +36,11 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	var candidate_config: ObservabilityConfig = config
 	if candidate_config == null:
 		candidate_config = ObservabilityConfig.new(p_enabled = false)
+	if not is_finite(candidate_config.metric_sample_rate) \
+			or candidate_config.metric_sample_rate < 0.0 \
+			or candidate_config.metric_sample_rate > 1.0:
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return Error.ERR_INVALID_PARAMETER
 
 	var result: int = provider.configure(candidate_config)
 	if result != Error.OK:
@@ -42,6 +52,7 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 		_last_error = Error.OK
 		_shutdown = false
 		_reset_log_rate_limit()
+		_reset_metric_sampling()
 		return Error.OK
 
 	if _provider != null:
@@ -52,6 +63,7 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	_last_error = Error.OK
 	_shutdown = false
 	_reset_log_rate_limit()
+	_reset_metric_sampling()
 	return Error.OK
 
 
@@ -160,6 +172,174 @@ func capture_feedback(feedback: ObservabilityFeedback) -> String:
 	return _capture_feedback(feedback)
 
 
+## Validates, normalizes, filters, samples, and dispatches one custom metric.
+func capture_metric(metric: ObservabilityMetric) -> bool:
+	var normalized: ObservabilityMetric? = _normalized_metric(metric)
+	if normalized == null:
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return false
+	if not is_enabled() or not _config.metrics_enabled or _provider == null:
+		return false
+
+	if _config.metric_filter.is_valid():
+		var filter_result: Variant = _config.metric_filter.call(normalized)
+		if not (filter_result is bool):
+			_last_error = Error.ERR_INVALID_PARAMETER
+			return false
+		if not filter_result:
+			return false
+
+	if not _accept_metric_sample():
+		return false
+	if not _provider.has_method("capture_metric"):
+		_last_error = Error.ERR_UNAVAILABLE
+		return false
+
+	var capture_result: Variant = _provider.call("capture_metric", normalized)
+	if not (capture_result is bool) or not capture_result:
+		_last_error = Error.FAILED
+		return false
+	_last_error = Error.OK
+	return true
+
+
+## Creates and captures a counter metric.
+func capture_counter(metric_name: String, value: int = 1, attributes: Dictionary = {}) -> bool:
+	return capture_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.COUNTER,
+			p_name = metric_name,
+			p_value = float(value),
+			p_attributes = attributes,
+		))
+
+
+## Creates and captures a gauge metric.
+func capture_gauge(
+		metric_name: String,
+		value: float,
+		unit: String = "",
+		attributes: Dictionary = {},
+) -> bool:
+	return capture_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE,
+			p_name = metric_name,
+			p_value = value,
+			p_unit = unit,
+			p_attributes = attributes,
+		))
+
+
+## Creates and captures a distribution metric.
+func capture_distribution(
+		metric_name: String,
+		value: float,
+		unit: String = "",
+		attributes: Dictionary = {},
+) -> bool:
+	return capture_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.DISTRIBUTION,
+			p_name = metric_name,
+			p_value = value,
+			p_unit = unit,
+			p_attributes = attributes,
+		))
+
+
+func _normalized_metric(metric: ObservabilityMetric) -> ObservabilityMetric?:
+	if metric == null or not _is_valid_metric_name(metric.name()):
+		return null
+	if metric.type() < ObservabilityMetricType.COUNTER \
+			or metric.type() > ObservabilityMetricType.DISTRIBUTION:
+		return null
+	if not is_finite(metric.value()):
+		return null
+	if metric.type() == ObservabilityMetricType.COUNTER:
+		if metric.value() < 0.0 or metric.value() != floorf(metric.value()):
+			return null
+		if not metric.unit().is_empty():
+			return null
+	elif not _is_valid_metric_unit(metric.unit()):
+		return null
+
+	var attributes: Dictionary = {}
+	var global_attributes: Dictionary = _config.global_attributes()
+	if not _is_valid_metric_attributes(global_attributes):
+		return null
+	for key: Variant in global_attributes.keys():
+		attributes[str(key)] = global_attributes[key]
+	var metric_attributes: Dictionary = metric.attributes()
+	if not _is_valid_metric_attributes(metric_attributes):
+		return null
+	for key: Variant in metric_attributes.keys():
+		attributes[str(key)] = metric_attributes[key]
+	return ObservabilityMetric.new(
+			p_type = metric.type(),
+			p_name = metric.name(),
+			p_value = metric.value(),
+			p_unit = metric.unit(),
+			p_attributes = attributes,
+		)
+
+
+func _is_valid_metric_name(value: String) -> bool:
+	return not value.is_empty() \
+			and value.length() <= MAX_METRIC_NAME_LENGTH \
+			and value.strip_edges() == value \
+			and not _has_control_character(value)
+
+
+func _is_valid_metric_unit(value: String) -> bool:
+	return value.length() <= MAX_METRIC_UNIT_LENGTH \
+			and not _has_control_character(value) \
+			and not _has_whitespace(value)
+
+
+func _is_valid_metric_attributes(attributes: Dictionary) -> bool:
+	for key: Variant in attributes.keys():
+		if not (key is String) and not (key is StringName):
+			return false
+		var key_string: String = str(key)
+		if key_string.is_empty() \
+				or key_string.length() > MAX_METRIC_ATTRIBUTE_KEY_LENGTH \
+				or key_string.strip_edges() != key_string \
+				or _has_control_character(key_string):
+			return false
+		if not _is_valid_metric_attribute_value(attributes[key]):
+			return false
+	return true
+
+
+func _is_valid_metric_attribute_value(value: Variant) -> bool:
+	if value is bool or value is int or value is String or value is StringName:
+		return true
+	if value is float:
+		return is_finite(value)
+	return false
+
+
+func _has_whitespace(value: String) -> bool:
+	for index: int in range(value.length()):
+		var codepoint: int = value.unicode_at(index)
+		if codepoint == 32 or codepoint == 160 \
+				or (codepoint >= 8192 and codepoint <= 8202) \
+				or codepoint == 8232 or codepoint == 8233 \
+				or codepoint == 8239 or codepoint == 8287 or codepoint == 12288:
+			return true
+	return false
+
+
+func _accept_metric_sample() -> bool:
+	_metric_sample_accumulator += _config.metric_sample_rate
+	if _metric_sample_accumulator < 1.0:
+		return false
+	_metric_sample_accumulator -= 1.0
+	return true
+
+
+func _reset_metric_sampling() -> void:
+	_metric_sample_accumulator = 0.0
+
+
 func _capture_event(event: ObservabilityEvent) -> String:
 	if not is_enabled() or _provider == null:
 		return ""
@@ -261,6 +441,7 @@ func shutdown() -> void:
 	_config = ObservabilityConfig.new(p_enabled = false)
 	_last_error = Error.OK
 	_reset_log_rate_limit()
+	_reset_metric_sampling()
 
 
 ## Shuts down the service when its autoload leaves the scene tree.

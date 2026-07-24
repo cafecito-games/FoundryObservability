@@ -3,7 +3,7 @@ namespace foundry.observability
 ## Deterministic provider for tests and local integration work.
 class_name MemoryObservabilityProvider
 extends RefCounted
-uses ObservabilityProvider
+uses ObservabilityProvider, ObservabilityMetricsProvider
 
 ## Result returned by the next configure call.
 var configure_result: int = Error.OK
@@ -15,9 +15,12 @@ var last_flush_timeout_msec: int = 0
 var flush_count: int = 0
 ## Number of effective shutdown calls received by this provider.
 var shutdown_count: int = 0
+## Result returned by custom metric capture calls.
+var metric_capture_result: bool = true
 
 var _events: Array[ObservabilityEvent] = []
 var _feedback: Array[ObservabilityFeedback] = []
+var _metrics: Array[ObservabilityMetric] = []
 var _event_sequence: int = 0
 var _feedback_sequence: int = 0
 var _enabled: bool = false
@@ -61,6 +64,14 @@ func capture_feedback(p_feedback: ObservabilityFeedback) -> String:
 	return "memory-feedback:%s" % _feedback_sequence
 
 
+## Stores a normalized custom metric when enabled.
+func capture_metric(metric: ObservabilityMetric) -> bool:
+	if not _enabled or _shutdown or not metric_capture_result:
+		return false
+	_metrics.append(metric)
+	return true
+
+
 ## Records the timeout and returns flush_result.
 func flush(timeout_msec: int = 2000) -> int:
 	last_flush_timeout_msec = timeout_msec
@@ -86,6 +97,11 @@ func feedback() -> Array[ObservabilityFeedback]:
 	return _feedback.duplicate()
 
 
+## Returns a shallow copy of captured normalized metrics.
+func metrics() -> Array[ObservabilityMetric]:
+	return _metrics.duplicate()
+
+
 ## Removes captured events without changing provider configuration.
 func clear() -> void:
 	_events.clear()
@@ -94,3 +110,8 @@ func clear() -> void:
 ## Removes captured feedback without changing provider configuration.
 func clear_feedback() -> void:
 	_feedback.clear()
+
+
+## Removes captured metrics without changing provider configuration.
+func clear_metrics() -> void:
+	_metrics.clear()

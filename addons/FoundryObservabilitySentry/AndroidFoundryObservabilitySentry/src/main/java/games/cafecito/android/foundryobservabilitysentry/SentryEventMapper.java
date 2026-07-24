@@ -13,6 +13,27 @@ import java.util.Map;
 final class SentryEventMapper {
   private SentryEventMapper() {}
 
+  static final class MetricPayload {
+    final int type;
+    final String name;
+    final double value;
+    final String unit;
+    final Map<String, Object> attributes;
+
+    MetricPayload(
+        int type,
+        String name,
+        double value,
+        String unit,
+        Map<String, Object> attributes) {
+      this.type = type;
+      this.name = name;
+      this.value = value;
+      this.unit = unit;
+      this.attributes = attributes;
+    }
+  }
+
   static SentryLevel sentryLevel(int level) {
     switch (level) {
       case 10:
@@ -115,6 +136,61 @@ final class SentryEventMapper {
       }
     }
     return event;
+  }
+
+  static MetricPayload metricPayload(Map<?, ?> payload) {
+    if (payload == null
+        || !(payload.get("type") instanceof Number)
+        || !(payload.get("name") instanceof String)
+        || !(payload.get("value") instanceof Number)) {
+      return null;
+    }
+
+    int type = ((Number) payload.get("type")).intValue();
+    String name = (String) payload.get("name");
+    double value = ((Number) payload.get("value")).doubleValue();
+    if (type < 0 || type > 2 || name.isEmpty() || !Double.isFinite(value)) {
+      return null;
+    }
+    if (type == 0 && (value < 0.0D || value != Math.rint(value))) {
+      return null;
+    }
+
+    String unit = payload.get("unit") instanceof String
+        ? (String) payload.get("unit")
+        : null;
+    if (unit != null && unit.isEmpty()) {
+      unit = null;
+    }
+    Map<String, Object> attributes = metricAttributes(payload.get("attributes"));
+    return new MetricPayload(type, name, value, unit, attributes);
+  }
+
+  private static Map<String, Object> metricAttributes(Object value) {
+    Map<String, Object> result = new HashMap<>();
+    if (!(value instanceof Map)) {
+      return result;
+    }
+    for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+      if (!(entry.getKey() instanceof String)) {
+        continue;
+      }
+      Object attribute = entry.getValue();
+      if (attribute instanceof Boolean || attribute instanceof String) {
+        result.put((String) entry.getKey(), attribute);
+      } else if (attribute instanceof Byte
+          || attribute instanceof Short
+          || attribute instanceof Integer
+          || attribute instanceof Long) {
+        result.put((String) entry.getKey(), ((Number) attribute).longValue());
+      } else if (attribute instanceof Float || attribute instanceof Double) {
+        double number = ((Number) attribute).doubleValue();
+        if (Double.isFinite(number)) {
+          result.put((String) entry.getKey(), number);
+        }
+      }
+    }
+    return result;
   }
 
   private static Object copyValue(Object value) {

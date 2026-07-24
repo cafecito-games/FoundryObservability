@@ -15,6 +15,8 @@ The first core slice is available now:
   global/per-record scalar attributes.
 - Explicit player feedback capture with validation, optional identity, and
   optional association to a returned event ID.
+- First-class counters, gauges, and distributions with validation, filtering,
+  deterministic sampling, units, and scalar attributes.
 - A FoundryLib `LogSink` adapter included in the core addon.
 - An optional `FoundryObservabilitySentry` provider addon backed by
   Foundry-Swift/Sentry Cocoa on Apple platforms and Sentry Android on Android.
@@ -61,6 +63,14 @@ FoundryObservability.capture_log(
 		ObservabilityLevel.INFO,
 		&"matchmaking",
 		-1,
+		{"region": "iad"},
+)
+FoundryObservability.capture_counter("match.started", 1, {"region": "iad"})
+FoundryObservability.capture_gauge("players.active", 12.0, "player")
+FoundryObservability.capture_distribution(
+		"matchmaking.duration",
+		187.5,
+		"millisecond",
 		{"region": "iad"},
 )
 FoundryObservability.capture_feedback(ObservabilityFeedback.new(

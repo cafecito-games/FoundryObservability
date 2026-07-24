@@ -5,7 +5,7 @@ import foundry.observability
 ## FoundryScript adapter for the optional cross-platform Sentry native bridge.
 class_name SentryObservabilityProvider
 extends RefCounted
-uses ObservabilityProvider
+uses ObservabilityProvider, ObservabilityMetricsProvider
 
 const _NATIVE_CLASS: String = "SentryObservabilityBridge"
 
@@ -63,6 +63,7 @@ func configure(config: ObservabilityConfig) -> int:
 			"logs_enabled": config.logs_enabled,
 			"log_minimum_level": config.log_minimum_level,
 			"log_rate_limit_per_second": config.log_rate_limit_per_second,
+			"metrics_enabled": config.metrics_enabled,
 		}
 	var result: Variant = bridge.call("configure", payload)
 	if not (result is int):
@@ -123,6 +124,27 @@ func capture_feedback(feedback: ObservabilityFeedback) -> String:
 	if not feedback.associated_event_id().is_empty():
 		payload["associated_event_id"] = feedback.associated_event_id()
 	return str(bridge.call("captureFeedback", payload))
+
+
+## Translates one normalized custom metric to the optional native metrics API.
+func capture_metric(metric: ObservabilityMetric) -> bool:
+	if metric == null or not _enabled or _shutdown:
+		return false
+
+	var bridge: Object? = _resolve_bridge()
+	if bridge == null or not is_available() or not bridge.has_method("captureMetric"):
+		return false
+
+	var result: Variant = bridge.call("captureMetric", {
+			"type": metric.type(),
+			"name": metric.name(),
+			"value": metric.value(),
+			"unit": metric.unit(),
+			"attributes": metric.attributes(),
+		})
+	if not (result is bool):
+		return false
+	return result
 
 
 ## Flushes native Sentry work within the requested timeout.

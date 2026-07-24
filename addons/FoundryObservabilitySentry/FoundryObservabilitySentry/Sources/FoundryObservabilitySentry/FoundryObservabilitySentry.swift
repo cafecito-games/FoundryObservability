@@ -1,6 +1,6 @@
 import Foundation
 import FoundrySwift
-import Sentry
+@preconcurrency import Sentry
 
 #initFoundryExtension(
     cdecl: "foundry_observability_sentry_entry_point",
@@ -73,6 +73,19 @@ private func intValue(_ value: Any?) -> Int {
     return 0
 }
 
+private func doubleValue(_ value: Any?) -> Double? {
+    if let value = value as? Double {
+        return value
+    }
+    if let value = value as? Int64 {
+        return Double(value)
+    }
+    if let value = value as? Int {
+        return Double(value)
+    }
+    return nil
+}
+
 private func boolValue(_ value: Any?) -> Bool {
     value as? Bool ?? false
 }
@@ -99,6 +112,7 @@ class SentryObservabilityBridge: RefCounted {
     private var globalAttributes: [String: Any] = [:]
     private var configured = false
     private var logsEnabled = false
+    private var metricsEnabled = false
     private var didShutdown = false
 
     @Callable
@@ -110,6 +124,7 @@ class SentryObservabilityBridge: RefCounted {
         didShutdown = false
         globalAttributes = dictionaryValue(values["global_attributes"])
         logsEnabled = boolValue(values["logs_enabled"])
+        metricsEnabled = boolValue(values["metrics_enabled"])
 
         guard enabled else {
             return bridgeErrorOK
@@ -141,6 +156,7 @@ class SentryObservabilityBridge: RefCounted {
         options.debug = boolValue(dictionaryValue(values["provider_options"])["debug"])
         options.sendDefaultPii = boolValue(dictionaryValue(values["provider_options"])["send_default_pii"])
         options.enableLogs = logsEnabled
+        options.enableMetrics = metricsEnabled
         options.enabled = true
 
         SentrySDK.start(options: options)
@@ -211,6 +227,57 @@ class SentryObservabilityBridge: RefCounted {
     }
 
     @Callable
+    func captureMetric(payload: VariantDictionary) -> Bool {
+        guard isAvailable(), metricsEnabled else {
+            return false
+        }
+
+        let values = foundationDictionary(from: payload)
+        let type = intValue(values["type"])
+        let name = stringValue(values["name"])
+        guard
+            (0...2).contains(type),
+            !name.isEmpty,
+            let value = doubleValue(values["value"]),
+            value.isFinite
+        else {
+            return false
+        }
+
+        let attributes = sentryMetricAttributes(dictionaryValue(values["attributes"]))
+        let unit = sentryMetricUnit(for: stringValue(values["unit"]))
+        switch type {
+        case 0:
+            guard
+                value >= 0,
+                value.rounded(.towardZero) == value,
+                value <= Double(UInt.max),
+                let count = UInt(exactly: value)
+            else {
+                return false
+            }
+            SentrySDK.metrics.count(key: name, value: count, attributes: attributes)
+        case 1:
+            SentrySDK.metrics.gauge(
+                key: name,
+                value: value,
+                unit: unit,
+                attributes: attributes
+            )
+        case 2:
+            SentrySDK.metrics.distribution(
+                key: name,
+                value: value,
+                unit: unit,
+                attributes: attributes
+            )
+        default:
+            return false
+        }
+        return true
+    }
+
+    @Callable
     func captureFeedback(payload: VariantDictionary) -> String {
         guard isAvailable() else {
             return ""
@@ -266,6 +333,7 @@ class SentryObservabilityBridge: RefCounted {
         }
         configured = false
         logsEnabled = false
+        metricsEnabled = false
     }
 }
 

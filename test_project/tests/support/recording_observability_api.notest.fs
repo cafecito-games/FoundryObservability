@@ -73,6 +73,36 @@ func capture_feedback(feedback: ObservabilityFeedback) -> String:
 	return "feedback:1"
 
 
+func capture_metric(_metric: ObservabilityMetric) -> bool:
+	return true
+
+
+func capture_counter(
+		_metric_name: String,
+		_value: int = 1,
+		_attributes: Dictionary = {},
+) -> bool:
+	return true
+
+
+func capture_gauge(
+		_metric_name: String,
+		_value: float,
+		_unit: String = "",
+		_attributes: Dictionary = {},
+) -> bool:
+	return true
+
+
+func capture_distribution(
+		_metric_name: String,
+		_value: float,
+		_unit: String = "",
+		_attributes: Dictionary = {},
+) -> bool:
+	return true
+
+
 func flush(_timeout_msec: int = 2000) -> int:
 	return Error.OK
 

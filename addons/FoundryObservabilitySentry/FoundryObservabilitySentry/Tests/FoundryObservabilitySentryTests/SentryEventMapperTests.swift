@@ -67,6 +67,32 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertNil(attributes["unsupported"])
     }
 
+    func testMetricAttributesPreserveSupportedScalarValues() {
+        let attributes = sentryMetricAttributes([
+            "string": "value",
+            "bool": true,
+            "int": 42,
+            "int64": Int64(43),
+            "float": Float(1.5),
+            "double": 2.5,
+            "nested": ["unsupported": true],
+        ])
+
+        XCTAssertEqual(attributes["string"]?.asSentryAttributeContent, .string("value"))
+        XCTAssertEqual(attributes["bool"]?.asSentryAttributeContent, .boolean(true))
+        XCTAssertEqual(attributes["int"]?.asSentryAttributeContent, .integer(42))
+        XCTAssertEqual(attributes["int64"]?.asSentryAttributeContent, .integer(43))
+        XCTAssertEqual(attributes["float"]?.asSentryAttributeContent, .double(1.5))
+        XCTAssertEqual(attributes["double"]?.asSentryAttributeContent, .double(2.5))
+        XCTAssertNil(attributes["nested"])
+    }
+
+    func testMetricUnitsMapKnownAndCustomValues() {
+        XCTAssertNil(sentryMetricUnit(for: ""))
+        XCTAssertEqual(sentryMetricUnit(for: "millisecond"), .millisecond)
+        XCTAssertEqual(sentryMetricUnit(for: "player"), .generic("player"))
+    }
+
     func testConvertsTimeoutMillisecondsToSeconds() {
         XCTAssertEqual(sentryTimeoutSeconds(milliseconds: 321), 0.321, accuracy: 0.0001)
     }

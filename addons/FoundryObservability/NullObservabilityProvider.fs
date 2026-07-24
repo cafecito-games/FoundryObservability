@@ -3,7 +3,7 @@ namespace foundry.observability
 ## Safe provider used before configuration and when no backend is available.
 class_name NullObservabilityProvider
 extends RefCounted
-uses ObservabilityProvider
+uses ObservabilityProvider, ObservabilityMetricsProvider
 
 
 ## Returns the null provider identifier.
@@ -29,6 +29,11 @@ func capture(_event: ObservabilityEvent) -> String:
 ## Performs a safe no-op and returns an empty feedback ID.
 func capture_feedback(_feedback: ObservabilityFeedback) -> String:
 	return ""
+
+
+## Performs a safe no-op and rejects the metric without allocation.
+func capture_metric(_metric: ObservabilityMetric) -> bool:
+	return false
 
 
 ## Performs a safe no-op and returns Error.OK.

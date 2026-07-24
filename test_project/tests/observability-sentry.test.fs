@@ -154,6 +154,53 @@ func test_captures_feedback_with_only_explicit_optional_fields() -> void:
 	provider.shutdown()
 
 
+func test_forwards_normalized_custom_metrics_to_native_bridge() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_metrics_enabled = true,
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.capture_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE,
+			p_name = "players.active",
+			p_value = 7.0,
+			p_unit = "player",
+			p_attributes = {"region": "iad"},
+		))).to_be_true()
+	Expect.that(bridge.configured_payload["metrics_enabled"]).to_be_true()
+	Expect.that(bridge.captured_metric_payloads[0]).to_equal({
+			"type": ObservabilityMetricType.GAUGE,
+			"name": "players.active",
+			"value": 7.0,
+			"unit": "player",
+			"attributes": {"region": "iad"},
+		})
+	provider.shutdown()
+
+
+func test_missing_native_metric_capability_preserves_event_capture() -> void:
+	var provider := SentryObservabilityProvider.new(p_bridge = MetriclessSentryBridge.new())
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_metrics_enabled = true,
+		))).to_equal(Error.OK)
+
+	Expect.that(provider.capture_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.COUNTER,
+			p_name = "unsupported.metric",
+			p_value = 1.0,
+		))).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "ordinary event remains supported",
+		))).to_equal("sentry:1")
+	provider.shutdown()
+
+
 func test_rejects_bridge_without_feedback_method() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = FeedbacklessSentryBridge.new())
 

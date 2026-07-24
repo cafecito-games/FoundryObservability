@@ -60,6 +60,33 @@ func scalarLogAttributes(_ attributes: [String: Any]) -> [String: Any] {
     return result
 }
 
+func sentryMetricAttributes(_ attributes: [String: Any]) -> [String: SentryAttributeValue] {
+    var result: [String: SentryAttributeValue] = [:]
+    for (key, value) in attributes {
+        switch value {
+        case let value as String:
+            result[key] = value
+        case let value as Bool:
+            result[key] = value
+        case let value as Int:
+            result[key] = value
+        case let value as Int64:
+            result[key] = Int(value)
+        case let value as Float:
+            result[key] = Double(value)
+        case let value as Double:
+            result[key] = value
+        default:
+            continue
+        }
+    }
+    return result
+}
+
+func sentryMetricUnit(for value: String) -> SentryUnit? {
+    value.isEmpty ? nil : SentryUnit(rawValue: value)
+}
+
 struct FoundryExceptionPayload {
     let typeName: String
     let message: String
