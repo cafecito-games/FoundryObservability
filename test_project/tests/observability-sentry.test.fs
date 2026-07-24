@@ -90,6 +90,60 @@ func test_forwards_config_event_and_flush_to_native_bridge() -> void:
 	Expect.that(bridge.flush_timeouts).to_equal([321])
 
 
+func test_routes_log_events_to_native_structured_log_method() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {"build": 42},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_logs_enabled = true,
+			p_log_minimum_level = ObservabilityLevel.TRACE,
+		)
+	var event := ObservabilityEvent.new(
+			p_kind = &"log",
+			p_level = ObservabilityLevel.WARN,
+			p_message = "missed",
+			p_source = &"foundry.logging",
+			p_timestamp_msec = 1234,
+			p_attributes = {"logger_name": "combat", "id": 7},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.capture(event)).to_equal("sentry-log:1")
+	Expect.that(bridge.captured_log_payloads[0]["kind"]).to_equal("log")
+	Expect.that(bridge.captured_log_payloads[0]["timestamp_msec"]).to_equal(1234)
+	Expect.that(bridge.configured_payload["logs_enabled"]).to_be_true()
+	provider.shutdown()
+
+
+func test_rejects_bridge_without_structured_log_method() -> void:
+	var provider := SentryObservabilityProvider.new(p_bridge = EventOnlySentryBridge.new())
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		))).to_equal(Error.FAILED)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_kind = &"log",
+			p_message = "unsupported",
+		))).to_equal("")
+	provider.shutdown()
+
+
+func test_service_reports_structured_log_bridge_mismatch() -> void:
+	var service: FoundryObservability = _service()
+	var provider := SentryObservabilityProvider.new(p_bridge = EventOnlySentryBridge.new())
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		))).to_equal(Error.FAILED)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	Expect.that(service.capture_log("unsupported")).to_equal("")
+	provider.shutdown()
+	service.shutdown()
+
+
 func test_shutdown_is_idempotent() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
@@ -102,3 +156,8 @@ func test_shutdown_is_idempotent() -> void:
 	provider.shutdown()
 
 	Expect.that(bridge.shutdown_count).to_equal(1)
+
+
+func _service() -> FoundryObservability:
+	var tree: SceneTree = Engine.get_main_loop() as SceneTree
+	return tree.root.get_node("FoundryObservability") as FoundryObservability

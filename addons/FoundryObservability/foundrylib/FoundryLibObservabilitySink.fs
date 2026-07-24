@@ -26,15 +26,13 @@ func emit(record: LogRecord) -> void:
 	var attributes: Dictionary = record.fields.duplicate(true)
 	attributes["logger_name"] = record.logger_name
 	var event_level: int = _map_level(record.level)
-	var event: ObservabilityEvent = ObservabilityEvent.new(
-			p_kind = &"log",
-			p_level = event_level,
-			p_message = LogFormatter.render_message(record),
-			p_source = &"foundry.logging",
-			p_timestamp_msec = record.timestamp_msec,
-			p_attributes = attributes,
+	_service.capture_log(
+			LogFormatter.render_message(record),
+			event_level,
+			&"foundry.logging",
+			record.timestamp_msec,
+			attributes,
 		)
-	_service.capture_event(event)
 
 
 ## Forwards a default service flush request when a target service is available.

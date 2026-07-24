@@ -83,6 +83,29 @@ public class SentryObservabilityBridgeTest {
     bridge.shutdown();
   }
 
+  @Test
+  public void configuredBridgeCapturesStructuredLogs() {
+    SentryObservabilityBridge bridge = newBridge();
+
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("logs_enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+
+    assertEquals(0, bridge.configure(configuration));
+
+    Dictionary log = new Dictionary();
+    log.put("kind", "log");
+    log.put("level", 40);
+    log.put("message", "warning");
+    log.put("source", "foundry.logging");
+    log.put("timestamp_msec", 1234L);
+    log.put("attributes", java.util.Map.of("logger_name", "combat"));
+
+    assertFalse(bridge.captureLog(log).isEmpty());
+    bridge.shutdown();
+  }
+
   private static SentryObservabilityBridge newBridge() {
     return new SentryObservabilityBridge(
         Foundry.getInstance(RuntimeEnvironment.getApplication()));

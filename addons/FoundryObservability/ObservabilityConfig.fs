@@ -12,6 +12,12 @@ var environment: String = ""
 var release: String = ""
 ## Identifies an optional distribution variant of the release.
 var dist: String = ""
+## Enables structured log capture independently from messages and exceptions.
+var logs_enabled: bool = true
+## Filters structured logs below this normalized severity.
+var log_minimum_level: int = ObservabilityLevel.TRACE
+## Limits accepted logs per one-second timestamp window; zero delegates to the provider.
+var log_rate_limit_per_second: int = 0
 var _global_attributes: Dictionary = {}
 var _provider_options: Dictionary = {}
 
@@ -23,12 +29,18 @@ func _init(
 		p_release: String = "",
 		p_dist: String = "",
 		p_global_attributes: Dictionary = {},
-		p_provider_options: Dictionary = {}
+		p_provider_options: Dictionary = {},
+		p_logs_enabled: bool = true,
+		p_log_minimum_level: int = ObservabilityLevel.TRACE,
+		p_log_rate_limit_per_second: int = 0
 ) -> void:
 	enabled = p_enabled
 	environment = p_environment
 	release = p_release
 	dist = p_dist
+	logs_enabled = p_logs_enabled
+	log_minimum_level = p_log_minimum_level
+	log_rate_limit_per_second = maxi(0, p_log_rate_limit_per_second)
 	_global_attributes = p_global_attributes.duplicate(true)
 	_provider_options = p_provider_options.duplicate(true)
 

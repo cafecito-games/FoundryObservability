@@ -9,11 +9,14 @@ var _provider: ObservabilityProvider
 var _config: ObservabilityConfig
 var _last_error: int = Error.OK
 var _shutdown: bool = false
+var _log_window_second: int = -1
+var _log_window_count: int = 0
 
 
 func _init() -> void:
 	_provider = NullObservabilityProvider.new()
 	_config = ObservabilityConfig.new(p_enabled = false)
+	_reset_log_rate_limit()
 
 
 ## Configures a provider and activates it only after successful setup.
@@ -36,6 +39,7 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 		_config = candidate_config
 		_last_error = Error.OK
 		_shutdown = false
+		_reset_log_rate_limit()
 		return Error.OK
 
 	if _provider != null:
@@ -45,6 +49,7 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	_config = candidate_config
 	_last_error = Error.OK
 	_shutdown = false
+	_reset_log_rate_limit()
 	return Error.OK
 
 
@@ -72,13 +77,16 @@ func last_error() -> int:
 
 ## Captures an event and returns its provider ID, or an empty string on no-op or failure.
 func capture_event(event: ObservabilityEvent) -> String:
-	if event == null or not is_enabled() or _provider == null:
+	if event == null:
 		return ""
-
-	var event_id: String = _provider.capture(event)
-	if event_id.is_empty():
-		_last_error = Error.FAILED
-	return event_id
+	if not is_enabled() or _provider == null:
+		return ""
+	if event.kind() == &"log":
+		if not _config.logs_enabled or event.level() < _config.log_minimum_level:
+			return ""
+		if not _accept_log(event.timestamp_msec()):
+			return ""
+	return _capture_event(event)
 
 
 ## Creates a game-sourced message event using the current engine timestamp.
@@ -113,6 +121,61 @@ func capture_exception(exception: ObservabilityException, attributes: Dictionary
 	)
 
 
+## Creates a structured log event using the supplied or current engine timestamp.
+func capture_log(
+		message: String,
+		level: int = ObservabilityLevel.INFO,
+		source: StringName = &"game",
+		timestamp_msec: int = -1,
+		attributes: Dictionary = {},
+) -> String:
+	if not is_enabled() or _provider == null:
+		return ""
+	if not _config.logs_enabled or level < _config.log_minimum_level:
+		return ""
+	var event_timestamp: int = timestamp_msec
+	if event_timestamp < 0:
+		event_timestamp = Time.get_ticks_msec()
+	if not _accept_log(event_timestamp):
+		return ""
+	return _capture_event(ObservabilityEvent.new(
+			p_kind = &"log",
+			p_level = level,
+			p_message = message,
+			p_source = source,
+			p_timestamp_msec = event_timestamp,
+			p_attributes = attributes,
+		))
+
+
+func _capture_event(event: ObservabilityEvent) -> String:
+	if not is_enabled() or _provider == null:
+		return ""
+
+	var event_id: String = _provider.capture(event)
+	if event_id.is_empty():
+		_last_error = Error.FAILED
+	return event_id
+
+
+func _accept_log(timestamp_msec: int) -> bool:
+	var window_second: int = floori(float(timestamp_msec) / 1000.0)
+	if window_second != _log_window_second:
+		_log_window_second = window_second
+		_log_window_count = 0
+	if _config.log_rate_limit_per_second <= 0:
+		return true
+	if _log_window_count >= _config.log_rate_limit_per_second:
+		return false
+	_log_window_count += 1
+	return true
+
+
+func _reset_log_rate_limit() -> void:
+	_log_window_second = -1
+	_log_window_count = 0
+
+
 ## Flushes pending provider work within timeout_msec and stores the returned error.
 func flush(timeout_msec: int = 2000) -> int:
 	if _provider == null:
@@ -135,6 +198,7 @@ func shutdown() -> void:
 	_provider = NullObservabilityProvider.new()
 	_config = ObservabilityConfig.new(p_enabled = false)
 	_last_error = Error.OK
+	_reset_log_rate_limit()
 
 
 ## Shuts down the service when its autoload leaves the scene tree.

@@ -105,6 +105,112 @@ func test_memory_provider_captures_messages_and_exceptions() -> void:
 	service.shutdown()
 
 
+func test_structured_logs_are_enabled_by_default_and_preserve_shape() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {"build": 42},
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_log(
+			"player {id} missed",
+			ObservabilityLevel.WARN,
+			&"combat",
+			1234,
+			{"id": 7},
+		)).to_equal("memory:1")
+
+	var event: ObservabilityEvent = provider.events()[0]
+	Expect.that(event.kind()).to_equal(&"log")
+	Expect.that(event.level()).to_equal(ObservabilityLevel.WARN)
+	Expect.that(event.message()).to_equal("player {id} missed")
+	Expect.that(event.source()).to_equal(&"combat")
+	Expect.that(event.timestamp_msec()).to_equal(1234)
+	Expect.that(event.attributes()).to_equal({"id": 7})
+	service.shutdown()
+
+
+func test_structured_logs_honor_disabled_and_minimum_level_configuration() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_logs_enabled = false,
+			p_log_minimum_level = ObservabilityLevel.ERROR,
+		)
+
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	Expect.that(service.capture_log("disabled")).to_equal("")
+	Expect.that(provider.events()).to_have_size(0)
+
+	config.logs_enabled = true
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	Expect.that(service.capture_log("filtered", ObservabilityLevel.WARN)).to_equal("")
+	Expect.that(service.capture_log("kept", ObservabilityLevel.ERROR)).to_equal("memory:1")
+	Expect.that(provider.events()).to_have_size(1)
+	service.shutdown()
+
+
+func test_structured_logs_apply_deterministic_per_second_rate_limit() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_log_rate_limit_per_second = 1,
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_log("first", ObservabilityLevel.INFO, &"game", 1000)).to_equal("memory:1")
+	Expect.that(service.capture_log("dropped", ObservabilityLevel.INFO, &"game", 1500)).to_equal("")
+	Expect.that(service.capture_log("next window", ObservabilityLevel.INFO, &"game", 2000)).to_equal("memory:2")
+	Expect.that(provider.events()).to_have_size(2)
+	service.shutdown()
+
+
+func test_disabled_structured_logs_do_not_consume_rate_limit() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_enabled = true,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_log_rate_limit_per_second = 1,
+		)
+
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	config.enabled = false
+	Expect.that(service.capture_log("suppressed", ObservabilityLevel.INFO, &"game", 1000)).to_equal("")
+	config.enabled = true
+	Expect.that(service.capture_log("accepted", ObservabilityLevel.INFO, &"game", 1000)).to_equal("memory:1")
+	service.shutdown()
+
+
+func test_direct_structured_log_events_apply_enabled_gate_before_rate_limit() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_enabled = true,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_log_rate_limit_per_second = 1,
+		)
+	var event := ObservabilityEvent.new(
+			p_kind = &"log",
+			p_level = ObservabilityLevel.INFO,
+			p_message = "direct",
+			p_source = &"game",
+			p_timestamp_msec = 1000,
+		)
+
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	config.enabled = false
+	Expect.that(service.capture_event(event)).to_equal("")
+	config.enabled = true
+	Expect.that(service.capture_event(event)).to_equal("memory:1")
+	service.shutdown()
+
+
 func test_disabled_capture_and_flush_are_forwarded() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()

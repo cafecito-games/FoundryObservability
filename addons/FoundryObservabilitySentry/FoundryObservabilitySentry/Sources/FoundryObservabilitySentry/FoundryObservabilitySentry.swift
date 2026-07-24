@@ -98,6 +98,7 @@ private func exceptionPayload(_ value: Any?) -> FoundryExceptionPayload? {
 class SentryObservabilityBridge: RefCounted {
     private var globalAttributes: [String: Any] = [:]
     private var configured = false
+    private var logsEnabled = false
     private var didShutdown = false
 
     @Callable
@@ -108,6 +109,7 @@ class SentryObservabilityBridge: RefCounted {
         closeActiveClient()
         didShutdown = false
         globalAttributes = dictionaryValue(values["global_attributes"])
+        logsEnabled = boolValue(values["logs_enabled"])
 
         guard enabled else {
             return bridgeErrorOK
@@ -137,6 +139,7 @@ class SentryObservabilityBridge: RefCounted {
             options.dist = dist
         }
         options.debug = boolValue(dictionaryValue(values["provider_options"])["debug"])
+        options.enableLogs = logsEnabled
         options.enabled = true
 
         SentrySDK.start(options: options)
@@ -173,6 +176,40 @@ class SentryObservabilityBridge: RefCounted {
     }
 
     @Callable
+    func captureLog(payload: VariantDictionary) -> String {
+        guard isAvailable(), logsEnabled else {
+            return ""
+        }
+
+        let values = foundationDictionary(from: payload)
+        let attributes = scalarLogAttributes(mergedLogAttributes(
+            global: globalAttributes,
+            event: dictionaryValue(values["attributes"]),
+            kind: stringValue(values["kind"]),
+            source: stringValue(values["source"]),
+            timestampMsec: Int64(intValue(values["timestamp_msec"]))
+        ))
+        let message = stringValue(values["message"])
+        switch sentryLogLevel(for: intValue(values["level"])) {
+        case .trace:
+            SentrySDK.logger.trace(message, attributes: attributes)
+        case .debug:
+            SentrySDK.logger.debug(message, attributes: attributes)
+        case .info:
+            SentrySDK.logger.info(message, attributes: attributes)
+        case .warn:
+            SentrySDK.logger.warn(message, attributes: attributes)
+        case .error:
+            SentrySDK.logger.error(message, attributes: attributes)
+        case .fatal:
+            SentrySDK.logger.fatal(message, attributes: attributes)
+        @unknown default:
+            SentrySDK.logger.error(message, attributes: attributes)
+        }
+        return "sentry-log:\(UUID().uuidString)"
+    }
+
+    @Callable
     func flush(_ timeoutMsec: Int) -> Int {
         guard isAvailable() else {
             return bridgeErrorFailed
@@ -195,5 +232,6 @@ class SentryObservabilityBridge: RefCounted {
             SentrySDK.close()
         }
         configured = false
+        logsEnabled = false
     }
 }

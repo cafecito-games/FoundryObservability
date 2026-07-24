@@ -13,6 +13,16 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(sentryLevel(for: 35), .error)
     }
 
+    func testMapsStructuredLogLevels() {
+        XCTAssertEqual(sentryLogLevel(for: 10), .trace)
+        XCTAssertEqual(sentryLogLevel(for: 20), .debug)
+        XCTAssertEqual(sentryLogLevel(for: 30), .info)
+        XCTAssertEqual(sentryLogLevel(for: 40), .warn)
+        XCTAssertEqual(sentryLogLevel(for: 50), .error)
+        XCTAssertEqual(sentryLogLevel(for: 60), .fatal)
+        XCTAssertEqual(sentryLogLevel(for: 999), .error)
+    }
+
     func testEventExtrasOverrideGlobalExtrasAndPreserveMetadata() {
         let result = mergedExtras(
             global: ["shared": "global", "build": 42],
@@ -27,6 +37,34 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(result["foundry.kind"] as? String, "log")
         XCTAssertEqual(result["foundry.source"] as? String, "combat")
         XCTAssertEqual(result["foundry.timestamp_msec"] as? Int64, 1234)
+    }
+
+    func testStructuredLogAttributesPreserveFieldsAndReservedMetadata() {
+        let attributes = mergedLogAttributes(
+            global: ["shared": "global", "build": 42],
+            event: ["shared": "event", "foundry.kind": "caller"],
+            kind: "log",
+            source: "foundry.logging",
+            timestampMsec: 1234
+        )
+
+        XCTAssertEqual(attributes["shared"] as? String, "event")
+        XCTAssertEqual(attributes["build"] as? Int, 42)
+        XCTAssertEqual(attributes["foundry.kind"] as? String, "log")
+        XCTAssertEqual(attributes["foundry.source"] as? String, "foundry.logging")
+        XCTAssertEqual(attributes["foundry.timestamp_msec"] as? Int64, 1234)
+    }
+
+    func testStructuredLogAttributesOmitUnsupportedValues() {
+        let attributes = scalarLogAttributes([
+            "supported": "yes",
+            "unsupported": ["nested": true],
+            "timestamp": Int64(1234)
+        ])
+
+        XCTAssertEqual(attributes["supported"] as? String, "yes")
+        XCTAssertEqual(attributes["timestamp"] as? Int, 1234)
+        XCTAssertNil(attributes["unsupported"])
     }
 
     func testConvertsTimeoutMillisecondsToSeconds() {

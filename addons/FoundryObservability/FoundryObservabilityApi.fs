@@ -19,6 +19,14 @@ abstract func capture_event(event: ObservabilityEvent) -> String
 abstract func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String
 ## Creates and captures a game-sourced ERROR exception event.
 abstract func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String
+## Creates and captures a structured log record.
+abstract func capture_log(
+		message: String,
+		level: int = ObservabilityLevel.INFO,
+		source: StringName = &"game",
+		timestamp_msec: int = -1,
+		attributes: Dictionary = {},
+) -> String
 ## Flushes pending work within timeout_msec and returns an Error value.
 abstract func flush(timeout_msec: int = 2000) -> int
 ## Flushes and shuts down the service; repeated calls are safe.

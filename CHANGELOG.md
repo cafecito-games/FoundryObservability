@@ -16,3 +16,6 @@
   Foundry-Swift alpha.2 bridge, Sentry Cocoa integration, event mapping, and
   device/simulator xcframework packaging.
 - Pinned Sentry Cocoa to `9.23.0`.
+- Added first-class structured log delivery with default-enabled capture,
+  severity filtering, timestamp-window rate limiting, global/per-record scalar
+  attributes, and native Apple/Android Sentry log bridges.

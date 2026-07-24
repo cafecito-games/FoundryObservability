@@ -29,7 +29,7 @@ gradle_file="$android_source/build.gradle"
 rg -q 'extends FoundryPlugin' "$bridge_source" || fail "bridge must extend FoundryPlugin"
 rg -q 'return "SentryObservabilityBridge"' "$bridge_source" \
 	|| fail "bridge must use the shared plugin name"
-for method in configure isAvailable capture flush shutdown; do
+for method in configure isAvailable capture captureLog flush shutdown; do
 	rg -q "[[:space:]]$method\\(" "$bridge_source" \
 		|| fail "bridge is missing $method"
 done
@@ -37,6 +37,10 @@ rg -q 'io\.sentry:sentry-android:8\.50\.1' "$repo_root/addons/FoundryObservabili
 	|| fail "Sentry Android dependency is not pinned to 8.50.1"
 rg -q 'SentryAndroid\.init' "$bridge_source" || fail "bridge must initialize Sentry Android"
 rg -q 'Sentry\.captureEvent' "$bridge_source" || fail "bridge must capture Sentry events"
+rg -q 'Sentry\.logger\(\)' "$bridge_source" || fail "bridge must capture structured Sentry logs"
+rg -q 'SentryLogParameters' "$bridge_source" || fail "bridge must use Sentry log parameters"
+rg -q 'SentryAttributes\.fromMap' "$bridge_source" || fail "bridge must preserve structured attributes"
+rg -q 'getLogs\(\)\.setEnabled' "$bridge_source" || fail "bridge must configure Sentry logs"
 rg -q 'Sentry\.flush' "$bridge_source" || fail "bridge must flush Sentry events"
 rg -q 'Sentry\.close' "$bridge_source" || fail "bridge must close Sentry"
 
