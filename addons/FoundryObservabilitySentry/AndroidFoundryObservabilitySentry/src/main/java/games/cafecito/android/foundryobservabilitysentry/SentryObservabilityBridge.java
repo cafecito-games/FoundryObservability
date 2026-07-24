@@ -10,6 +10,7 @@ import io.sentry.SentryEvent;
 import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
 import io.sentry.logger.SentryLogParameters;
+import io.sentry.metrics.SentryMetricsParameters;
 import io.sentry.protocol.Feedback;
 import io.sentry.protocol.SentryId;
 import java.util.Collections;
@@ -24,6 +25,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
   private boolean configured;
   private boolean didShutdown;
   private boolean logsEnabled;
+  private boolean metricsEnabled;
 
   public SentryObservabilityBridge(Foundry foundry) {
     super(foundry);
@@ -40,6 +42,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     configured = false;
     didShutdown = false;
     logsEnabled = false;
+    metricsEnabled = false;
 
     if (payload == null) {
       return BRIDGE_ERROR_FAILED;
@@ -61,6 +64,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
     try {
       logsEnabled = booleanValue(payload.get("logs_enabled"));
+      metricsEnabled = booleanValue(payload.get("metrics_enabled"));
       Map<?, ?> providerOptions = payload.get("provider_options") instanceof Map
           ? (Map<?, ?>) payload.get("provider_options")
           : Collections.emptyMap();
@@ -70,6 +74,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
             options.setDsn(dsn);
             options.setSendDefaultPii(booleanValue(providerOptions.get("send_default_pii")));
             options.getLogs().setEnabled(logsEnabled);
+            options.getMetrics().setEnabled(metricsEnabled);
             options.setDebug(booleanValue(providerOptions.get("debug")));
             setIfNotEmpty(options::setEnvironment, payload.get("environment"));
             setIfNotEmpty(options::setRelease, payload.get("release"));
@@ -120,6 +125,39 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
         parameters,
         stringValue(values.get("message")));
     return "sentry-log:" + UUID.randomUUID();
+  }
+
+  @UsedByFoundry
+  public boolean captureMetric(Dictionary payload) {
+    if (!isAvailable() || !metricsEnabled) {
+      return false;
+    }
+
+    SentryEventMapper.MetricPayload metric = SentryEventMapper.metricPayload(payload);
+    if (metric == null) {
+      return false;
+    }
+
+    try {
+      SentryMetricsParameters parameters = SentryMetricsParameters.create(
+          SentryAttributes.fromMap(metric.attributes));
+      switch (metric.type) {
+        case 0:
+          Sentry.metrics().count(metric.name, metric.value, metric.unit, parameters);
+          break;
+        case 1:
+          Sentry.metrics().gauge(metric.name, metric.value, metric.unit, parameters);
+          break;
+        case 2:
+          Sentry.metrics().distribution(metric.name, metric.value, metric.unit, parameters);
+          break;
+        default:
+          return false;
+      }
+      return true;
+    } catch (RuntimeException exception) {
+      return false;
+    }
   }
 
   @UsedByFoundry
@@ -176,6 +214,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     }
     configured = false;
     logsEnabled = false;
+    metricsEnabled = false;
   }
 
   static String eventIdString(SentryId eventId) {

@@ -29,7 +29,7 @@ gradle_file="$android_source/build.gradle"
 rg -q 'extends FoundryPlugin' "$bridge_source" || fail "bridge must extend FoundryPlugin"
 rg -q 'return "SentryObservabilityBridge"' "$bridge_source" \
 	|| fail "bridge must use the shared plugin name"
-for method in configure isAvailable capture captureLog flush shutdown; do
+for method in configure isAvailable capture captureLog captureMetric flush shutdown; do
 	rg -q "[[:space:]]$method\\(" "$bridge_source" \
 		|| fail "bridge is missing $method"
 done
@@ -41,6 +41,12 @@ rg -q 'Sentry\.logger\(\)' "$bridge_source" || fail "bridge must capture structu
 rg -q 'SentryLogParameters' "$bridge_source" || fail "bridge must use Sentry log parameters"
 rg -q 'SentryAttributes\.fromMap' "$bridge_source" || fail "bridge must preserve structured attributes"
 rg -q 'getLogs\(\)\.setEnabled' "$bridge_source" || fail "bridge must configure Sentry logs"
+rg -q 'getMetrics\(\)\.setEnabled' "$bridge_source" || fail "bridge must configure Sentry metrics"
+rg -q 'Sentry\.metrics\(\)' "$bridge_source" || fail "bridge must capture Sentry metrics"
+for metric in count gauge distribution; do
+	rg -q "\\.${metric}\\(" "$bridge_source" \
+		|| fail "bridge is missing the ${metric} mapping"
+done
 rg -q 'Sentry\.flush' "$bridge_source" || fail "bridge must flush Sentry events"
 rg -q 'Sentry\.close' "$bridge_source" || fail "bridge must close Sentry"
 

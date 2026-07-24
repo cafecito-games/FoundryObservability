@@ -1,6 +1,9 @@
 package games.cafecito.android.foundryobservabilitysentry;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import io.sentry.SentryEvent;
@@ -82,5 +85,51 @@ public class SentryEventMapperTest {
 
     assertEquals("yes", result.get("supported"));
     assertTrue(!result.containsKey("unsupported"));
+  }
+
+  @Test
+  public void mapsMetricPayloadAndScalarAttributes() {
+    Map<String, Object> attributes = new HashMap<>();
+    attributes.put("string", "value");
+    attributes.put("bool", true);
+    attributes.put("int", 42);
+    attributes.put("long", 43L);
+    attributes.put("float", 1.5F);
+    attributes.put("double", 2.5D);
+    attributes.put("nested", Map.of("unsupported", true));
+
+    SentryEventMapper.MetricPayload result = SentryEventMapper.metricPayload(Map.of(
+        "type", 2,
+        "name", "request.duration",
+        "value", 12.5D,
+        "unit", "millisecond",
+        "attributes", attributes));
+
+    assertNotNull(result);
+    assertEquals(2, result.type);
+    assertEquals("request.duration", result.name);
+    assertEquals(12.5D, result.value, 0.0D);
+    assertEquals("millisecond", result.unit);
+    assertEquals("value", result.attributes.get("string"));
+    assertEquals(true, result.attributes.get("bool"));
+    assertEquals(42L, result.attributes.get("int"));
+    assertEquals(43L, result.attributes.get("long"));
+    assertEquals(1.5D, (Double) result.attributes.get("float"), 0.0D);
+    assertEquals(2.5D, (Double) result.attributes.get("double"), 0.0D);
+    assertFalse(result.attributes.containsKey("nested"));
+  }
+
+  @Test
+  public void rejectsInvalidMetricPayloads() {
+    assertNull(SentryEventMapper.metricPayload(Map.of(
+        "type", 9, "name", "metric", "value", 1.0D)));
+    assertNull(SentryEventMapper.metricPayload(Map.of(
+        "type", 0, "name", "counter", "value", -1.0D)));
+    assertNull(SentryEventMapper.metricPayload(Map.of(
+        "type", 0, "name", "counter", "value", 1.5D)));
+    assertNull(SentryEventMapper.metricPayload(Map.of(
+        "type", 1, "name", "", "value", 1.0D)));
+    assertNull(SentryEventMapper.metricPayload(Map.of(
+        "type", 1, "name", "metric", "value", Double.NaN)));
   }
 }
