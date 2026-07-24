@@ -4,9 +4,9 @@
 
 **Goal:** Add an optional `FoundryObservabilitySentry` addon with a tested FoundryScript provider and an iOS Foundry-Swift/Sentry Cocoa extension.
 
-**Architecture:** Keep `FoundryObservability` provider-neutral. Add a sibling addon whose FoundryScript provider forwards normalized dictionaries to a `SentryObservabilityBridge` native class. Build the native class as an iOS device/simulator xcframework; FoundrySwift remains supplied by the shared sibling addon.
+**Architecture:** Keep `FoundryObservability` provider-neutral. Add a sibling addon whose FoundryScript provider forwards normalized dictionaries to a `SentryObservabilityBridge` native class. Build the native class as an iOS device/simulator xcframework; link the prebuilt FoundrySwift artifacts from `Foundry-Swift-Binary` and keep the shared FoundrySwift runtime supplied by its sibling addon.
 
-**Tech Stack:** FoundryScript, Foundry testlib, Swift 6, Foundry-Swift-Binary `0.1.0-alpha.1`, Sentry Cocoa `9.13.0`, XcodeGen, XCTest, Task, shell contract tests.
+**Tech Stack:** FoundryScript, Foundry testlib, Swift 6, Foundry-Swift-Binary `0.1.0-alpha.2`, Sentry Cocoa `9.13.0`, XcodeGen, XCTest, Task, shell contract tests.
 
 ---
 
@@ -255,7 +255,12 @@ git commit -m "feat: add Sentry observability provider adapter"
 
 - [ ] **Step 1: Add `Package.swift`**
 
-Use Swift 6, iOS 17/macOS 14, and these exact products:
+Use Swift 6, iOS 17/macOS 14. The SwiftPM manifest is intentionally a
+mapper-test package: it depends on Sentry Cocoa but excludes the native bridge
+source, because the Foundry-Swift binary package uses local artifact paths and
+would otherwise make clean mapper tests fail before compilation. The XcodeGen
+native project pins Foundry-Swift-Binary `0.1.0-alpha.2` and compiles the bridge
+against its prebuilt framework and macro artifact.
 
 ```swift
 // swift-tools-version: 6.0
@@ -266,14 +271,12 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [.library(name: "FoundryObservabilitySentry", type: .dynamic, targets: ["FoundryObservabilitySentry"])],
     dependencies: [
-        .package(url: "https://github.com/cafecito-games/Foundry-Swift-Binary.git", exact: "0.1.0-alpha.1"),
         .package(url: "https://github.com/getsentry/sentry-cocoa.git", exact: "9.13.0"),
     ],
     targets: [
         .target(name: "FoundryObservabilitySentry", dependencies: [
-            .product(name: "FoundrySwift", package: "Foundry-Swift-Binary"),
             .product(name: "Sentry", package: "sentry-cocoa"),
-        ], path: "Sources/FoundryObservabilitySentry", swiftSettings: [.swiftLanguageMode(.v6)]),
+        ], path: "Sources/FoundryObservabilitySentry", exclude: ["FoundryObservabilitySentry.swift"], swiftSettings: [.swiftLanguageMode(.v6)]),
         .testTarget(name: "FoundryObservabilitySentryTests", dependencies: [
             "FoundryObservabilitySentry", .product(name: "Sentry", package: "sentry-cocoa"),
         ], path: "Tests/FoundryObservabilitySentryTests", swiftSettings: [.swiftLanguageMode(.v6)]),
@@ -421,11 +424,14 @@ target.
 ```sh
 cd addons/FoundryObservabilitySentry/FoundryObservabilitySentry
 xcodegen generate
+FOUNDRY_SENTRY_NATIVE_DIR="$PWD" FOUNDRY_SENTRY_DERIVED_DATA="../../../.build/sentry-xcodebuild" ../../../scripts/prepare-foundryswift-binary
 xcodebuild -resolvePackageDependencies -scheme FoundryObservabilitySentry_macOS -derivedDataPath ../../../.build/sentry-xcodebuild
 ```
 
 Expected: generated project, schemes, and Package.resolved are present and the
-project contains the generated Info.plist setting.
+project contains the generated Info.plist setting. The preparation step stages
+the published Foundry-Swift binary artifacts; it does not compile Foundry-Swift
+from source.
 
 - [ ] **Step 3: Add `ios:sentry` to `Taskfile.yml`**
 

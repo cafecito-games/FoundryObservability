@@ -31,10 +31,16 @@ the Sentry addon must not embed a second copy.
 
 The Sentry Cocoa SDK is the native iOS backend. Its SwiftPM package is pinned
 to an exact release, and the FoundrySwift binary package is pinned to the
-existing `0.1.0-alpha.1` release used by the migration reference. The local
+existing `0.1.0-alpha.2` release. The local
 `~/CafecitoGames/Foundry-Swift` checkout remains the API and toolchain reference
 for development; the committed addon build is reproducible without depending
 on that machine-local path.
+
+The native build consumes the prebuilt artifacts published by
+`Foundry-Swift-Binary`: `FoundrySwift.xcframework` and
+`FoundrySwiftMacros.artifactbundle`. The build helper stages and checksum-
+verifies those release assets in Xcode derived data before resolving the native
+project. Foundry-Swift source is not compiled as part of this addon build.
 
 ## Architecture
 
@@ -206,7 +212,7 @@ only the Sentry xcframework to iOS exports.
 
 The Swift package uses:
 
-- `Foundry-Swift-Binary` exact `0.1.0-alpha.1` for the shared Foundry bindings.
+- `Foundry-Swift-Binary` exact `0.1.0-alpha.2` for the shared Foundry bindings.
 - `getsentry/sentry-cocoa` exact `9.13.0` for the Sentry SDK.
 - Swift language mode 6.
 - iOS deployment target 17.0, matching the FoundrySwift binary and migration

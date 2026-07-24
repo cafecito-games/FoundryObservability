@@ -32,6 +32,17 @@ tasks:
     cmds:
       - scripts/test-package
 
+  test:sentry-swift:
+    desc: Run deterministic Sentry event-mapper XCTest cases
+    dir: addons/FoundryObservabilitySentry/FoundryObservabilitySentry
+    cmds:
+      - swift test
+
+  test:sentry-contract:
+    desc: Validate Sentry iOS build and export contracts
+    cmds:
+      - scripts/test-sentry-ios-build-contract
+
   test:
     desc: Run all local validation gates
     deps:
@@ -40,8 +51,48 @@ tasks:
       - test:project
       - test:ci
       - test:package
+      - test:sentry-swift
+      - test:sentry-contract
 
   package:
-    desc: Create a distributable FoundryObservability addon zip
+    desc: Create distributable FoundryObservability addon zips
     cmds:
       - scripts/package-addon
+      - scripts/package-sentry-addon
+
+  package:sentry:
+    desc: Create a distributable FoundryObservabilitySentry addon zip
+    cmds:
+      - scripts/package-sentry-addon
+
+  ios:sentry:
+    desc: Build the FoundryObservabilitySentry iOS xcframework
+    dir: addons/FoundryObservabilitySentry/FoundryObservabilitySentry
+    vars:
+      DERIVED_DATA: "{{.ROOT_DIR}}/.build/sentry-xcodebuild"
+    cmds:
+      - xcodegen generate
+      - FOUNDRY_SENTRY_NATIVE_DIR="$PWD" FOUNDRY_SENTRY_DERIVED_DATA="{{.DERIVED_DATA}}"
+          ../../../scripts/prepare-foundryswift-binary
+      - xcodebuild -resolvePackageDependencies
+          -scheme FoundryObservabilitySentry_iOS
+          -derivedDataPath "{{.DERIVED_DATA}}"
+      - mkdir -p ../bin/ios
+      - xcodebuild build
+          -scheme FoundryObservabilitySentry_iOS
+          -destination "generic/platform=iOS"
+          -configuration Release
+          -derivedDataPath "{{.DERIVED_DATA}}"
+          -skipPackagePluginValidation -skipMacroValidation
+      - xcodebuild build
+          -scheme FoundryObservabilitySentry_iOS
+          -destination "generic/platform=iOS Simulator"
+          -configuration Release
+          -derivedDataPath "{{.DERIVED_DATA}}"
+          -skipPackagePluginValidation -skipMacroValidation
+          ARCHS=arm64 CODE_SIGNING_ALLOWED=NO
+      - rm -rf ../bin/ios/FoundryObservabilitySentry.xcframework
+      - xcodebuild -create-xcframework
+          -framework "{{.DERIVED_DATA}}/Build/Products/Release-iphoneos/FoundryObservabilitySentry.framework"
+          -framework "{{.DERIVED_DATA}}/Build/Products/Release-iphonesimulator/FoundryObservabilitySentry.framework"
+          -output ../bin/ios/FoundryObservabilitySentry.xcframework

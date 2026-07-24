@@ -12,4 +12,6 @@
   dependency.
 - Renamed the public namespace to `foundry.observability` and documented the
   complete API inline and in the reference guide.
-- Sentry, native bindings, and crash reporting remain deferred.
+- Added the optional `FoundryObservabilitySentry` sibling addon with an iOS
+  Foundry-Swift alpha.2 bridge, Sentry Cocoa integration, event mapping, and
+  device/simulator xcframework packaging.

@@ -12,9 +12,12 @@ The first core slice is available now:
 - A null provider by default and an in-memory provider for tests and local work.
 - Provider replacement, flush, failure reporting, and idempotent shutdown.
 - A FoundryLib `LogSink` adapter included in the core addon.
+- An optional `FoundryObservabilitySentry` iOS provider addon backed by
+  Foundry-Swift and Sentry Cocoa.
 
-Sentry, native Swift/Android bindings, crash detection, and crash reporting are
-not included yet. They will be built behind this stable core contract.
+The Sentry addon is independently installable and keeps the core addon safe to
+use on platforms without the native Sentry bridge. Its first native artifact
+supports iOS device and simulator exports.
 
 ## Installation
 
@@ -25,6 +28,10 @@ reload the project. The plugin registers the **FoundryObservability** autoload.
 FoundryLib is a required dependency of the addon because the included
 `FoundryLibObservabilitySink` integrates with FoundryLib's structured logging.
 Install the FoundryLib package before importing or enabling the addon.
+
+For iOS Sentry reporting, also install the `FoundryObservabilitySentry` sibling
+addon and its `Foundry-Swift` dependency. Configure
+`SentryObservabilityProvider` as shown in [docs/API.md](docs/API.md).
 
 The public namespace is `foundry.observability`.
 
@@ -47,7 +54,8 @@ FoundryObservability.capture_message("game started")
 ```
 
 `MemoryObservabilityProvider` is intended for tests and local integration work.
-The first production provider will be added separately.
+The Sentry provider is optional and requires an iOS export containing its
+native xcframework.
 
 See [docs/API.md](docs/API.md) for the complete contract and FoundryLib sink
 setup.

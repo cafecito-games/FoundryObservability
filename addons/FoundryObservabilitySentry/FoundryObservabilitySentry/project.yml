@@ -1,0 +1,66 @@
+name: FoundryObservabilitySentry
+options:
+  bundleIdPrefix: com.cafecitogames
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "14.0"
+packages:
+  FoundrySwiftBinary:
+    url: https://github.com/cafecito-games/Foundry-Swift-Binary.git
+    exactVersion: 0.1.0-alpha.2
+  Sentry:
+    url: https://github.com/getsentry/sentry-cocoa.git
+    exactVersion: 9.13.0
+targets:
+  FoundryObservabilitySentry:
+    type: framework
+    platform: [iOS, macOS]
+    deploymentTarget:
+      iOS: "17.0"
+      macOS: "14.0"
+    sources:
+      - Sources/FoundryObservabilitySentry
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        BUILD_LIBRARY_FOR_DISTRIBUTION: YES
+        SKIP_INSTALL: NO
+        DEFINES_MODULE: YES
+        GENERATE_INFOPLIST_FILE: YES
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "0.1.0"
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../FoundrySwift/bin/macos_arm64"
+        OTHER_SWIFT_FLAGS: "-load-plugin-executable $(SRCROOT)/../../../.build/sentry-xcodebuild/SourcePackages/checkouts/Foundry-Swift-Binary/Binaries/FoundrySwiftMacros.artifactbundle/FoundrySwiftMacroLibrary-macos/bin/FoundrySwiftMacroLibrary#FoundrySwiftMacroLibrary"
+    dependencies:
+      - package: FoundrySwiftBinary
+        product: FoundrySwift
+      - package: Sentry
+        product: Sentry
+  FoundryObservabilitySentryTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget:
+      macOS: "14.0"
+    sources:
+      - Tests/FoundryObservabilitySentryTests
+    dependencies:
+      - target: FoundryObservabilitySentry_macOS
+      - package: Sentry
+        product: Sentry
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  FoundryObservabilitySentry_iOS:
+    build:
+      targets:
+        FoundryObservabilitySentry_iOS: all
+  FoundryObservabilitySentry_macOS:
+    build:
+      targets:
+        FoundryObservabilitySentry_macOS: all
+        FoundryObservabilitySentryTests: [test]
+    test:
+      targets:
+        - FoundryObservabilitySentryTests
