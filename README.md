@@ -26,7 +26,7 @@ FoundryLib is a required dependency of the addon because the included
 `FoundryLibObservabilitySink` integrates with FoundryLib's structured logging.
 Install the FoundryLib package before importing or enabling the addon.
 
-The public namespace is `games.cafecito.foundryobservability`.
+The public namespace is `foundry.observability`.
 
 ## Quick start
 
@@ -34,7 +34,7 @@ Configure a provider during game startup and emit typed events through the
 autoload:
 
 ```foundryscript
-import games.cafecito.foundryobservability
+import foundry.observability
 
 var config := ObservabilityConfig.new(true, "production", "1.0.0")
 var provider: ObservabilityProvider = MemoryObservabilityProvider.new()

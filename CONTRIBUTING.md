@@ -9,6 +9,10 @@ the FoundryLib `LogSink` adapter. FoundryLib owns the general-purpose logging
 framework; the adapter must not make FoundryLib depend on observability.
 Provider/native work belongs behind `ObservabilityProvider`.
 
+Use `foundry.observability` for core imports and
+`foundry.observability.foundrylib` for the FoundryLib adapter. The old
+pre-release namespace is not supported.
+
 Before opening a pull request, run:
 
 ```sh

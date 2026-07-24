@@ -1,92 +1,234 @@
 # FoundryObservability API
 
-The core API lives in the `games.cafecito.foundryobservability` namespace. Its
-provider and event contracts remain provider-neutral, while the addon requires
-FoundryLib's `foundry.logging` package for its included logging adapter. It
-does not depend on Sentry or native SDKs.
+FoundryObservability is the provider-neutral observability boundary for Foundry
+games. It normalizes messages, exceptions, and structured log records before
+dispatching them to a backend provider.
 
-## Setup
+The public namespace is **foundry.observability**. The FoundryLib adapter lives
+in **foundry.observability.foundrylib**. Global class and trait names are
+unchanged by the namespace migration.
 
-Copy or install `addons/FoundryObservability`, enable its editor plugin, and
-use the registered `FoundryObservability` autoload:
+## Installation and setup
 
-```foundryscript
-import games.cafecito.foundryobservability
+Install FoundryLib as a project package, then copy or install the
+addons/FoundryObservability directory. Enable the FoundryObservability editor
+plugin. The plugin registers the FoundryObservability autoload.
 
-var config := ObservabilityConfig.new(true, "production", "1.0.0")
+The addon currently requires FoundryLib because its core package includes the
+FoundryLib LogSink adapter. The first production backend, Sentry, is not part
+of this release.
+
+The smallest setup is:
+
+~~~
+import foundry.observability
+
+var config := ObservabilityConfig.new(
+		true,
+		"production",
+		"1.0.0",
+)
 var provider: ObservabilityProvider = MemoryObservabilityProvider.new()
-FoundryObservability.configure(provider, config)
+var result: int = FoundryObservability.configure(provider, config)
+if result != Error.OK:
+	# Handle configuration failure.
+	pass
+
 FoundryObservability.capture_message("game started")
-```
+~~~
 
-Install the FoundryLib package before importing or enabling the addon. The test
-project uses the package declared in `test_project/packages.toml`.
+FoundryObservability is an autoload, so consumers use the registered global
+service after the editor plugin has enabled it. The service starts with a safe
+NullObservabilityProvider and a disabled configuration.
 
-The null provider is active before configuration. `MemoryObservabilityProvider`
-is deterministic and intended for tests or local integration work.
+## Public API index
 
-## Value types
+Core service and contracts:
 
-### `ObservabilityLevel`
+- FoundryObservability: autoload service implementing the public API.
+- FoundryObservabilityApi: trait implemented by the autoload service.
+- ObservabilityProvider: trait implemented by backend providers.
 
-Severity constants are ordered from least to most severe:
+Value types:
 
-`TRACE = 10`, `DEBUG = 20`, `INFO = 30`, `WARN = 40`, `ERROR = 50`, and
-`FATAL = 60`.
+- ObservabilityLevel
+- ObservabilityConfig
+- ObservabilityException
+- ObservabilityEvent
 
-`ObservabilityLevel.name(level: int) -> String` returns the uppercase level
-name, or `LEVEL(value)` for an unknown value.
+Built-in providers:
 
-### `ObservabilityConfig`
+- NullObservabilityProvider
+- MemoryObservabilityProvider
+
+FoundryLib integration:
+
+- foundry.observability.foundrylib.FoundryLibObservabilitySink
+
+## Conventions
+
+### Error values
+
+Methods returning int use Foundry engine Error values. Error.OK means success.
+A provider configuration or flush failure is returned to the caller and stored
+by the service in last_error(). Capture methods return String event IDs rather
+than Error values. An empty capture ID means the event was not accepted; the
+service records Error.FAILED for an enabled provider that returns an empty ID.
+
+### Timestamps
+
+Event timestamps are integer engine milliseconds. The convenience capture
+methods use the current engine tick count. Providers should preserve the event
+timestamp when translating it to a backend format.
+
+### Defensive copies
+
+Configuration and event dictionaries are copied deeply when stored and when
+returned through accessors. This prevents callers from mutating a payload after
+it has been handed to the observability service. Memory provider events() copies
+the containing array; the event objects themselves are the captured objects.
+
+## ObservabilityLevel
+
+ObservabilityLevel defines the shared severity values used by events and log
+adapters. Values increase with severity:
+
+| Constant | Value | Meaning |
+| --- | ---: | --- |
+| TRACE | 10 | Most verbose diagnostic detail |
+| DEBUG | 20 | Debugging information |
+| INFO | 30 | Normal informational event |
+| WARN | 40 | Something unusual but recoverable |
+| ERROR | 50 | An operation or subsystem failed |
+| FATAL | 60 | A severe failure requiring attention |
+
+Static method:
+
+~~~
+static func name(level: int) -> String
+~~~
+
+Returns the uppercase constant name for a known value. Unknown values return
+LEVEL(value), for example LEVEL(35).
+
+## ObservabilityConfig
+
+ObservabilityConfig contains provider-neutral deployment metadata and opaque
+provider options.
 
 Constructor:
 
-```foundryscript
+~~~
 ObservabilityConfig.new(
-		enabled = true,
-		environment = "",
-		release = "",
-		dist = "",
-		global_attributes = {},
-		provider_options = {},
+		enabled: bool = true,
+		environment: String = "",
+		release: String = "",
+		dist: String = "",
+		global_attributes: Dictionary = {},
+		provider_options: Dictionary = {},
 )
-```
+~~~
 
-The `enabled`, `environment`, `release`, and `dist` fields are public.
-`global_attributes()` and `provider_options()` return deep copies. The core
-does not interpret provider options.
+Public fields:
 
-### `ObservabilityException`
-
-Constructor arguments are `type_name`, `message`, `stack_trace`, and
-`attributes`, with defaults `"Error"`, empty strings, and an empty dictionary.
-
-Accessors:
-
-- `type_name() -> String`
-- `message() -> String`
-- `stack_trace() -> String`
-- `attributes() -> Dictionary`
-
-The attributes dictionary is deep-copied on construction and access.
-
-### `ObservabilityEvent`
-
-Constructor arguments are `kind`, `level`, `message`, `source`,
-`timestamp_msec`, `attributes`, and optional `exception`. Defaults are
-`&"message"`, `INFO`, empty strings/names, `0`, an empty dictionary, and null.
+| Field | Type | Meaning |
+| --- | --- | --- |
+| enabled | bool | Whether the service may capture events after configuration |
+| environment | String | Deployment environment such as production or staging |
+| release | String | Game release identifier |
+| dist | String | Optional distribution variant |
 
 Accessors:
 
-`kind()`, `level()`, `message()`, `source()`, `timestamp_msec()`,
-`attributes()`, and `exception()` return the corresponding values. Event
-attributes are deep-copied on construction and access.
+~~~
+func global_attributes() -> Dictionary
+func provider_options() -> Dictionary
+~~~
 
-## Provider contract
+Both accessors return deep copies. global_attributes are shared metadata for a
+provider integration. provider_options are opaque to the core and are passed
+to provider implementations through the config object.
 
-`ObservabilityProvider` is a trait implemented by backend adapters:
+A null config passed to FoundryObservability.configure is replaced with a
+disabled ObservabilityConfig.
 
-```foundryscript
+## ObservabilityException
+
+ObservabilityException carries script or native failure data.
+
+Constructor:
+
+~~~
+ObservabilityException.new(
+		type_name: String = "Error",
+		message: String = "",
+		stack_trace: String = "",
+		attributes: Dictionary = {},
+)
+~~~
+
+Accessors:
+
+~~~
+func type_name() -> String
+func message() -> String
+func stack_trace() -> String
+func attributes() -> Dictionary
+~~~
+
+attributes are deep-copied on construction and access. The core does not
+interpret the type or stack string; providers decide how to map them.
+
+## ObservabilityEvent
+
+ObservabilityEvent is the normalized provider-neutral payload.
+
+Constructor:
+
+~~~
+ObservabilityEvent.new(
+		kind: StringName = &"message",
+		level: int = ObservabilityLevel.INFO,
+		message: String = "",
+		source: StringName = &"",
+		timestamp_msec: int = 0,
+		attributes: Dictionary = {},
+		exception: ObservabilityException? = null,
+)
+~~~
+
+Fields:
+
+| Parameter | Meaning |
+| --- | --- |
+| kind | Event category, such as message, exception, or log |
+| level | ObservabilityLevel value or another provider-defined integer |
+| message | Human-readable event text |
+| source | Subsystem that produced the event |
+| timestamp_msec | Engine timestamp in milliseconds |
+| attributes | Structured fields copied into the event |
+| exception | Optional exception payload |
+
+Accessors:
+
+~~~
+func kind() -> StringName
+func level() -> int
+func message() -> String
+func source() -> StringName
+func timestamp_msec() -> int
+func attributes() -> Dictionary
+func exception() -> ObservabilityException?
+~~~
+
+attributes are deep-copied on construction and access. exception is optional and
+is returned as the original payload object.
+
+## ObservabilityProvider
+
+ObservabilityProvider is the trait backend integrations implement:
+
+~~~
 trait_name ObservabilityProvider
 
 abstract func provider_name() -> StringName
@@ -95,92 +237,328 @@ abstract func configure(config: ObservabilityConfig) -> int
 abstract func capture(event: ObservabilityEvent) -> String
 abstract func flush(timeout_msec: int = 2000) -> int
 abstract func shutdown() -> void
-```
+~~~
 
-`capture()` returns a provider event ID or an empty string on failure.
-`configure()` and `flush()` return Foundry `Error` values.
+Method contracts:
 
-`NullObservabilityProvider` reports the name `&"null"`, is unavailable, and
-performs safe no-op operations.
+- provider_name returns a stable identifier such as memory, null, or sentry.
+- is_available reports whether the backend can currently accept events. It does
+  not configure or shut down the provider.
+- configure applies the complete config and returns Error.OK or a failure.
+  FoundryObservability configures a candidate before making it active.
+- capture translates one normalized event and returns a provider event ID.
+  Return an empty string when the event cannot be accepted.
+- flush attempts to deliver pending data within timeout_msec. It returns an
+  Error value; the service stores that value in last_error().
+- shutdown releases provider resources. Implementations must make repeated
+  shutdown calls safe because the service owns lifecycle cleanup.
 
-`MemoryObservabilityProvider` reports the name `&"memory"`, stores captured
-events, and exposes test controls: `configure_result`, `flush_result`,
-`last_flush_timeout_msec`, `flush_count`, and `shutdown_count`. Its `events()`
-and `clear()` methods support deterministic tests.
+Providers must not report their own configuration, capture, or flush failures
+through the FoundryLib logging sink. Doing so would create recursive reporting.
 
-## Autoload service
+## FoundryObservabilityApi
 
-`FoundryObservabilityApi` exposes the public service methods implemented by the
-`FoundryObservability` autoload:
+FoundryObservabilityApi is the provider-neutral service trait. It allows an
+integration or game subsystem to depend on the service contract without
+depending on the concrete autoload class:
 
-- `configure(provider, config = null) -> int`
-- `is_enabled() -> bool`
-- `is_available() -> bool`
-- `provider_name() -> StringName`
-- `last_error() -> int`
-- `capture_event(event) -> String`
-- `capture_message(message, level = INFO, attributes = {}) -> String`
-- `capture_exception(exception, attributes = {}) -> String`
-- `flush(timeout_msec = 2000) -> int`
-- `shutdown() -> void`
+~~~
+trait_name FoundryObservabilityApi
 
-If `config` is null, the service uses a disabled configuration. A candidate
-provider is configured before it replaces the active provider. A failed
-configuration leaves the existing provider and configuration active, and
-stores the returned error in `last_error()`.
+abstract func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = null) -> int
+abstract func is_enabled() -> bool
+abstract func is_available() -> bool
+abstract func provider_name() -> StringName
+abstract func last_error() -> int
+abstract func capture_event(event: ObservabilityEvent) -> String
+abstract func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String
+abstract func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String
+abstract func flush(timeout_msec: int = 2000) -> int
+abstract func shutdown() -> void
+~~~
 
-Reconfiguring the already-active provider updates its configuration without
-shutting it down. Replacing a different provider shuts the old provider down
-once, then clears the error state and activates the candidate.
+FoundryObservability implements this trait and is the service instance normally
+used by game code.
 
-Message events use kind `&"message"`, source `&"game"`, and the current engine
-timestamp. Exception events use kind `&"exception"`, `ERROR`, source `&"game"`,
-the exception message, and the exception payload.
+## FoundryObservability autoload
 
-Capture methods are non-throwing. They return an empty ID while disabled or
-when the provider cannot capture. An enabled provider that returns an empty ID
-sets `last_error()` to `Error.FAILED`. `flush()` forwards its timeout and stores
-the returned error. `shutdown()` flushes and shuts down once, restores the
-disabled null-provider state, and is also called from `_exit_tree()`.
+FoundryObservability is the registered service and implements
+FoundryObservabilityApi.
 
-Provider failures are stored in the status API and are not emitted through
-FoundryLib logging, preventing recursive error reporting.
+### configure
+
+~~~
+func configure(
+		provider: ObservabilityProvider,
+		config: ObservabilityConfig? = null,
+) -> int
+~~~
+
+Behavior:
+
+1. A null provider returns Error.FAILED and remains inactive.
+2. A null config becomes a disabled ObservabilityConfig.
+3. The candidate provider is configured before replacing the active provider.
+4. A failed candidate configuration leaves the existing provider and config
+   active and stores the returned error.
+5. Configuring the already-active provider updates its config without shutting
+   it down.
+6. Configuring a different provider shuts down the old provider once, then
+   activates the candidate and clears last_error().
+
+The method returns the provider configure result.
+
+### Status methods
+
+~~~
+func is_enabled() -> bool
+func is_available() -> bool
+func provider_name() -> StringName
+func last_error() -> int
+~~~
+
+Before configuration, the service is disabled, unavailable, reports provider
+name null, and has last_error() equal to Error.OK.
+
+is_enabled reflects config.enabled. is_available delegates to the active
+provider. provider_name delegates to the active provider and returns null when
+no provider is active. last_error returns the latest stored configuration,
+capture, or flush error. A successful provider configuration clears the error.
+
+### capture_event
+
+~~~
+func capture_event(event: ObservabilityEvent) -> String
+~~~
+
+Returns an event ID from the active provider. It returns an empty string without
+calling the provider when event is null, the service is disabled, or no
+provider is active. If an enabled provider returns an empty ID, the service
+stores Error.FAILED.
+
+### capture_message
+
+~~~
+func capture_message(
+		message: String,
+		level: int = ObservabilityLevel.INFO,
+		attributes: Dictionary = {},
+) -> String
+~~~
+
+Creates an event with:
+
+- kind message
+- the requested level
+- the supplied message
+- source game
+- the current engine timestamp
+- the supplied attributes
+- no exception payload
+
+It then forwards that event through capture_event.
+
+Example:
+
+~~~
+import foundry.observability
+
+var event_id: String = FoundryObservability.capture_message(
+		"player entered the arena",
+		ObservabilityLevel.INFO,
+		{"arena": "north"},
+)
+~~~
+
+### capture_exception
+
+~~~
+func capture_exception(
+		exception: ObservabilityException,
+		attributes: Dictionary = {},
+) -> String
+~~~
+
+A null exception returns an empty ID and stores Error.FAILED. Otherwise it
+creates an event with kind exception, level ERROR, source game, current engine
+timestamp, exception.message() as the message, the supplied attributes, and the
+exception payload.
+
+Example:
+
+~~~
+import foundry.observability
+
+var exception := ObservabilityException.new(
+		"NetworkError",
+		"Matchmaking request failed",
+		stack_trace,
+		{"region": "iad"},
+)
+FoundryObservability.capture_exception(exception)
+~~~
+
+### flush
+
+~~~
+func flush(timeout_msec: int = 2000) -> int
+~~~
+
+Forwards timeout_msec to the active provider and stores the returned Error
+value. With no active provider, it returns Error.OK.
+
+### shutdown
+
+~~~
+func shutdown() -> void
+~~~
+
+shutdown is idempotent. The first call flushes, shuts down the active provider,
+restores the NullObservabilityProvider, restores a disabled config, and resets
+last_error() to Error.OK. Later calls do nothing. The autoload also calls
+shutdown from _exit_tree.
+
+## Built-in providers
+
+### NullObservabilityProvider
+
+NullObservabilityProvider is active before configuration and whenever shutdown
+restores the service. It reports provider name null, is_available false,
+returns Error.OK from configure and flush, returns empty IDs from capture, and
+has a safe no-op shutdown.
+
+### MemoryObservabilityProvider
+
+MemoryObservabilityProvider is a deterministic local provider for tests and
+development. It reports provider name memory and is always available.
+
+Public test controls:
+
+| Member | Behavior |
+| --- | --- |
+| configure_result | Result returned by configure before state changes |
+| flush_result | Result returned by flush |
+| last_flush_timeout_msec | Timeout from the most recent flush |
+| flush_count | Number of flush calls |
+| shutdown_count | Number of effective shutdown calls |
+
+Public methods:
+
+~~~
+func events() -> Array[ObservabilityEvent]
+func clear() -> void
+~~~
+
+events returns a copy of the captured event list. clear removes captured events
+without changing configuration. Successful capture returns sequential IDs in
+the form memory:N. Capture returns an empty ID while disabled or after shutdown.
+
+Example:
+
+~~~
+import foundry.observability
+
+var provider := MemoryObservabilityProvider.new()
+FoundryObservability.configure(provider, ObservabilityConfig.new(true))
+FoundryObservability.capture_message("test event")
+var captured: Array[ObservabilityEvent] = provider.events()
+~~~
 
 ## FoundryLib integration
 
-The core addon includes the explicit `FoundryLibObservabilitySink` adapter.
-FoundryLib must be installed as a project package before the source is
-imported; the adapter does not install itself or register an autoload.
+The core addon includes FoundryLibObservabilitySink. FoundryLib must be installed
+as a project package before importing this adapter. The sink is explicit: it
+does not install itself and does not register an autoload.
 
-```foundryscript
+~~~
 import foundry.logging
-import games.cafecito.foundryobservability
-import games.cafecito.foundryobservability.foundrylib
+import foundry.observability
+import foundry.observability.foundrylib
 
 var sink := FoundryLibObservabilitySink.new(
-		FoundryObservability, ObservabilityLevel.ERROR)
+		FoundryObservability,
+		ObservabilityLevel.ERROR,
+)
 Log.add_sink(sink)
-```
+~~~
 
-`FoundryLibObservabilitySink` implements `foundry.logging.LogSink`:
+Constructor:
 
-- Records below the configured minimum level are ignored.
-- `LogLevel` values are explicitly mapped to `ObservabilityLevel` values;
-  unknown values become `INFO`.
-- The event kind is `&"log"`, source is `&"foundry.logging"`, message text is
-  rendered with `LogFormatter.render_message(record)`, and the original log
-  timestamp is preserved.
-- Structured fields are deep-copied and augmented with `logger_name`.
-- `flush()` forwards to `FoundryObservability`.
+~~~
+FoundryLibObservabilitySink.new(
+		service: FoundryObservabilityApi,
+		minimum_level: int = ObservabilityLevel.ERROR,
+)
+~~~
 
-The default minimum level is `ERROR`, which avoids turning routine logs into
-telemetry volume. Use a lower threshold when the project explicitly needs
-debug or info telemetry.
+emit filters records below minimum_level or when its target service is null.
+Eligible records become log events with:
+
+| Field | Value |
+| --- | --- |
+| kind | log |
+| source | foundry.logging |
+| level | Explicit LogLevel mapping below |
+| message | LogFormatter.render_message(record) |
+| timestamp | record.timestamp_msec |
+| attributes | Deep copy of record.fields plus logger_name |
+| exception | null |
+
+Level mapping:
+
+| FoundryLib LogLevel | ObservabilityLevel |
+| --- | --- |
+| TRACE | TRACE |
+| DEBUG | DEBUG |
+| INFO | INFO |
+| WARN | WARN |
+| ERROR | ERROR |
+| FATAL | FATAL |
+| Unknown | INFO |
+
+flush forwards to FoundryObservability.flush() with its default timeout.
+Provider failures are stored in the service status API and are not emitted
+through FoundryLib, preventing recursive error reporting.
+
+## Custom provider outline
+
+A provider implements all methods in ObservabilityProvider and can translate
+ObservabilityEvent into any backend SDK:
+
+~~~
+namespace my_game.telemetry
+
+import foundry.observability
+
+class_name MyProvider
+extends RefCounted
+uses ObservabilityProvider
+
+func provider_name() -> StringName:
+	return &"my_provider"
+
+func is_available() -> bool:
+	return true
+
+func configure(config: ObservabilityConfig) -> int:
+	return Error.OK
+
+func capture(event: ObservabilityEvent) -> String:
+	return "my_provider:event"
+
+func flush(timeout_msec: int = 2000) -> int:
+	return Error.OK
+
+func shutdown() -> void:
+	pass
+~~~
+
+Configure the provider through the autoload. Provider-specific credentials and
+options belong in ObservabilityConfig.provider_options(); the core does not
+interpret them.
 
 ## Deliberate boundary
 
-This release does not include Sentry, Apple/Android native bindings, crash
-handlers, persistence, retry policy, user identity, breadcrumbs, attachments,
-or performance transactions. The stable provider/event contract is the
-foundation for those future integrations. A `foundry-cpp` project is not
-required by this core API.
+This core API does not include Sentry, Apple/Android native bindings, crash
+handlers, persistence, retries, user identity, breadcrumbs, attachments, or
+performance transactions. A foundry-cpp project is not required by this API.

@@ -39,3 +39,6 @@ intentionally skips directory symlinks.
 `task package` creates a zip containing exactly this runtime payload:
 
 - `addons/FoundryObservability`
+
+Current public source namespaces are `foundry.observability` and
+`foundry.observability.foundrylib`.
