@@ -148,4 +148,3 @@ cover level mapping and attribute precedence for structured logs. Android
 tests cover level mapping, scalar attribute conversion, bridge configuration,
 log routing, and synthetic accepted-log IDs. Public documentation describes
 the configuration contract and Apple/Android backend behavior.
-
