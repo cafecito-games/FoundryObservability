@@ -69,6 +69,31 @@ func test_config_copies_attributes_and_options() -> void:
 	Expect.that(config.provider_options()).to_equal({"provider_key": "value"})
 
 
+func test_metric_types_and_value_copy_attributes() -> void:
+	var source := {"region": "iad", "nested": {"attempt": 1}}
+	var metric := ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.DISTRIBUTION,
+			p_name = "match.duration",
+			p_value = 125.5,
+			p_unit = "millisecond",
+			p_attributes = source,
+		)
+	source["region"] = "changed"
+	var exposed: Dictionary = metric.attributes()
+	exposed["region"] = "also changed"
+
+	Expect.that(ObservabilityMetricType.COUNTER).to_equal(0)
+	Expect.that(ObservabilityMetricType.GAUGE).to_equal(1)
+	Expect.that(ObservabilityMetricType.DISTRIBUTION).to_equal(2)
+	Expect.that(metric.type()).to_equal(ObservabilityMetricType.DISTRIBUTION)
+	Expect.that(metric.name()).to_equal("match.duration")
+	Expect.that(metric.value()).to_be_close_to(125.5)
+	Expect.that(metric.unit()).to_equal("millisecond")
+	Expect.that(metric.attributes()).to_equal({
+			"region": "iad", "nested": {"attempt": 1},
+		})
+
+
 func test_default_null_provider_is_safe() -> void:
 	var service: FoundryObservability = _service()
 
