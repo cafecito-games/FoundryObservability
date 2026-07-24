@@ -2,8 +2,8 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-source_dir="$repo_root/addons/FoundryObservability"
-source_version=$(awk -F'"' '/^version=/{print $2; exit}' "$source_dir/plugin.cfg")
+core_source="$repo_root/addons/FoundryObservability"
+source_version=$(awk -F'"' '/^version=/{print $2; exit}' "$core_source/plugin.cfg")
 version="${VERSION:-$source_version}"
 
 fail() {
@@ -11,25 +11,26 @@ fail() {
 	exit 1
 }
 
-[[ -d "$source_dir" ]] || fail "addon directory is missing"
+[[ -d "$core_source" ]] || fail "core addon directory is missing"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
 	|| fail "version must be numeric semver: $version"
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundryobservability-package.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
 mkdir -p "$tmp_dir/addons"
-cp -R "$source_dir" "$tmp_dir/addons/FoundryObservability"
+cp -R "$core_source" "$tmp_dir/addons/FoundryObservability"
 
 if [[ "$version" != "$source_version" ]]; then
 	awk -v version="$version" '
 		/^version="/ { print "version=\"" version "\""; next }
 		{ print }
-	' "$source_dir/plugin.cfg" >"$tmp_dir/addons/FoundryObservability/plugin.cfg"
+	' "$core_source/plugin.cfg" >"$tmp_dir/addons/FoundryObservability/plugin.cfg"
 fi
 
 find "$tmp_dir" -name '.DS_Store' -delete
 mkdir -p "$repo_root/dist"
 archive="$repo_root/dist/FoundryObservability-${version}.zip"
+rm -f "$archive"
 (
 	cd "$tmp_dir"
 	zip -qr "$archive" addons/FoundryObservability

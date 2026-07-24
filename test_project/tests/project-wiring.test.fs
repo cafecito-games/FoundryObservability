@@ -1,4 +1,4 @@
-namespace games.cafecito.foundryobservability.tests
+namespace foundry.observability.tests
 
 import foundry.testlib
 
@@ -18,6 +18,46 @@ func test_project_enables_foundry_observability_editor_plugin() -> void:
 			"editor_plugins/enabled", PackedStringArray())
 	Expect.that(
 			"res://addons/FoundryObservability/plugin.cfg" in enabled_plugins).to_be_true()
+
+func test_project_uses_foundrylib_adapter_from_core_addon() -> void:
+	var sink_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs")
+	Expect.that(sink_source).to_contain(
+			"namespace foundry.observability.foundrylib")
+	Expect.that(sink_source).to_contain(
+			"class_name FoundryLibObservabilitySink")
+	Expect.that(sink_source).to_contain("uses LogSink")
+	var packages_source: String = FileAccess.get_file_as_string(
+			"res://packages.toml")
+	Expect.that(packages_source).to_contain("[packages.foundrylib]")
+	Expect.that(packages_source).to_contain(
+			"url = \"https://github.com/cafecito-games/FoundryLib.git\"")
+	var enabled_plugins: PackedStringArray = ProjectSettings.get_setting(
+			"editor_plugins/enabled", PackedStringArray())
+	Expect.that(
+			"res://addons/FoundryObservability/plugin.cfg" in enabled_plugins).to_be_true()
+	Expect.that(
+			"res://addons/FoundryObservabilityFoundryLib/plugin.cfg" in enabled_plugins).to_be_false()
+	Expect.that(FileAccess.file_exists(
+			"res://addons/FoundryObservabilityFoundryLib/plugin.cfg")).to_be_false()
+
+func test_project_uses_foundry_observability_namespace() -> void:
+	var core_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/FoundryObservability.fs")
+	var api_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/FoundryObservabilityApi.fs")
+	var adapter_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs")
+	Expect.that(core_source).to_contain("namespace foundry.observability")
+	Expect.that(api_source).to_contain("namespace foundry.observability")
+	Expect.that(adapter_source).to_contain(
+			"namespace foundry.observability.foundrylib")
+	Expect.that(core_source.find(
+			"games.cafecito.foundryobservability")).to_equal(-1)
+	Expect.that(api_source.find(
+			"games.cafecito.foundryobservability")).to_equal(-1)
+	Expect.that(adapter_source.find(
+			"games.cafecito.foundryobservability")).to_equal(-1)
 
 func test_project_enforces_strict_foundry_script_warnings() -> void:
 	Expect.that(ProjectSettings.get_setting(

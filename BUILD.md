@@ -8,7 +8,10 @@
 - Python 3.12+ with the dependencies in `requirements.txt`
 - `prek`, `ripgrep`, `zip`, and `unzip`
 
-Set `FOUNDRY_BIN` when the Foundry executable is not on `PATH`:
+The repository scripts use the local Foundry development binary at
+`/Users/christian/CafecitoGames/Foundry/bin/foundry.macos.editor.dev.arm64`
+when it exists, then fall back to `foundry` on `PATH`. Set `FOUNDRY_BIN` to
+override that resolution:
 
 ```sh
 export FOUNDRY_BIN=/path/to/foundry
@@ -27,5 +30,15 @@ task package
 ```
 
 `task test:project` installs the packages declared in
-`test_project/packages.toml` with Anvil. The installed
-`test_project/addons/foundrylib/` directory is generated and ignored by Git.
+`test_project/packages.toml` with Anvil and runs both the core and FoundryLib
+sink suites. The installed `test_project/addons/foundrylib/` directory is
+generated and ignored by Git. The local core addon symlink is materialized
+temporarily during headless runtime tests because Foundry's source scan
+intentionally skips directory symlinks.
+
+`task package` creates a zip containing exactly this runtime payload:
+
+- `addons/FoundryObservability`
+
+Current public source namespaces are `foundry.observability` and
+`foundry.observability.foundrylib`.
