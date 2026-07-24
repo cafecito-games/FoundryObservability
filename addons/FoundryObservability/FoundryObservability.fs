@@ -1,5 +1,5 @@
 @autoload
-namespace games.cafecito.foundryobservability
+namespace foundry.observability
 
 ## Autoload entry point for the provider-neutral game observability API.
 class_name FoundryObservability extends Node

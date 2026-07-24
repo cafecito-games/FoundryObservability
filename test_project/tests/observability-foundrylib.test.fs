@@ -1,9 +1,9 @@
-namespace games.cafecito.foundryobservability.tests
+namespace foundry.observability.tests
 
 import foundry.logging
 import foundry.testlib
-import games.cafecito.foundryobservability
-import games.cafecito.foundryobservability.foundrylib
+import foundry.observability
+import foundry.observability.foundrylib
 
 class_name ObservabilityFoundryLibTests
 extends RefCounted

@@ -1,5 +1,5 @@
 @tool
-namespace games.cafecito.foundryobservability
+namespace foundry.observability
 
 extends EditorPlugin
 

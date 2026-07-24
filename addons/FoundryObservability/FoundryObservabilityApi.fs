@@ -1,4 +1,4 @@
-namespace games.cafecito.foundryobservability
+namespace foundry.observability
 
 ## Public contract implemented by the FoundryObservability autoload.
 trait_name FoundryObservabilityApi

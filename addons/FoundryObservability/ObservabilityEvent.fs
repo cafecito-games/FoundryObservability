@@ -1,4 +1,4 @@
-namespace games.cafecito.foundryobservability
+namespace foundry.observability
 
 ## Provider-neutral event payload.
 class_name ObservabilityEvent

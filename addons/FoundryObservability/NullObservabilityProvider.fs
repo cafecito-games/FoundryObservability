@@ -1,4 +1,4 @@
-namespace games.cafecito.foundryobservability
+namespace foundry.observability
 
 ## Safe provider used before configuration and when no backend is available.
 class_name NullObservabilityProvider

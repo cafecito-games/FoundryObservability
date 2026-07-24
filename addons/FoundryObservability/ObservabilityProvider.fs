@@ -1,4 +1,4 @@
-namespace games.cafecito.foundryobservability
+namespace foundry.observability
 
 ## Provider contract for translating core events into a backend SDK.
 trait_name ObservabilityProvider

@@ -1,4 +1,4 @@
-namespace games.cafecito.foundryobservability
+namespace foundry.observability
 
 ## Provider-neutral configuration shared by all integrations.
 class_name ObservabilityConfig

@@ -1,4 +1,4 @@
-namespace games.cafecito.foundryobservability.tests
+namespace foundry.observability.tests
 
 import foundry.testlib
 
@@ -23,7 +23,7 @@ func test_project_uses_foundrylib_adapter_from_core_addon() -> void:
 	var sink_source: String = FileAccess.get_file_as_string(
 			"res://addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs")
 	Expect.that(sink_source).to_contain(
-			"namespace games.cafecito.foundryobservability.foundrylib")
+			"namespace foundry.observability.foundrylib")
 	Expect.that(sink_source).to_contain(
 			"class_name FoundryLibObservabilitySink")
 	Expect.that(sink_source).to_contain("uses LogSink")

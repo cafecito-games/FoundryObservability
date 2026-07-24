@@ -1,4 +1,4 @@
-namespace games.cafecito.foundryobservability
+namespace foundry.observability
 
 ## Deterministic provider for tests and local integration work.
 class_name MemoryObservabilityProvider

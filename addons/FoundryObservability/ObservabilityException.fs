@@ -1,4 +1,4 @@
-namespace games.cafecito.foundryobservability
+namespace foundry.observability
 
 ## Provider-neutral exception payload.
 class_name ObservabilityException

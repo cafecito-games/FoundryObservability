@@ -1,4 +1,4 @@
-namespace games.cafecito.foundryobservability
+namespace foundry.observability
 
 ## Shared severity values for provider-neutral observability events.
 class_name ObservabilityLevel

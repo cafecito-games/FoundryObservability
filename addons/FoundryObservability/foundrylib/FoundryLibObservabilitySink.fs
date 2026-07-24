@@ -1,7 +1,7 @@
-namespace games.cafecito.foundryobservability.foundrylib
+namespace foundry.observability.foundrylib
 
 import foundry.logging
-import games.cafecito.foundryobservability
+import foundry.observability
 
 ## Forwards selected FoundryLib records into the core observability API.
 class_name FoundryLibObservabilitySink

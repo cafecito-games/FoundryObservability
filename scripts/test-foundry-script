@@ -36,7 +36,7 @@ rg -q '^name="FoundryObservability"$' "$addon/plugin.cfg" \
 	|| fail "plugin.cfg has the wrong addon name"
 rg -q '^version="0\.1\.0"$' "$addon/plugin.cfg" \
 	|| fail "plugin.cfg must start at version 0.1.0"
-rg -q '^namespace games\.cafecito\.foundryobservability$' "$addon/FoundryObservability.fs" \
+rg -q '^namespace foundry\.observability$' "$addon/FoundryObservability.fs" \
 	|| fail "autoload has the wrong namespace"
 rg -q '^class_name FoundryObservability extends Node$' "$addon/FoundryObservability.fs" \
 	|| fail "autoload class declaration is missing"
@@ -44,12 +44,24 @@ rg -q '^trait_name FoundryObservabilityApi$' "$addon/FoundryObservabilityApi.fs"
 	|| fail "public contract marker is missing"
 rg -q 'add_autoload_singleton\(' "$addon/export_plugin.fs" \
 	|| fail "editor plugin does not register the autoload"
-rg -q '^namespace games\.cafecito\.foundryobservability\.foundrylib$' "$addon/foundrylib/FoundryLibObservabilitySink.fs" \
+rg -q '^namespace foundry\.observability\.foundrylib$' "$addon/foundrylib/FoundryLibObservabilitySink.fs" \
 	|| fail "FoundryLib sink has the wrong namespace"
 rg -q '^class_name FoundryLibObservabilitySink$' "$addon/foundrylib/FoundryLibObservabilitySink.fs" \
 	|| fail "FoundryLib sink class declaration is missing"
 rg -q '^uses LogSink$' "$addon/foundrylib/FoundryLibObservabilitySink.fs" \
 	|| fail "FoundryLib sink does not implement LogSink"
+
+if rg -n --glob '*.fs' \
+	'^(namespace|import) games\.cafecito\.foundryobservability' \
+	"$addon" "$project_dir/tests"; then
+	fail "current FoundryScript declarations contain the removed namespace"
+fi
+
+for current_doc in README.md BUILD.md CONTRIBUTING.md CHANGELOG.md docs/API.md; do
+	if rg -n 'games\.cafecito\.foundryobservability' "$repo_root/$current_doc"; then
+		fail "current documentation contains the removed namespace: $current_doc"
+	fi
+done
 
 if rg -n --glob '*.fs' 'GDScript|GDscript|Godot|\.gdextension|\.godot' "$addon"; then
 	fail "addon sources contain legacy engine names"
