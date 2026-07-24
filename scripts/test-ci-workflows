@@ -23,12 +23,12 @@ foundry_script_test_line=$(awk '/^[[:space:]]+- task: test:foundry-script$/{ pri
 	|| fail "Taskfile.yml must install project packages before FoundryScript lint"
 
 for workflow in "$pr_workflow" "$release_workflow"; do
-	rg -q 'actions/checkout@v7([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/checkout@v7"
-	rg -q 'actions/setup-python@v7([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/setup-python@v7"
-	rg -q 'actions/setup-go@v7([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/setup-go@v7"
+	rg -q 'actions/checkout@v6([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/checkout@v6"
+	rg -q 'actions/setup-python@v6([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/setup-python@v6"
+	rg -q 'actions/setup-go@v6([[:space:]]|$)' "$workflow" \
+		|| fail "$(basename "$workflow") must use actions/setup-go@v6"
 	rg -q 'go-task/setup-task@v2([[:space:]]|$)' "$workflow" \
 		|| fail "$(basename "$workflow") must use go-task/setup-task@v2"
 	rg -q 'v0\.1\.0-alpha\.7' "$workflow" \
@@ -57,9 +57,10 @@ rg -q 'gh release create' "$release_workflow" \
 
 rg -q '^  build-android:' "$pr_workflow" \
 	|| fail "pull-request workflow must build the Android Sentry addon"
-rg -q 'actions/setup-java@v4([[:space:]]|$)' "$pr_workflow" \
+
+rg -q 'actions/setup-java@v5([[:space:]]|$)' "$pr_workflow" \
 	|| fail "pull-request workflow must set up Java 17 for Android"
-rg -q 'android-actions/setup-android@v3([[:space:]]|$)' "$pr_workflow" \
+rg -q 'android-actions/setup-android@v4([[:space:]]|$)' "$pr_workflow" \
 	|| fail "pull-request workflow must set up the Android SDK"
 rg -q "java-version: ['\"]?17['\"]?" "$pr_workflow" \
 	|| fail "pull-request workflow must use Java 17 for Android"
