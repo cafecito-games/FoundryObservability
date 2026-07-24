@@ -36,6 +36,23 @@ func test_disabled_configuration_is_safe_without_native_bridge() -> void:
 	Expect.that(provider.capture(ObservabilityEvent.new(p_message = "ignored"))).to_equal("")
 
 
+func test_resolves_registered_engine_singleton() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var provider := SentryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.capture(ObservabilityEvent.new(p_message = "singleton"))).to_equal("sentry:1")
+
+	provider.shutdown()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
 func test_forwards_config_event_and_flush_to_native_bridge() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)

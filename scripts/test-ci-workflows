@@ -55,4 +55,15 @@ rg -q 'GITHUB_OUTPUT' "$release_workflow" \
 rg -q 'gh release create' "$release_workflow" \
 	|| fail "release workflow must publish a GitHub release"
 
+rg -q '^  build-android:' "$pr_workflow" \
+	|| fail "pull-request workflow must build the Android Sentry addon"
+rg -q 'actions/setup-java@v4([[:space:]]|$)' "$pr_workflow" \
+	|| fail "pull-request workflow must set up Java 17 for Android"
+rg -q "java-version: ['\"]?17['\"]?" "$pr_workflow" \
+	|| fail "pull-request workflow must use Java 17 for Android"
+rg -q 'platforms;android-36' "$pr_workflow" \
+	|| fail "pull-request workflow must install Android SDK Platform 36"
+rg -q 'task android:sentry' "$pr_workflow" \
+	|| fail "pull-request workflow must build the Android Sentry AARs"
+
 echo "CI workflow contract checks passed"
