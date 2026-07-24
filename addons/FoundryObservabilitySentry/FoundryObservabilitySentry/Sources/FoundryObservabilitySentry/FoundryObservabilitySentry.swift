@@ -1,6 +1,6 @@
 import Foundation
 import FoundrySwift
-import Sentry
+@preconcurrency import Sentry
 
 #initFoundryExtension(
     cdecl: "foundry_observability_sentry_entry_point",
