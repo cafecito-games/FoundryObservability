@@ -1,0 +1,15 @@
+[configuration]
+entry_symbol = "foundry_observability_sentry_entry_point"
+compatibility_minimum = "0.1.0"
+
+[libraries]
+ios.debug = "res://addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework"
+ios.release = "res://addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework"
+ios.simulator.debug = "res://addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework"
+ios.simulator.release = "res://addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework"
+
+[dependencies]
+ios.debug = {}
+ios.release = {}
+ios.simulator.debug = {}
+ios.simulator.release = {}

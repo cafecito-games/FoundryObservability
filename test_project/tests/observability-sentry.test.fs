@@ -1,6 +1,7 @@
 namespace foundry.observability.sentry.tests
 
 import foundry.observability
+import foundry.observability.sentry
 import foundry.testlib
 
 class_name ObservabilitySentryTests
@@ -15,10 +16,14 @@ func test_provider_name_is_sentry() -> void:
 
 func test_enabled_configuration_requires_native_bridge_and_dsn() -> void:
 	var missing_dsn := SentryObservabilityProvider.new(p_bridge = FakeSentryBridge.new())
-	Expect.that(missing_dsn.configure(ObservabilityConfig.new())).to_equal(Error.FAILED)
+	Expect.that(missing_dsn.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+		))).to_equal(Error.FAILED)
 
 	var missing_bridge := SentryObservabilityProvider.new()
 	Expect.that(missing_bridge.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 		))).to_equal(Error.FAILED)
 
@@ -73,6 +78,7 @@ func test_shutdown_is_idempotent() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 		))).to_equal(Error.OK)
 	provider.shutdown()
