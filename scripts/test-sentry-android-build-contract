@@ -17,4 +17,27 @@ rg -q 'Engine\.get_singleton\(_NATIVE_CLASS\)' "$provider" \
 rg -q 'ClassDB\.class_exists\(_NATIVE_CLASS\)' "$provider" \
 	|| fail "provider must preserve Apple ClassDB resolution"
 
+android_source="$repo_root/addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry"
+bridge_source="$android_source/src/main/java/games/cafecito/android/foundryobservabilitysentry/SentryObservabilityBridge.java"
+manifest="$android_source/src/main/AndroidManifest.xml"
+gradle_file="$android_source/build.gradle"
+
+[[ -d "$android_source" ]] || fail "Android source module is missing"
+[[ -f "$bridge_source" ]] || fail "Android bridge source is missing"
+[[ -f "$manifest" ]] || fail "Android manifest is missing"
+[[ -f "$gradle_file" ]] || fail "Android Gradle file is missing"
+rg -q 'extends FoundryPlugin' "$bridge_source" || fail "bridge must extend FoundryPlugin"
+rg -q 'return "SentryObservabilityBridge"' "$bridge_source" \
+	|| fail "bridge must use the shared plugin name"
+for method in configure isAvailable capture flush shutdown; do
+	rg -q "[[:space:]]$method\\(" "$bridge_source" \
+		|| fail "bridge is missing $method"
+done
+rg -q 'io\.sentry:sentry-android:8\.50\.1' "$android_source/android-dependencies.txt" \
+	|| fail "Sentry Android dependency is not pinned to 8.50.1"
+rg -q 'SentryAndroid\.init' "$bridge_source" || fail "bridge must initialize Sentry Android"
+rg -q 'Sentry\.captureEvent' "$bridge_source" || fail "bridge must capture Sentry events"
+rg -q 'Sentry\.flush' "$bridge_source" || fail "bridge must flush Sentry events"
+rg -q 'Sentry\.close' "$bridge_source" || fail "bridge must close Sentry"
+
 echo "Sentry Android resolver contract checks passed"
