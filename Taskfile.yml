@@ -52,8 +52,8 @@ tasks:
       - test:sentry-swift
       - test:sentry-contract
     cmds:
-      - task: test:foundry-script
       - task: test:project
+      - task: test:foundry-script
 
   package:
     desc: Create distributable FoundryObservability addon zips
