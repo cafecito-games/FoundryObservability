@@ -439,7 +439,9 @@ func test_stack_frame_capture_bounds_variable_container_depth() -> void:
 	var at_limit: Array = ["leaf"]
 	for _index: int in range(7):
 		at_limit = [at_limit]
-	var beyond_limit: Array = [at_limit]
+	var beyond_limit: Array = ["leaf"]
+	for _index: int in range(8):
+		beyond_limit = [beyond_limit]
 	var expected_beyond_limit: Array = []
 	for _index: int in range(7):
 		expected_beyond_limit = [expected_beyond_limit]
@@ -511,18 +513,23 @@ func test_stack_frame_capture_bounds_total_variable_items() -> void:
 	service.shutdown()
 
 
-func test_stack_frame_capture_stops_cyclic_variable_traversal() -> void:
+func test_stack_frame_construction_omits_cyclic_array_references() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	var cyclic: Array = []
 	cyclic.append(cyclic)
+	var source_variables: Dictionary = {"cycle": cyclic, "finite": 7}
 	var frame := ObservabilityStackFrame.new(
 			p_file = "res://cycle.fs",
 			p_in_app = false,
 			p_pre_context = PackedStringArray(),
 			p_post_context = PackedStringArray(),
-			p_variables = {"cycle": cyclic, "finite": 7},
+			p_variables = source_variables,
 		)
+	cyclic.append("mutated")
+	source_variables["finite"] = 99
+
+	Expect.that(frame.variables()).to_equal({"cycle": [], "finite": 7})
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
 			p_global_attributes = {},
@@ -538,7 +545,89 @@ func test_stack_frame_capture_stops_cyclic_variable_traversal() -> void:
 	))).to_equal("memory:1")
 
 	var variables: Dictionary = provider.events()[0].exception().frames()[0].variables()
-	Expect.that(variables["finite"]).to_equal(7)
+	Expect.that(variables).to_equal({"cycle": [], "finite": 7})
+	service.shutdown()
+
+
+func test_stack_frame_construction_omits_cyclic_dictionary_references() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var cyclic: Dictionary = {"kept": "cycle value"}
+	cyclic["self"] = cyclic
+	var source_variables: Dictionary = {"cycle": cyclic, "finite": 7}
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://dictionary-cycle.fs",
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = source_variables,
+	)
+	cyclic["kept"] = "mutated"
+	source_variables["finite"] = 99
+
+	Expect.that(frame.variables()).to_equal({
+			"cycle": {"kept": "cycle value"},
+			"finite": 7,
+	})
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	Expect.that(provider.events()[0].exception().frames()[0].variables()).to_equal({
+			"cycle": {"kept": "cycle value"},
+			"finite": 7,
+	})
+	service.shutdown()
+
+
+func test_stack_frame_construction_omits_repeated_container_references() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var shared: Array = ["shared value"]
+	var source_variables: Dictionary = {
+		"first": shared,
+		"second": shared,
+		"finite": 7,
+	}
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://repeated.fs",
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = source_variables,
+	)
+	shared[0] = "mutated"
+	source_variables["finite"] = 99
+
+	Expect.that(frame.variables()).to_equal({"first": ["shared value"], "finite": 7})
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	Expect.that(provider.events()[0].exception().frames()[0].variables()).to_equal({
+			"first": ["shared value"],
+			"finite": 7,
+	})
 	service.shutdown()
 
 

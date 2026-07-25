@@ -20,10 +20,6 @@ const MAX_FEEDBACK_MESSAGE_LENGTH: int = 4096
 const MAX_METRIC_NAME_LENGTH: int = 200
 const MAX_METRIC_UNIT_LENGTH: int = 64
 const MAX_METRIC_ATTRIBUTE_KEY_LENGTH: int = 200
-## Limits nested Array and Dictionary values retained from stack-frame variables to eight levels.
-const MAX_STACK_VARIABLE_CONTAINER_DEPTH: int = 8
-## Limits total Array items and Dictionary entries traversed per stack frame to 256.
-const MAX_STACK_VARIABLE_ITEMS: int = 256
 
 
 func _init() -> void:
@@ -511,8 +507,8 @@ func _normalized_stack_frame(frame: ObservabilityStackFrame) -> ObservabilitySta
 	var variables: Dictionary = {}
 	if _config.stack_trace_variables_enabled:
 		variables = frame._bounded_sanitized_variables(
-				MAX_STACK_VARIABLE_CONTAINER_DEPTH,
-				MAX_STACK_VARIABLE_ITEMS,
+				ObservabilityStackFrame.MAX_VARIABLE_CONTAINER_DEPTH,
+				ObservabilityStackFrame.MAX_VARIABLE_ITEMS,
 		)
 	return ObservabilityStackFrame.new(
 			p_file = frame.file(),
