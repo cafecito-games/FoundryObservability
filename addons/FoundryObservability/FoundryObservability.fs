@@ -471,9 +471,9 @@ func _normalized_exception(exception: ObservabilityException) -> ObservabilityEx
 	for frame: ObservabilityStackFrame in exception.frames():
 		if frame == null:
 			continue
-		var normalized_frame: ObservabilityStackFrame = _normalized_stack_frame(frame)
-		if _is_useful_stack_frame(normalized_frame):
-			normalized_frames.append(normalized_frame)
+		if not _is_useful_stack_frame(frame):
+			continue
+		normalized_frames.append(_normalized_stack_frame(frame))
 	return ObservabilityException.new(
 			p_type_name = exception.type_name(),
 			p_message = exception.message(),
@@ -510,7 +510,10 @@ func _normalized_stack_frame(frame: ObservabilityStackFrame) -> ObservabilitySta
 
 	var variables: Dictionary = {}
 	if _config.stack_trace_variables_enabled:
-		variables = _normalized_stack_variables(frame.variables())
+		variables = frame._bounded_sanitized_variables(
+				MAX_STACK_VARIABLE_CONTAINER_DEPTH,
+				MAX_STACK_VARIABLE_ITEMS,
+		)
 	return ObservabilityStackFrame.new(
 			p_file = frame.file(),
 			p_function = frame.function(),
@@ -522,81 +525,6 @@ func _normalized_stack_frame(frame: ObservabilityStackFrame) -> ObservabilitySta
 			p_post_context = post_context,
 			p_variables = variables,
 	)
-
-
-func _normalized_stack_variables(variables: Dictionary) -> Dictionary:
-	var budget: Dictionary = {"remaining": MAX_STACK_VARIABLE_ITEMS}
-	return _normalized_stack_variable_dictionary(variables, 0, budget)
-
-
-func _normalized_stack_variable_dictionary(
-		variables: Dictionary,
-		container_depth: int,
-		budget: Dictionary,
-) -> Dictionary:
-	var normalized: Dictionary = {}
-	for key: Variant in variables:
-		if not _consume_stack_variable_item(budget):
-			break
-		if not (key is String) and not (key is StringName):
-			continue
-		var value: Variant = variables[key]
-		if _is_supported_stack_variable(value, container_depth + 1):
-			normalized[str(key)] = _normalized_stack_variable(
-					value,
-					container_depth + 1,
-					budget,
-			)
-	return normalized
-
-
-func _consume_stack_variable_item(budget: Dictionary) -> bool:
-	var remaining: int = budget["remaining"]
-	if remaining <= 0:
-		return false
-	budget["remaining"] = remaining - 1
-	return true
-
-
-func _is_supported_stack_variable(value: Variant, container_depth: int) -> bool:
-	if value is bool or value is int or value is String or value is StringName:
-		return true
-	if value is float:
-		return is_finite(value)
-	return (value is Array or value is Dictionary) \
-			and container_depth <= MAX_STACK_VARIABLE_CONTAINER_DEPTH
-
-
-func _normalized_stack_variable(
-		value: Variant,
-		container_depth: int,
-		budget: Dictionary,
-) -> Variant:
-	if value is StringName:
-		return str(value)
-	if value is Array:
-		return _normalized_stack_variable_array(value, container_depth, budget)
-	if value is Dictionary:
-		return _normalized_stack_variable_dictionary(value, container_depth, budget)
-	return value
-
-
-func _normalized_stack_variable_array(
-		values: Array,
-		container_depth: int,
-		budget: Dictionary,
-) -> Array:
-	var normalized: Array = []
-	for value: Variant in values:
-		if not _consume_stack_variable_item(budget):
-			break
-		if _is_supported_stack_variable(value, container_depth + 1):
-			normalized.append(_normalized_stack_variable(
-					value,
-					container_depth + 1,
-					budget,
-			))
-	return normalized
 
 
 func _capture_feedback(feedback: ObservabilityFeedback) -> String:

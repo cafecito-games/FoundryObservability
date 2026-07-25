@@ -7,6 +7,26 @@ class_name ObservabilityCoreTests
 extends RefCounted
 uses Test
 
+class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/ObservabilityStackFrame.fs":
+	var public_variables_calls: int = 0
+
+	func _init(p_file: String, p_variables: Dictionary) -> void:
+		super(
+				p_file,
+				"",
+				-1,
+				"",
+				true,
+				"",
+				PackedStringArray(),
+				PackedStringArray(),
+				p_variables,
+		)
+
+	func variables() -> Dictionary:
+		public_variables_calls += 1
+		return {"public accessor": true}
+
 
 func test_levels_are_ordered_and_named() -> void:
 	Expect.that(ObservabilityLevel.TRACE).to_be_less_than(ObservabilityLevel.DEBUG)
@@ -265,9 +285,26 @@ func test_stack_frame_capture_drops_non_identity_frames_and_keeps_partial_identi
 				),
 				ObservabilityStackFrame.new(
 						p_in_app = false,
+						p_pre_context = PackedStringArray(["pre-context only"]),
+				),
+				ObservabilityStackFrame.new(
+						p_in_app = false,
+						p_pre_context = PackedStringArray(),
+						p_post_context = PackedStringArray(["post-context only"]),
+				),
+				ObservabilityStackFrame.new(
+						p_in_app = false,
 						p_pre_context = PackedStringArray(),
 						p_post_context = PackedStringArray(),
 						p_variables = {"variables only": 1},
+				),
+				ObservabilityStackFrame.new(
+						p_line = 0,
+						p_in_app = false,
+				),
+				ObservabilityStackFrame.new(
+						p_line = -42,
+						p_in_app = false,
 				),
 				ObservabilityStackFrame.new(
 						p_file = "res://identity_only.fs",
@@ -302,6 +339,33 @@ func test_stack_frame_capture_drops_non_identity_frames_and_keeps_partial_identi
 	Expect.that(captured_frames[1].language()).to_equal("foundryscript")
 	Expect.that(captured_frames[2].function()).to_equal("attack")
 	Expect.that(captured_frames[3].line()).to_equal(42)
+	service.shutdown()
+
+
+func test_stack_frame_capture_uses_bounded_internal_variables_and_skips_dropped_frames() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var useful_frame := VariableCaptureProbeFrame.new("res://capture.fs", {"stored": true})
+	var dropped_frame := VariableCaptureProbeFrame.new("", {"stored": true})
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [useful_frame, dropped_frame],
+	))).to_equal("memory:1")
+
+	Expect.that(useful_frame.public_variables_calls).to_equal(0)
+	Expect.that(dropped_frame.public_variables_calls).to_equal(0)
+	var captured_frames: Array[ObservabilityStackFrame] = provider.events()[0].exception().frames()
+	Expect.that(captured_frames).to_have_size(1)
+	Expect.that(captured_frames[0].variables()).to_equal({"stored": true})
 	service.shutdown()
 
 

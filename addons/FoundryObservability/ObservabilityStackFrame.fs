@@ -81,3 +81,107 @@ func post_context() -> PackedStringArray:
 ## Returns a deep copy of the frame variables.
 func variables() -> Dictionary:
 	return _variables.duplicate(true)
+
+
+## Internal capture support that returns a provider-safe bounded copy of stored variables.
+## This method never returns or mutates the raw `_variables` container.
+final func _bounded_sanitized_variables(
+		max_container_depth: int,
+		max_total_items: int,
+) -> Dictionary:
+	var budget: Dictionary = {"remaining": maxi(0, max_total_items)}
+	return _bounded_sanitized_variable_dictionary(
+			_variables,
+			0,
+			maxi(0, max_container_depth),
+			budget,
+	)
+
+
+final func _bounded_sanitized_variable_dictionary(
+		source_variables: Dictionary,
+		container_depth: int,
+		max_container_depth: int,
+		budget: Dictionary,
+) -> Dictionary:
+	var sanitized: Dictionary = {}
+	for key: Variant in source_variables:
+		if not _consume_bounded_variable_item(budget):
+			break
+		if not (key is String) and not (key is StringName):
+			continue
+		var value: Variant = source_variables[key]
+		if _is_supported_bounded_variable(value, container_depth + 1, max_container_depth):
+			sanitized[str(key)] = _bounded_sanitized_variable(
+					value,
+					container_depth + 1,
+					max_container_depth,
+					budget,
+			)
+	return sanitized
+
+
+final func _consume_bounded_variable_item(budget: Dictionary) -> bool:
+	var remaining: int = budget["remaining"]
+	if remaining <= 0:
+		return false
+	budget["remaining"] = remaining - 1
+	return true
+
+
+final func _is_supported_bounded_variable(
+		value: Variant,
+		container_depth: int,
+		max_container_depth: int,
+) -> bool:
+	if value is bool or value is int or value is String or value is StringName:
+		return true
+	if value is float:
+		return is_finite(value)
+	return (value is Array or value is Dictionary) \
+			and container_depth <= max_container_depth
+
+
+final func _bounded_sanitized_variable(
+		value: Variant,
+		container_depth: int,
+		max_container_depth: int,
+		budget: Dictionary,
+) -> Variant:
+	if value is StringName:
+		return str(value)
+	if value is Array:
+		return _bounded_sanitized_variable_array(
+				value,
+				container_depth,
+				max_container_depth,
+				budget,
+		)
+	if value is Dictionary:
+		return _bounded_sanitized_variable_dictionary(
+				value,
+				container_depth,
+				max_container_depth,
+				budget,
+		)
+	return value
+
+
+final func _bounded_sanitized_variable_array(
+		values: Array,
+		container_depth: int,
+		max_container_depth: int,
+		budget: Dictionary,
+) -> Array:
+	var sanitized: Array = []
+	for value: Variant in values:
+		if not _consume_bounded_variable_item(budget):
+			break
+		if _is_supported_bounded_variable(value, container_depth + 1, max_container_depth):
+			sanitized.append(_bounded_sanitized_variable(
+					value,
+					container_depth + 1,
+					max_container_depth,
+					budget,
+			))
+	return sanitized
