@@ -66,6 +66,14 @@ Run `task ios:sentry` to build the iOS and macOS Apple artifacts and
 downloads and checksum-verifies the prebuilt Foundry-Swift alpha.2 framework
 and macro artifact into derived data, then compiles only the Sentry bridge.
 
+### Android plugin namespace
+
+Android plugin metadata uses the hard-fork namespace
+`org.foundryengine.plugin.v2`. Legacy plugin discovery is intentionally not
+supported. Until the Foundry Android plugin registry adopts that namespace,
+the native Android Sentry bridge will build and package but will not be
+discovered at runtime.
+
 ## Native release packaging
 
 Release archives must be assembled only after both native builds complete:
