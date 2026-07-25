@@ -777,6 +777,28 @@ func test_automatic_capture_masks_and_config_defaults() -> void:
 	Expect.that(config.automatic_event_throttle_window_msec).to_equal(10000)
 
 
+func test_mobile_diagnostic_config_defaults_match_native_integrations() -> void:
+	var config := ObservabilityConfig.new()
+
+	Expect.that(config.application_hang_detection_enabled).to_be_true()
+	Expect.that(config.application_hang_timeout_msec).to_equal(5000)
+	Expect.that(config.android_anr_detection_enabled).to_be_true()
+	Expect.that(config.android_anr_timeout_msec).to_equal(5000)
+	Expect.that(config.android_anr_attach_thread_dump).to_be_false()
+
+
+func test_mobile_diagnostic_timeouts_have_a_safe_minimum() -> void:
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_application_hang_timeout_msec = 25,
+			p_android_anr_timeout_msec = -1,
+		)
+
+	Expect.that(config.application_hang_timeout_msec).to_equal(1000)
+	Expect.that(config.android_anr_timeout_msec).to_equal(1000)
+
+
 func test_automatic_capture_config_and_breadcrumb_copy_inputs() -> void:
 	var prefixes := PackedStringArray(["Internal: "])
 	var attributes := {"file": "res://player.fs"}

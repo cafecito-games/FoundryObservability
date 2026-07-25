@@ -44,6 +44,16 @@ var automatic_event_throttle_window_msec: int = 10000
 var stack_trace_source_context_enabled: bool = true
 ## Retains recursively normalized local stack-frame variables when true.
 var stack_trace_variables_enabled: bool = false
+## Enables native main-thread hang detection on supported Apple targets.
+var application_hang_detection_enabled: bool = true
+## Defines the Apple main-thread hang threshold in milliseconds.
+var application_hang_timeout_msec: int = 5000
+## Enables native Application Not Responding detection on Android.
+var android_anr_detection_enabled: bool = true
+## Defines the Android watchdog threshold in milliseconds where supported.
+var android_anr_timeout_msec: int = 5000
+## Attaches an Android operating-system ANR thread dump when available.
+var android_anr_attach_thread_dump: bool = false
 var _global_attributes: Dictionary = {}
 var _provider_options: Dictionary = {}
 var _automatic_message_filter_prefixes: PackedStringArray = PackedStringArray()
@@ -73,6 +83,11 @@ func _init(
 		p_automatic_event_throttle_window_msec: int = 10000,
 		p_stack_trace_source_context_enabled: bool = true,
 		p_stack_trace_variables_enabled: bool = false,
+		p_application_hang_detection_enabled: bool = true,
+		p_application_hang_timeout_msec: int = 5000,
+		p_android_anr_detection_enabled: bool = true,
+		p_android_anr_timeout_msec: int = 5000,
+		p_android_anr_attach_thread_dump: bool = false,
 		p_automatic_message_filter_prefixes: PackedStringArray = PackedStringArray(
 				["FoundryObservability: "]),
 ) -> void:
@@ -96,6 +111,11 @@ func _init(
 	automatic_event_throttle_window_msec = maxi(0, p_automatic_event_throttle_window_msec)
 	stack_trace_source_context_enabled = p_stack_trace_source_context_enabled
 	stack_trace_variables_enabled = p_stack_trace_variables_enabled
+	application_hang_detection_enabled = p_application_hang_detection_enabled
+	application_hang_timeout_msec = maxi(1000, p_application_hang_timeout_msec)
+	android_anr_detection_enabled = p_android_anr_detection_enabled
+	android_anr_timeout_msec = maxi(1000, p_android_anr_timeout_msec)
+	android_anr_attach_thread_dump = p_android_anr_attach_thread_dump
 	_global_attributes = p_global_attributes.duplicate(true)
 	_provider_options = p_provider_options.duplicate(true)
 	_automatic_message_filter_prefixes = p_automatic_message_filter_prefixes.duplicate()
