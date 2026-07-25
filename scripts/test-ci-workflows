@@ -173,20 +173,98 @@ rg -q 'dist/FoundryObservabilitySentry-\$\{\{ steps\.version\.outputs\.version \
 	"$release_workflow" \
 	|| fail "release workflow must publish the versioned Sentry archive"
 
-rg -q '^  build-android:' "$pr_workflow" \
-	|| fail "pull-request workflow must build the Android Sentry addon"
+rg -q '^  validate-core:$' "$pr_workflow" \
+	|| fail "pull-request workflow must have a validate-core job"
+rg -q '^  build-apple:$' "$pr_workflow" \
+	|| fail "pull-request workflow must have a build-apple job"
+rg -q '^  build-android:$' "$pr_workflow" \
+	|| fail "pull-request workflow must have a build-android job"
 
-rg -q 'actions/setup-java@v5\.6\.0([[:space:]]|$)' "$pr_workflow" \
-	|| fail "pull-request workflow must set up Java 17 for Android"
-rg -q 'android-actions/setup-android@v4\.0\.1([[:space:]]|$)' "$pr_workflow" \
-	|| fail "pull-request workflow must set up the Android SDK"
-rg -q "java-version: ['\"]?17['\"]?" "$pr_workflow" \
-	|| fail "pull-request workflow must use Java 17 for Android"
-rg -q 'sdkmanager --licenses' "$pr_workflow" \
-	|| fail "pull-request workflow must accept Android SDK licenses"
-rg -q 'platforms;android-36' "$pr_workflow" \
-	|| fail "pull-request workflow must install Android SDK Platform 36"
-rg -q 'task android:sentry' "$pr_workflow" \
-	|| fail "pull-request workflow must build the Android Sentry AARs"
+extract_job() {
+	local job_id=$1
+	awk -v job_id="$job_id" '
+		BEGIN { job_key = "  " job_id ":" }
+		$0 == job_key { copying = 1 }
+		copying && $0 ~ /^  [[:alnum:]_-]+:$/ && $0 != job_key { exit }
+		copying { print }
+	' "$pr_workflow"
+}
+
+job_mentions_task_name() {
+	local job_body=$1
+	local task_name=$2
+	rg -q \
+		"(^|[^[:alnum:]_:-])${task_name}([^[:alnum:]_:-]|$)" \
+		<<<"$job_body"
+}
+
+core_job=$(extract_job validate-core)
+apple_job=$(extract_job build-apple)
+android_job=$(extract_job build-android)
+
+rg -Fxq '    name: Validate core addon' <<<"$core_job" \
+	|| fail "validate-core job must be named Validate core addon"
+rg -Fxq '        run: task test:core' <<<"$core_job" \
+	|| fail "validate-core job must run task test:core"
+for forbidden_task in \
+	test \
+	test:sentry-apple \
+	test:sentry-android \
+	ios:sentry \
+	android:sentry; do
+	if job_mentions_task_name "$core_job" "$forbidden_task"; then
+		fail "validate-core job must not mention forbidden task name $forbidden_task"
+	fi
+done
+
+rg -Fxq '    name: Build Apple Sentry addon' <<<"$apple_job" \
+	|| fail "build-apple job must be named Build Apple Sentry addon"
+rg -Fxq '        run: task test:sentry-apple' <<<"$apple_job" \
+	|| fail "build-apple job must run task test:sentry-apple"
+for forbidden_task in \
+	test \
+	test:core \
+	test:sentry-android \
+	android:sentry; do
+	if job_mentions_task_name "$apple_job" "$forbidden_task"; then
+		fail "build-apple job must not mention forbidden task name $forbidden_task"
+	fi
+done
+rg -q -U -- '^      - name: Build Apple artifacts$\n^        env:$\n^          GH_TOKEN: \$\{\{ github\.token \}\}$\n^        run: task ios:sentry$' \
+	<<<"$apple_job" \
+	|| fail "build-apple job must build Apple artifacts with GH_TOKEN"
+rg -q '^        run: brew install( [[:alnum:]_.@/+:-]+)* xcodegen( [[:alnum:]_.@/+:-]+)*$' \
+	<<<"$apple_job" \
+	|| fail "build-apple job must install XcodeGen via brew"
+
+rg -Fxq '    name: Build Android Sentry addon' <<<"$android_job" \
+	|| fail "build-android job must be named Build Android Sentry addon"
+rg -Fxq '        run: task test:sentry-android' <<<"$android_job" \
+	|| fail "build-android job must run task test:sentry-android"
+rg -Fxq '        run: task android:sentry' <<<"$android_job" \
+	|| fail "build-android job must build the Android Sentry AARs"
+for forbidden_task in \
+	test \
+	test:core \
+	test:sentry-apple \
+	ios:sentry; do
+	if job_mentions_task_name "$android_job" "$forbidden_task"; then
+		fail "build-android job must not mention forbidden task name $forbidden_task"
+	fi
+done
+
+rg -q '^        uses: actions/setup-java@v5\.6\.0$' <<<"$android_job" \
+	|| fail "build-android job must set up Java 17"
+rg -q '^        uses: android-actions/setup-android@v4\.0\.1$' <<<"$android_job" \
+	|| fail "build-android job must set up the Android SDK"
+rg -q "^          java-version: ['\"]?17['\"]?$" <<<"$android_job" \
+	|| fail "build-android job must use Java 17"
+rg -q '^          (yes \| )?sdkmanager --licenses([[:space:]]|$)' <<<"$android_job" \
+	|| fail "build-android job must accept Android SDK licenses"
+rg -q "^          sdkmanager ['\"]platforms;android-36['\"]$" <<<"$android_job" \
+	|| fail "build-android job must install Android SDK Platform 36"
+rg -q '^        run: chmod \+x addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/gradlew$' \
+	<<<"$android_job" \
+	|| fail "build-android job must make the Android Gradle wrapper executable"
 
 echo "CI workflow contract checks passed"
