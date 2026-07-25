@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+confirmation="--i-understand-this-will-crash"
+
+usage() {
+	cat >&2 <<'USAGE'
+Usage:
+  scripts/trigger-test-native-crash macos <pid> --i-understand-this-will-crash
+  scripts/trigger-test-native-crash android <debuggable-package> --i-understand-this-will-crash
+
+This repository-only validation helper deliberately terminates the selected
+process. Use it only with a non-production Sentry project and test data.
+USAGE
+}
+
+fail() {
+	echo "FAIL: $*" >&2
+	exit 1
+}
+
+[[ $# -eq 3 ]] || {
+	usage
+	exit 2
+}
+
+platform=$1
+target=$2
+[[ $3 == "$confirmation" ]] \
+	|| fail "explicit confirmation is required: $confirmation"
+
+case "$platform" in
+	macos)
+		[[ "$target" =~ ^[0-9]+$ ]] || fail "macOS PID must be numeric"
+		pid=$target
+		(( pid > 1 )) || fail "refusing to signal protected PID $pid"
+		kill -0 "$pid" 2>/dev/null || fail "macOS process $pid is not running"
+		echo "Sending SIGABRT to macOS process PID $pid"
+		kill -ABRT -- "$pid"
+		;;
+	android)
+		package=$target
+		[[ "$package" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$ ]] \
+			|| fail "invalid Android package identifier: $package"
+		command -v adb >/dev/null 2>&1 || fail "adb is required"
+		pid=$(adb shell pidof -s "$package" | tr -d '\r' | tr -d '[:space:]')
+		[[ "$pid" =~ ^[0-9]+$ ]] || fail "Android package is not running: $package"
+		(( pid > 1 )) || fail "refusing to signal protected Android PID $pid"
+		echo "Sending SIGABRT to Android package $package at PID $pid"
+		adb shell run-as "$package" kill -6 "$pid"
+		;;
+	*)
+		usage
+		fail "unsupported platform: $platform"
+		;;
+esac

@@ -27,6 +27,8 @@ The first core slice is available now:
   diagnostics on macOS and iOS and ANR diagnostics on Android when a supporting
   provider is configured; the included Sentry provider implements those
   platform mappings, with enable, timeout, and Android thread-dump controls.
+- Native crash capture through Sentry's Apple and Android SDKs, including
+  previous launch delivery after the game restarts.
 - A FoundryLib `LogSink` adapter included in the core addon.
 - An optional `FoundryObservabilitySentry` provider addon backed by
   Foundry-Swift/Sentry Cocoa on Apple platforms and Sentry Android on Android.
@@ -122,6 +124,19 @@ or automatic capture can be disabled entirely.
 `MemoryObservabilityProvider` is intended for tests and local integration work.
 The Sentry provider is optional and requires an export containing its native
 Apple framework or Android AAR on supported platforms.
+
+### Native crash lifecycle
+
+For native crash reporting, configure `SentryObservabilityProvider` from the
+earliest startup hook that has the DSN and release metadata. A successful
+configuration starts Sentry's process-wide crash handlers; a crash is persisted
+by the native SDK and normally delivered on the previous launch's next startup.
+Crashes before configuration cannot be recovered by the addon.
+
+Check the return value from `FoundryObservability.configure()` and then
+`FoundryObservability.is_available()` before considering reporting active.
+Use [docs/NATIVE_CRASH_VALIDATION.md](docs/NATIVE_CRASH_VALIDATION.md) for the
+destructive, non-production macOS, iOS, and Android validation procedure.
 
 See [docs/API.md](docs/API.md) for the complete contract and FoundryLib sink
 setup.

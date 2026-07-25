@@ -25,6 +25,8 @@ import org.robolectric.annotation.Config;
 @RunWith(RobolectricTestRunner.class)
 @Config(sdk = 35)
 public class SentryObservabilityBridgeTest {
+  private static final String OWNER = "test-owner";
+
   @After
   public void closeSentry() {
     Sentry.close();
@@ -33,12 +35,14 @@ public class SentryObservabilityBridgeTest {
   @Test
   public void rejectsEnabledConfigurationWithoutDsn() {
     SentryObservabilityBridge bridge = newBridge();
+    assertEquals(1, bridge.lifecycleVersion());
 
     Dictionary payload = new Dictionary();
     payload.put("enabled", true);
+    payload.put("lifecycle_owner", OWNER);
 
     assertEquals(1, bridge.configure(payload));
-    assertFalse(bridge.isAvailable());
+    assertFalse(bridge.isAvailable(OWNER));
   }
 
   @Test
@@ -54,15 +58,16 @@ public class SentryObservabilityBridgeTest {
 
     Dictionary payload = new Dictionary();
     payload.put("enabled", false);
+    payload.put("lifecycle_owner", OWNER);
 
     assertEquals(0, bridge.configure(payload));
-    assertFalse(bridge.isAvailable());
+    assertFalse(bridge.isAvailable(OWNER));
     assertEquals("", bridge.capture(new Dictionary()));
-    assertEquals(1, bridge.flush(100));
+    assertEquals(0, bridge.flush(OWNER, 100));
 
-    bridge.shutdown();
-    bridge.shutdown();
-    assertFalse(bridge.isAvailable());
+    bridge.shutdown(OWNER);
+    bridge.shutdown(OWNER);
+    assertFalse(bridge.isAvailable(OWNER));
   }
 
   @Test
@@ -74,19 +79,52 @@ public class SentryObservabilityBridgeTest {
     configuration.put("dsn", "https://public@example.com/1");
     configuration.put("environment", "test");
     configuration.put("release", "1.2.3");
+    configuration.put("lifecycle_owner", OWNER);
 
     assertEquals(0, bridge.configure(configuration));
-    assertTrue(bridge.isAvailable());
+    assertTrue(bridge.isAvailable(OWNER));
 
     Dictionary event = new Dictionary();
     event.put("kind", "message");
     event.put("message", "hello");
     assertNotEquals("", bridge.capture(event));
-    assertEquals(0, bridge.flush(0));
+    assertEquals(0, bridge.flush(OWNER, 0));
 
-    bridge.shutdown();
-    assertFalse(bridge.isAvailable());
-    bridge.shutdown();
+    bridge.shutdown(OWNER);
+    assertFalse(bridge.isAvailable(OWNER));
+    bridge.shutdown(OWNER);
+  }
+
+  @Test
+  public void staleDisabledConfigurationDoesNotClearCurrentOwnerState() {
+    SentryObservabilityBridge bridge = newBridge();
+    String currentOwner = "current-owner";
+
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("environment", "test");
+    configuration.put("release", "1.2.3");
+    configuration.put("global_attributes", Map.of("build", 42));
+    configuration.put("lifecycle_owner", OWNER);
+    assertEquals(0, bridge.configure(configuration));
+
+    configuration.put("lifecycle_owner", currentOwner);
+    assertEquals(0, bridge.configure(configuration));
+    assertTrue(bridge.isAvailable(currentOwner));
+
+    Dictionary staleDisabledConfiguration = new Dictionary();
+    staleDisabledConfiguration.put("enabled", false);
+    staleDisabledConfiguration.put("lifecycle_owner", OWNER);
+    assertEquals(0, bridge.configure(staleDisabledConfiguration));
+    assertTrue(bridge.isAvailable(currentOwner));
+
+    Dictionary event = new Dictionary();
+    event.put("kind", "message");
+    event.put("message", "current owner still captures");
+    assertNotEquals("", bridge.capture(event));
+
+    bridge.shutdown(currentOwner);
   }
 
   @Test
@@ -97,6 +135,7 @@ public class SentryObservabilityBridgeTest {
     configuration.put("enabled", true);
     configuration.put("logs_enabled", true);
     configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("lifecycle_owner", OWNER);
 
     assertEquals(0, bridge.configure(configuration));
 
@@ -109,7 +148,7 @@ public class SentryObservabilityBridgeTest {
     log.put("attributes", java.util.Map.of("logger_name", "combat"));
 
     assertFalse(bridge.captureLog(log).isEmpty());
-    bridge.shutdown();
+    bridge.shutdown(OWNER);
   }
 
   @Test
@@ -119,6 +158,7 @@ public class SentryObservabilityBridgeTest {
     Dictionary configuration = new Dictionary();
     configuration.put("enabled", true);
     configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("lifecycle_owner", OWNER);
     assertEquals(0, bridge.configure(configuration));
 
     Dictionary breadcrumb = new Dictionary();
@@ -129,7 +169,7 @@ public class SentryObservabilityBridgeTest {
     breadcrumb.put("attributes", java.util.Map.of("error.file", "res://player.fs"));
 
     assertTrue(bridge.captureBreadcrumb(breadcrumb));
-    bridge.shutdown();
+    bridge.shutdown(OWNER);
   }
 
   @Test
@@ -140,6 +180,7 @@ public class SentryObservabilityBridgeTest {
     configuration.put("enabled", true);
     configuration.put("dsn", "https://public@example.com/1");
     configuration.put("provider_options", java.util.Map.of("send_default_pii", true));
+    configuration.put("lifecycle_owner", OWNER);
 
     assertEquals(0, bridge.configure(configuration));
 
@@ -150,7 +191,7 @@ public class SentryObservabilityBridgeTest {
     feedback.put("associated_event_id", "0123456789abcdef0123456789abcdef");
 
     assertFalse(bridge.captureFeedback(feedback).isEmpty());
-    bridge.shutdown();
+    bridge.shutdown(OWNER);
   }
 
   @Test
@@ -160,13 +201,14 @@ public class SentryObservabilityBridgeTest {
     Dictionary configuration = new Dictionary();
     configuration.put("enabled", true);
     configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("lifecycle_owner", OWNER);
     assertEquals(0, bridge.configure(configuration));
 
     Dictionary feedback = new Dictionary();
     feedback.put("name", "Player One");
 
     assertEquals("", bridge.captureFeedback(feedback));
-    bridge.shutdown();
+    bridge.shutdown(OWNER);
   }
 
   @Test
@@ -176,6 +218,7 @@ public class SentryObservabilityBridgeTest {
     Dictionary configuration = new Dictionary();
     configuration.put("enabled", true);
     configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("lifecycle_owner", OWNER);
     assertEquals(0, bridge.configure(configuration));
 
     Dictionary feedback = new Dictionary();
@@ -183,7 +226,7 @@ public class SentryObservabilityBridgeTest {
     feedback.put("associated_event_id", "not-a-sentry-id");
 
     assertEquals("", bridge.captureFeedback(feedback));
-    bridge.shutdown();
+    bridge.shutdown(OWNER);
   }
 
   @Test

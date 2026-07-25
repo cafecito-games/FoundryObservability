@@ -3,13 +3,20 @@ namespace foundry.observability.sentry.tests
 class_name BreadcrumblessSentryBridge
 extends RefCounted
 
+var _active_owner: String = ""
 
-func configure(_payload: Dictionary) -> int:
+
+func lifecycleVersion() -> int:
+	return 1
+
+
+func configure(payload: Dictionary) -> int:
+	_active_owner = str(payload.get("lifecycle_owner", ""))
 	return Error.OK
 
 
-func isAvailable() -> bool:
-	return true
+func isAvailable(owner: String) -> bool:
+	return owner == _active_owner
 
 
 func capture(_payload: Dictionary) -> String:
@@ -24,9 +31,10 @@ func captureFeedback(_payload: Dictionary) -> String:
 	return "sentry-feedback:1"
 
 
-func flush(_timeout_msec: int) -> int:
+func flush(_owner: String, _timeout_msec: int) -> int:
 	return Error.OK
 
 
-func shutdown() -> void:
-	pass
+func shutdown(owner: String) -> void:
+	if owner == _active_owner:
+		_active_owner = ""

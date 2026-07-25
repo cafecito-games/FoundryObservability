@@ -27,7 +27,23 @@ func test_enabled_configuration_requires_compatible_native_bridge_and_dsn() -> v
 	Expect.that(incompatible_bridge.configure(ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.FAILED)
+		))).to_equal(Error.ERR_UNAVAILABLE)
+
+
+func test_enabled_configuration_reports_native_bridge_availability() -> void:
+	var provider := SentryObservabilityProvider.new()
+
+	var result: int = provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		))
+	if ClassDB.class_exists("SentryObservabilityBridge") \
+			and ClassDB.can_instantiate("SentryObservabilityBridge"):
+		Expect.that(result).to_equal(Error.OK)
+		Expect.that(provider.is_available()).to_be_true()
+		provider.shutdown()
+	else:
+		Expect.that(result).to_equal(Error.ERR_UNAVAILABLE)
 
 
 func test_disabled_configuration_is_safe_without_native_bridge() -> void:
@@ -53,6 +69,71 @@ func test_resolves_registered_engine_singleton() -> void:
 
 	provider.shutdown()
 	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_forwards_stable_lifecycle_owner_to_bridge_calls() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		))).to_equal(Error.OK)
+	var owner: String = bridge.configured_payload["lifecycle_owner"]
+
+	Expect.that(owner.is_empty()).to_be_false()
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.flush(321)).to_equal(Error.OK)
+	provider.shutdown()
+
+	Expect.that(bridge.flush_owners).to_equal([owner])
+	Expect.that(bridge.shutdown_owners).to_equal([owner])
+
+
+func test_replaced_sentry_provider_ignores_stale_shutdown() -> void:
+	var bridge := FakeSentryBridge.new()
+	var first := SentryObservabilityProvider.new(p_bridge = bridge)
+	var second := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(first.configure(config)).to_equal(Error.OK)
+	var first_owner: String = bridge.active_owner
+	Expect.that(second.configure(config)).to_equal(Error.OK)
+	var second_owner: String = bridge.active_owner
+	Expect.that(second_owner).to_not_equal(first_owner)
+	first.shutdown()
+
+	Expect.that(bridge.active_owner).to_equal(second_owner)
+	Expect.that(second.is_available()).to_be_true()
+	second.shutdown()
+
+
+func test_failed_reconfigure_preserves_restored_native_session() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var initial_config := ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.is_available()).to_be_true()
+	bridge.configure_result = Error.FAILED
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "staging",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+		))).to_equal(Error.FAILED)
+
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "restored session",
+		))).to_equal("sentry:1")
+	provider.shutdown()
 
 
 func test_forwards_config_event_and_flush_to_native_bridge() -> void:

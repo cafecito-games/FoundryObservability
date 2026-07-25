@@ -5,15 +5,21 @@ class_name MetriclessSentryBridge
 extends RefCounted
 
 var available: bool = true
+var _active_owner: String = ""
 var _event_sequence: int = 0
 
 
-func configure(_payload: Dictionary) -> int:
+func lifecycleVersion() -> int:
+	return 1
+
+
+func configure(payload: Dictionary) -> int:
+	_active_owner = str(payload.get("lifecycle_owner", ""))
 	return Error.OK
 
 
-func isAvailable() -> bool:
-	return available
+func isAvailable(owner: String) -> bool:
+	return available and owner == _active_owner
 
 
 func capture(_payload: Dictionary) -> String:
@@ -29,9 +35,11 @@ func captureFeedback(_payload: Dictionary) -> String:
 	return "sentry-feedback:1"
 
 
-func flush(_timeout_msec: int) -> int:
+func flush(_owner: String, _timeout_msec: int) -> int:
 	return Error.OK
 
 
-func shutdown() -> void:
-	available = false
+func shutdown(owner: String) -> void:
+	if owner == _active_owner:
+		_active_owner = ""
+		available = false

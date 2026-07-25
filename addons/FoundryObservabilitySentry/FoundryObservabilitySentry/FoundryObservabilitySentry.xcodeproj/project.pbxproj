@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		0A99945D9ACF064DB78A5637 /* FoundryObservabilitySentry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3507BE4DA193E7D6B9F4F12 /* FoundryObservabilitySentry.swift */; };
+		174C520FD292DCD4805A4B0E /* SentryLifecycleCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63175D21D5DBFA0FDA5F16E1 /* SentryLifecycleCoordinatorTests.swift */; };
+		198B4142B9F1B8578E29E239 /* SentryLifecycleCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23C91F22650A075DE3D4DCBC /* SentryLifecycleCoordinator.swift */; };
 		30A54BC0764DBD53A0A170AD /* SentryEventMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92B1629924939D66D6B5EA80 /* SentryEventMapper.swift */; };
 		3B92EE70E440BDD5E7517685 /* SentryDiagnosticsConfigurator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4777AECD0A3355F8A6DFE33F /* SentryDiagnosticsConfigurator.swift */; };
 		3E9C7B592BC6B1481BEA7C10 /* SentryDiagnosticsConfigurator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4777AECD0A3355F8A6DFE33F /* SentryDiagnosticsConfigurator.swift */; };
@@ -21,6 +23,7 @@
 		A2C5422D9AC35653FF347C1C /* SentryDiagnosticsConfiguratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2272EE5CE9FEF1B1C79057E /* SentryDiagnosticsConfiguratorTests.swift */; };
 		B6B15E0B13E8BF3E3D476812 /* FoundrySwift in Frameworks */ = {isa = PBXBuildFile; productRef = 029BA2C3F3E777EDA7D1DA75 /* FoundrySwift */; };
 		C84644BD5C27B9E49609E1B6 /* FoundryObservabilitySentry.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3FA80C6555AB993A2A9CF202 /* FoundryObservabilitySentry.framework */; };
+		DA8AAF33B1FE94AC85B31A67 /* SentryLifecycleCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23C91F22650A075DE3D4DCBC /* SentryLifecycleCoordinator.swift */; };
 		DA9C72AD5C85D89D2BE2332A /* FoundrySwift in Frameworks */ = {isa = PBXBuildFile; productRef = C9D564F119926B061FC683D3 /* FoundrySwift */; };
 /* End PBXBuildFile section */
 
@@ -49,9 +52,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		23C91F22650A075DE3D4DCBC /* SentryLifecycleCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryLifecycleCoordinator.swift; sourceTree = "<group>"; };
 		3FA80C6555AB993A2A9CF202 /* FoundryObservabilitySentry.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = FoundryObservabilitySentry.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		4777AECD0A3355F8A6DFE33F /* SentryDiagnosticsConfigurator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryDiagnosticsConfigurator.swift; sourceTree = "<group>"; };
 		5C087DD9FDD36571D7FBB400 /* SentryEventMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryEventMapperTests.swift; sourceTree = "<group>"; };
+		63175D21D5DBFA0FDA5F16E1 /* SentryLifecycleCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryLifecycleCoordinatorTests.swift; sourceTree = "<group>"; };
 		9053F3FEAF20076754B1EAD1 /* FoundryObservabilitySentry.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = FoundryObservabilitySentry.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		92B1629924939D66D6B5EA80 /* SentryEventMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryEventMapper.swift; sourceTree = "<group>"; };
 		C3507BE4DA193E7D6B9F4F12 /* FoundryObservabilitySentry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundryObservabilitySentry.swift; sourceTree = "<group>"; };
@@ -104,6 +109,7 @@
 			children = (
 				D2272EE5CE9FEF1B1C79057E /* SentryDiagnosticsConfiguratorTests.swift */,
 				5C087DD9FDD36571D7FBB400 /* SentryEventMapperTests.swift */,
+				63175D21D5DBFA0FDA5F16E1 /* SentryLifecycleCoordinatorTests.swift */,
 			);
 			name = FoundryObservabilitySentryTests;
 			path = Tests/FoundryObservabilitySentryTests;
@@ -115,6 +121,7 @@
 				C3507BE4DA193E7D6B9F4F12 /* FoundryObservabilitySentry.swift */,
 				4777AECD0A3355F8A6DFE33F /* SentryDiagnosticsConfigurator.swift */,
 				92B1629924939D66D6B5EA80 /* SentryEventMapper.swift */,
+				23C91F22650A075DE3D4DCBC /* SentryLifecycleCoordinator.swift */,
 			);
 			name = FoundryObservabilitySentry;
 			path = Sources/FoundryObservabilitySentry;
@@ -237,6 +244,7 @@
 			files = (
 				A2C5422D9AC35653FF347C1C /* SentryDiagnosticsConfiguratorTests.swift in Sources */,
 				4CD0F2B10C120C383108FBB1 /* SentryEventMapperTests.swift in Sources */,
+				174C520FD292DCD4805A4B0E /* SentryLifecycleCoordinatorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -247,6 +255,7 @@
 				98181861179175E589E2F3B1 /* FoundryObservabilitySentry.swift in Sources */,
 				3B92EE70E440BDD5E7517685 /* SentryDiagnosticsConfigurator.swift in Sources */,
 				30A54BC0764DBD53A0A170AD /* SentryEventMapper.swift in Sources */,
+				DA8AAF33B1FE94AC85B31A67 /* SentryLifecycleCoordinator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -257,6 +266,7 @@
 				0A99945D9ACF064DB78A5637 /* FoundryObservabilitySentry.swift in Sources */,
 				3E9C7B592BC6B1481BEA7C10 /* SentryDiagnosticsConfigurator.swift in Sources */,
 				64980AC375E2CB03632FB158 /* SentryEventMapper.swift in Sources */,
+				198B4142B9F1B8578E29E239 /* SentryLifecycleCoordinator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
