@@ -67,6 +67,18 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertNil(attributes["unsupported"])
     }
 
+    func testBreadcrumbDataPreservesFieldsAndReservedMetadata() {
+        let data = sentryBreadcrumbData(
+            global: ["build": 42, "error.file": "global"],
+            breadcrumb: ["error.file": "res://player.fs"],
+            timestampMsec: 1234
+        )
+
+        XCTAssertEqual(data["build"] as? Int, 42)
+        XCTAssertEqual(data["error.file"] as? String, "res://player.fs")
+        XCTAssertEqual(data["foundry.timestamp_msec"] as? Int64, 1234)
+    }
+
     func testMetricAttributesPreserveSupportedScalarValues() {
         let attributes = sentryMetricAttributes([
             "string": "value",
