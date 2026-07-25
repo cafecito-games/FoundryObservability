@@ -100,7 +100,7 @@ core_job=$(extract_job validate-core)
 apple_job=$(extract_job build-apple)
 android_job=$(extract_job build-android)
 
-for task_name in test:core test:sentry-apple test:sentry-android test; do
+for task_name in test:core test:sentry-apple test:sentry-android test:sentry-java test; do
 	rg -Fxq "  $task_name:" "$taskfile" \
 		|| fail "Taskfile.yml must have a $task_name target"
 done
@@ -120,6 +120,7 @@ assert_no_task_names "$core_task" test:core \
 	test:sentry-swift \
 	test:sentry-contract \
 	test:sentry-android-contract \
+	test:sentry-java \
 	ios:sentry \
 	android:sentry
 
@@ -129,6 +130,7 @@ assert_no_task_names "$apple_task" test:sentry-apple \
 	test:core \
 	test:sentry-android \
 	test:sentry-android-contract \
+	test:sentry-java \
 	lint \
 	test:ci \
 	test:package \
@@ -136,7 +138,7 @@ assert_no_task_names "$apple_task" test:sentry-apple \
 	test:foundry-script \
 	android:sentry
 
-[[ "$(task_dependencies "$android_task")" == 'test:sentry-android-contract' ]] \
+[[ "$(task_dependencies "$android_task")" == $'test:sentry-java\ntest:sentry-android-contract' ]] \
 	|| fail "test:sentry-android dependencies must match the approved composition"
 assert_no_task_names "$android_task" test:sentry-android \
 	test:core \
@@ -161,6 +163,7 @@ assert_no_task_names "$aggregate_task" test \
 	test:sentry-swift \
 	test:sentry-contract \
 	test:sentry-android-contract \
+	test:sentry-java \
 	ios:sentry \
 	android:sentry
 
@@ -387,6 +390,7 @@ assert_no_task_names "$core_job" "validate-core job" \
 	test:sentry-swift \
 	test:sentry-contract \
 	test:sentry-android-contract \
+	test:sentry-java \
 	ios:sentry \
 	android:sentry
 
@@ -403,6 +407,7 @@ assert_no_task_names "$apple_job" "build-apple job" \
 	test:core \
 	test:sentry-android \
 	test:sentry-android-contract \
+	test:sentry-java \
 	android:sentry
 rg -q -U -- '^      - name: Build Apple artifacts$\n^        env:$\n^          GH_TOKEN: \$\{\{ github\.token \}\}$\n^        run: task ios:sentry$' \
 	<<<"$apple_job" \
