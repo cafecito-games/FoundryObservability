@@ -25,8 +25,6 @@ foundry_script_test_line=$(awk '/^[[:space:]]+- task: test:foundry-script$/{ pri
 for workflow in "$pr_workflow" "$release_workflow"; do
 	rg -q 'actions/checkout@v7\.0\.1([[:space:]]|$)' "$workflow" \
 		|| fail "$(basename "$workflow") must use actions/checkout@v7.0.1"
-	rg -q 'actions/setup-python@v7\.0\.0([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/setup-python@v7.0.0"
 	rg -q 'actions/setup-go@v7\.0\.0([[:space:]]|$)' "$workflow" \
 		|| fail "$(basename "$workflow") must use actions/setup-go@v7.0.0"
 	rg -q 'go-task/setup-task@v2\.1\.0([[:space:]]|$)' "$workflow" \
@@ -40,7 +38,13 @@ for workflow in "$pr_workflow" "$release_workflow"; do
 	if rg -n -- '--headless[[:space:]]+--path|--headless[[:space:]]+--editor|--check-only' "$workflow"; then
 		fail "$(basename "$workflow") contains a deprecated Foundry invocation"
 	fi
+	if rg -n -i 'actions/setup-python|pip[[:space:]]+install|requirements\.txt|gdtoolkit' "$workflow"; then
+		fail "$(basename "$workflow") must not depend on obsolete Python tooling"
+	fi
 done
+
+[[ ! -e "$repo_root/requirements.txt" ]] \
+	|| fail "requirements.txt must remain absent"
 
 rg -q '^  contents: read$' "$pr_workflow" \
 	|| fail "pull-request workflow must request read-only contents permission"

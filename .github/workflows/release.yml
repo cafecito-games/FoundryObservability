@@ -59,15 +59,8 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Python
-        uses: actions/setup-python@v7.0.0
-        with:
-          python-version: '3.12'
-
       - name: Install repository tooling
-        run: |
-          pip install -r requirements.txt
-          brew install prek ripgrep
+        run: brew install prek ripgrep
 
       - name: Install Task
         uses: go-task/setup-task@v2.1.0
