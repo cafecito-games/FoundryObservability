@@ -204,6 +204,10 @@ rg -q 'options\.shutdownTimeInterval = sentryShutdownTimeoutSeconds' "$lifecycle
 	|| fail "Apple lifecycle must use a bounded native shutdown"
 rg -q 'options\.initialScope' "$lifecycle_coordinator" \
 	|| fail "Apple lifecycle must install crash-persistent initial scope data"
+if rg -n 'crashWith|crash_with|triggerNativeCrash|trigger_native_crash|badCode|bad_code' \
+	"$bridge_source" "$lifecycle_coordinator"; then
+	fail "production Apple bridge contains a deliberate crash trigger"
+fi
 for metric in count gauge distribution; do
 	rg -q "SentrySDK\\.metrics\\.${metric}" "$swift_sources/FoundryObservabilitySentry.swift" \
 		|| fail "bridge source is missing the ${metric} mapping"

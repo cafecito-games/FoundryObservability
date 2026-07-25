@@ -57,6 +57,21 @@ rg -q 'lifecycle_owner' "$bridge_source" \
 	|| fail "Android bridge configuration must consume the lifecycle owner"
 rg -q 'io\.sentry:sentry-android:8\.50\.1' "$repo_root/addons/FoundryObservabilitySentry/android-dependencies.txt" \
 	|| fail "Sentry Android dependency is not pinned to 8.50.1"
+if [[ -z "${ANDROID_HOME:-}" ]]; then
+	if [[ -n "${ANDROID_SDK_ROOT:-}" ]]; then
+		export ANDROID_HOME="$ANDROID_SDK_ROOT"
+	elif [[ -d "$HOME/Library/Android/sdk" ]]; then
+		export ANDROID_HOME="$HOME/Library/Android/sdk"
+	elif [[ -d "$HOME/Android/Sdk" ]]; then
+		export ANDROID_HOME="$HOME/Android/Sdk"
+	fi
+fi
+dependency_report=$(
+	"$android_source/gradlew" -q -p "$android_source" \
+		dependencies --configuration releaseRuntimeClasspath
+)
+rg -q 'io\.sentry:sentry-android-ndk:8\.50\.1' <<<"$dependency_report" \
+	|| fail "Sentry Android release runtime must include NDK crash handling"
 rg -q '^[[:space:]]*options\.setAnrEnabled\(' "$bridge_source" \
 	|| fail "Android bridge must configure native ANR detection"
 rg -q '^[[:space:]]*options\.setAnrTimeoutIntervalMillis\(' "$bridge_source" \
@@ -94,6 +109,10 @@ for metric in count gauge distribution; do
 done
 rg -q 'Sentry\.flush' "$driver_source" || fail "lifecycle must flush Sentry events"
 rg -q 'Sentry\.close' "$driver_source" || fail "lifecycle must close Sentry"
+if rg -n 'crashWith|crash_with|triggerNativeCrash|trigger_native_crash|badCode|bad_code' \
+	"$bridge_source" "$lifecycle_source" "$driver_source"; then
+	fail "production Android bridge contains a deliberate crash trigger"
+fi
 
 export_plugin="$repo_root/addons/FoundryObservabilitySentry/export_plugin.fs"
 rg -q '_get_android_libraries' "$export_plugin" \

@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 sentry_package_script="$repo_root/scripts/package-sentry-addon"
 sentry_package_verifier="$repo_root/scripts/verify-sentry-package"
+crash_helper="$repo_root/scripts/trigger-test-native-crash"
 taskfile="$repo_root/Taskfile.yml"
 
 fail() {
@@ -15,6 +16,14 @@ rg -q 'REQUIRE_NATIVE_ARTIFACTS' "$sentry_package_script" \
 	|| fail "Sentry packaging must support required native artifacts"
 [[ -x "$sentry_package_verifier" ]] \
 	|| fail "Sentry package verifier is missing or not executable"
+[[ -x "$crash_helper" ]] \
+	|| fail "native crash validation helper is missing or not executable"
+rg -Fq -- '--i-understand-this-will-crash' "$crash_helper" \
+	|| fail "native crash helper must require explicit confirmation"
+rg -Fq 'kill -ABRT -- "$pid"' "$crash_helper" \
+	|| fail "native crash helper must use an explicit macOS abort signal"
+rg -Fq 'adb shell run-as "$package" kill -6 "$pid"' "$crash_helper" \
+	|| fail "native crash helper must signal only the resolved debuggable Android package"
 rg -q '^  verify:sentry-package:' "$taskfile" \
 	|| fail "Taskfile.yml must expose Sentry package verification"
 for dist_aware_script in \
@@ -103,6 +112,11 @@ archive=$(DIST_DIR="$default_dist" "$repo_root/scripts/package-addon")
 sentry_archive=$(DIST_DIR="$default_dist" "$repo_root/scripts/package-sentry-addon")
 listing=$(unzip -Z1 "$archive")
 sentry_listing=$(unzip -Z1 "$sentry_archive")
+
+if rg -n -i 'trigger.*crash|crash.*trigger|bad[_-]?code|native-crash-validation' \
+	<<<"$listing"$'\n'"$sentry_listing"; then
+	fail "package contains deliberate crash validation tooling"
+fi
 
 grep -qx 'addons/FoundryObservability/plugin.cfg' <<<"$listing" \
 	|| fail "package is missing plugin.cfg"
