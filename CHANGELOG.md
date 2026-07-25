@@ -3,9 +3,8 @@
 ## [Unreleased] - 2026-07-24
 
 - Added provider-neutral structured exception frames and bounded source context,
-  with privacy-safe defaults: source context enabled and local variables
-  disabled unless explicitly opted in. Variable forwarding is bounded and
-  sanitizes unsupported, unsafe values.
+  with source context enabled and local variables disabled unless explicitly
+  opted in. Variable forwarding uses bounded, type-filtered copies.
 - Mapped structured exception frames to native Sentry Cocoa and Sentry Android
   stack types while retaining the formatted `foundry.stack_trace` extra as a
   compatible fallback.

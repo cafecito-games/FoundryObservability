@@ -198,7 +198,7 @@ Public fields:
 | automatic_event_throttle_count | int | Maximum automatic exception events in the sliding window; zero is unlimited |
 | automatic_event_throttle_window_msec | int | Sliding-window duration; zero disables that limit |
 | stack_trace_source_context_enabled | bool | Retain bounded stack-frame source context; enabled by default |
-| stack_trace_variables_enabled | bool | Retain sanitized stack-frame variables; disabled by default and requires explicit opt-in |
+| stack_trace_variables_enabled | bool | Retain a bounded, type-filtered copy of stack-frame variables; disabled by default and requires explicit opt-in |
 
 Accessors:
 
@@ -295,16 +295,19 @@ disabled ObservabilityConfig.
 
 Stack-frame source context is enabled by default. When present, the core keeps
 the nearest five preceding and five following lines; source-context arrays are
-omitted unless the frame has a nonempty current `context_line`. Frame variables
-are disabled by default. They may contain credentials, tokens, PII, or game
-state. Acquiring, inspecting, and copying stack locals can also be expensive
-and increase capture latency and memory use. Producers must check
+omitted unless the frame has a nonempty current `context_line`. Source context
+can reveal source text, so callers must review it before capture. Frame
+variables are disabled by default. They may contain credentials, tokens, PII,
+or game state. Acquiring, inspecting, and copying stack locals can also be
+expensive and increase capture latency and memory use. Producers must check
 `stack_trace_variables_enabled` before acquiring locals, and only acquire them
-when it is explicitly enabled. When enabled, the core and native bridges retain
-only supported values in a bounded copy: booleans, finite numbers, strings,
-arrays, and string-keyed dictionaries, up to eight nested containers and 256
-examined items per frame. Unsupported values, nonfinite numbers, non-string
-keys, and cycles are omitted.
+when it is explicitly enabled. This is type filtering and bounding, not content
+redaction: supported strings are forwarded verbatim, and callers must review
+both source context and variables before capture. When enabled, the core and
+native bridges retain only a bounded, type-filtered copy of supported values:
+booleans, finite numbers, strings, arrays, and string-keyed dictionaries, up to
+eight nested containers and 256 examined items per frame. Unsupported values,
+nonfinite numbers, non-string keys, and cycles are omitted.
 
 ## ObservabilityException
 
@@ -342,8 +345,8 @@ stack string; providers decide how to map them.
 ## ObservabilityStackFrame
 
 ObservabilityStackFrame is a provider-neutral structured exception frame.
-Frames on an exception are ordered oldest-to-newest, and source-context arrays
-are ordered earlier-to-later.
+Callers supply frames oldest-to-newest; core/providers preserve that order.
+Source-context arrays are ordered earlier-to-later.
 
 Constructor:
 
@@ -969,7 +972,7 @@ var exception := ObservabilityException.new(
 						p_pre_context = PackedStringArray(["\tvar request := _request()"]),
 						p_post_context = PackedStringArray(["\treturn Error.FAILED"]),
 						# Variables are supplied only because of the explicit opt-in above.
-						p_variables = {"match_id": match_id},
+						p_variables = {"match_id": "match-12345"},
 				),
 		],
 )

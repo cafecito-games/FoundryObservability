@@ -22,7 +22,7 @@ The first core slice is available now:
 - Provider-neutral structured exception frames and bounded source context for
   macOS, iOS, and Android Sentry delivery, while retaining formatted-stack
   fallback compatibility. Frame data is caller-supplied; the addon does not
-  automatically acquire engine locals.
+  automatically acquire engine locals or redact supplied source text or values.
 - A FoundryLib `LogSink` adapter included in the core addon.
 - An optional `FoundryObservabilitySentry` provider addon backed by
   Foundry-Swift/Sentry Cocoa on Apple platforms and Sentry Android on Android.
