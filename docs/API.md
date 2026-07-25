@@ -744,6 +744,9 @@ leave `last_error()` in an unrelated unavailable state. Explicit
 `capture_breadcrumb()` calls retain the observable `ERR_UNAVAILABLE` behavior.
 A successful automatic breadcrumb also does not clear a failure from an earlier
 automatic event destination in the same callback.
+If a provider implements breadcrumb capture but rejects an automatic
+breadcrumb, that provider failure remains observable as `Error.FAILED`, even
+when an independent event destination accepted the same diagnostic.
 
 ### capture_feedback
 

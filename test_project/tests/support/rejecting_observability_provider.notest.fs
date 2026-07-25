@@ -9,6 +9,7 @@ uses ObservabilityProvider, ObservabilityBreadcrumbsProvider
 
 var capture_count: int = 0
 var breadcrumb_count: int = 0
+var event_capture_result: bool = false
 var breadcrumb_capture_result: bool = false
 var _enabled: bool = false
 var _shutdown: bool = false
@@ -32,6 +33,8 @@ func capture(_event: ObservabilityEvent) -> String:
 	if not is_available():
 		return ""
 	capture_count += 1
+	if event_capture_result:
+		return "rejecting:%s" % capture_count
 	return ""
 
 

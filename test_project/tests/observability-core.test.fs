@@ -695,6 +695,32 @@ func test_successful_automatic_breadcrumb_does_not_clear_event_failure() -> void
 	service.shutdown()
 
 
+func test_rejected_automatic_breadcrumb_reports_failure_after_accepted_event() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RejectingObservabilityProvider.new()
+	provider.event_capture_result = true
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_repeated_error_window_msec = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1000, func() -> int: return 1)
+
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+
+	Expect.that(provider.capture_count).to_equal(1)
+	Expect.that(provider.breadcrumb_count).to_equal(1)
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	service.shutdown()
+
+
 func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()

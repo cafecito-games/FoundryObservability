@@ -113,6 +113,9 @@ automatic masks do not overwrite the status of a successfully accepted event;
 explicit breadcrumb calls retain the observable unavailable result.
 Successful automatic breadcrumbs likewise do not clear a failure reported by
 an earlier automatic event destination.
+A provider that implements breadcrumbs but rejects an automatic breadcrumb
+still stores `Error.FAILED`, even when another independent destination accepted
+the diagnostic. Missing capability and active provider rejection are distinct.
 
 ## Error normalization
 
