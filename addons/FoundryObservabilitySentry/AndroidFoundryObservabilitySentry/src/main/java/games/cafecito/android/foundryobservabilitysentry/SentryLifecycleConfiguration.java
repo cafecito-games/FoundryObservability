@@ -1,7 +1,9 @@
 package games.cafecito.android.foundryobservabilitysentry;
 
 import android.content.Context;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -13,6 +15,7 @@ final class SentryLifecycleConfiguration {
   final String release;
   final String dist;
   final Map<String, Object> globalAttributes;
+  final Map<String, Object> stableContexts;
   final Map<String, Object> providerOptions;
   final boolean logsEnabled;
   final boolean metricsEnabled;
@@ -27,6 +30,7 @@ final class SentryLifecycleConfiguration {
       String release,
       String dist,
       Map<String, Object> globalAttributes,
+      Map<String, Object> stableContexts,
       Map<String, Object> providerOptions,
       boolean logsEnabled,
       boolean metricsEnabled,
@@ -39,6 +43,7 @@ final class SentryLifecycleConfiguration {
     this.release = release;
     this.dist = dist;
     this.globalAttributes = immutableCopy(globalAttributes);
+    this.stableContexts = immutableStableContexts(stableContexts);
     this.providerOptions = immutableCopy(providerOptions);
     this.logsEnabled = logsEnabled;
     this.metricsEnabled = metricsEnabled;
@@ -61,6 +66,7 @@ final class SentryLifecycleConfiguration {
         && release.equals(other.release)
         && dist.equals(other.dist)
         && globalAttributes.equals(other.globalAttributes)
+        && stableContexts.equals(other.stableContexts)
         && providerOptions.equals(other.providerOptions)
         && logsEnabled == other.logsEnabled
         && metricsEnabled == other.metricsEnabled
@@ -77,6 +83,7 @@ final class SentryLifecycleConfiguration {
         release,
         dist,
         globalAttributes,
+        stableContexts,
         providerOptions,
         logsEnabled,
         metricsEnabled,
@@ -87,5 +94,36 @@ final class SentryLifecycleConfiguration {
 
   private static Map<String, Object> immutableCopy(Map<String, Object> values) {
     return Collections.unmodifiableMap(new LinkedHashMap<>(values));
+  }
+
+  private static Map<String, Object> immutableStableContexts(
+      Map<String, Object> values) {
+    Map<String, Object> sanitized = new LinkedHashMap<>();
+    sanitized.putAll(SentryEventMapper.contexts(values));
+    return immutableMap(sanitized);
+  }
+
+  private static Map<String, Object> immutableMap(Map<?, ?> values) {
+    Map<String, Object> result = new LinkedHashMap<>();
+    for (Map.Entry<?, ?> entry : values.entrySet()) {
+      if (entry.getKey() instanceof String) {
+        result.put((String) entry.getKey(), immutableValue(entry.getValue()));
+      }
+    }
+    return Collections.unmodifiableMap(result);
+  }
+
+  private static Object immutableValue(Object value) {
+    if (value instanceof Map) {
+      return immutableMap((Map<?, ?>) value);
+    }
+    if (value instanceof List) {
+      List<Object> result = new ArrayList<>();
+      for (Object element : (List<?>) value) {
+        result.add(immutableValue(element));
+      }
+      return Collections.unmodifiableList(result);
+    }
+    return value;
   }
 }

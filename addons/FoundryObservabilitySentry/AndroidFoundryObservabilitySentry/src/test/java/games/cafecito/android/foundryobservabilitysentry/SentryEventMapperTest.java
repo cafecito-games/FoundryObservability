@@ -6,8 +6,10 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import io.sentry.Scope;
 import io.sentry.SentryEvent;
 import io.sentry.SentryLevel;
+import io.sentry.SentryOptions;
 import io.sentry.protocol.SentryException;
 import io.sentry.protocol.SentryStackFrame;
 import java.math.BigDecimal;
@@ -125,6 +127,46 @@ public class SentryEventMapperTest {
 
     assertEquals("yes", result.get("supported"));
     assertTrue(!result.containsKey("unsupported"));
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void sanitizesAndAppliesRuntimeContexts() {
+    Map<String, Object> cycle = new HashMap<>();
+    cycle.put("self", cycle);
+    Map<String, Object> nested = new HashMap<>();
+    nested.put("kept", 1);
+    nested.put("infinite", Double.POSITIVE_INFINITY);
+    Map<String, Object> engine = new HashMap<>();
+    engine.put("version", "4.5");
+    engine.put("debug_build", true);
+    engine.put("nested", nested);
+    engine.put("unsupported", new Object());
+    engine.put("cycle", cycle);
+    Map<Object, Object> input = new HashMap<>();
+    input.put("godot_engine", engine);
+    input.put("", Map.of("invalid", true));
+    input.put(7, Map.of("invalid", true));
+    input.put("empty", Map.of());
+
+    Map<String, Map<String, Object>> contexts = SentryEventMapper.contexts(input);
+
+    assertEquals("4.5", contexts.get("godot_engine").get("version"));
+    assertEquals(true, contexts.get("godot_engine").get("debug_build"));
+    Map<String, Object> sanitizedNested =
+        (Map<String, Object>) contexts.get("godot_engine").get("nested");
+    assertEquals(1, sanitizedNested.get("kept"));
+    assertFalse(sanitizedNested.containsKey("infinite"));
+    assertFalse(contexts.get("godot_engine").containsKey("unsupported"));
+    assertTrue(((Map<?, ?>) contexts.get("godot_engine").get("cycle")).isEmpty());
+    assertFalse(contexts.containsKey(""));
+    assertFalse(contexts.containsKey("empty"));
+
+    Scope scope = new Scope(new SentryOptions());
+    AndroidSentrySdkDriver.applyContexts(scope, contexts);
+    Map<String, Object> applied =
+        (Map<String, Object>) scope.getContexts().get("godot_engine");
+    assertEquals("4.5", applied.get("version"));
   }
 
   @Test

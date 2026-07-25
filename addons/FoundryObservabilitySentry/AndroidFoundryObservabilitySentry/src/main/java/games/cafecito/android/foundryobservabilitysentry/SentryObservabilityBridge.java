@@ -78,6 +78,8 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     Map<String, Object> providerOptions = payload.get("provider_options") instanceof Map
         ? SentryEventMapper.copyDictionary((Map<?, ?>) payload.get("provider_options"))
         : Collections.emptyMap();
+    Map<String, Object> stableContexts = new java.util.LinkedHashMap<>();
+    stableContexts.putAll(SentryEventMapper.contexts(payload.get("stable_contexts")));
     SentryAndroidOptions diagnosticOptions = new SentryAndroidOptions();
     applyAndroidAnrDiagnostics(diagnosticOptions, payload);
     SentryLifecycleConfiguration candidateConfiguration =
@@ -88,6 +90,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
             stringValue(payload.get("release")),
             stringValue(payload.get("dist")),
             candidateGlobalAttributes,
+            stableContexts,
             providerOptions,
             booleanValue(payload.get("logs_enabled")),
             booleanValue(payload.get("metrics_enabled")),
@@ -117,7 +120,11 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       return "";
     }
     SentryEvent event = SentryEventMapper.makeEvent(payload, globalAttributes);
-    return eventIdString(Sentry.captureEvent(event));
+    Map<String, Map<String, Object>> contexts = SentryEventMapper.contexts(
+        payload == null ? null : payload.get("contexts"));
+    return eventIdString(Sentry.captureEvent(
+        event,
+        scope -> AndroidSentrySdkDriver.applyContexts(scope, contexts)));
   }
 
   @UsedByFoundry
