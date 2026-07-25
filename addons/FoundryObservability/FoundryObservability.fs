@@ -20,6 +20,10 @@ const MAX_FEEDBACK_MESSAGE_LENGTH: int = 4096
 const MAX_METRIC_NAME_LENGTH: int = 200
 const MAX_METRIC_UNIT_LENGTH: int = 64
 const MAX_METRIC_ATTRIBUTE_KEY_LENGTH: int = 200
+## Limits nested Array and Dictionary values retained from stack-frame variables to eight levels.
+const MAX_STACK_VARIABLE_CONTAINER_DEPTH: int = 8
+## Limits total Array items and Dictionary entries traversed per stack frame to 256.
+const MAX_STACK_VARIABLE_ITEMS: int = 256
 
 
 func _init() -> void:
@@ -525,36 +529,78 @@ func _normalized_stack_frame(frame: ObservabilityStackFrame) -> ObservabilitySta
 
 
 func _normalized_stack_variables(variables: Dictionary) -> Dictionary:
+	var budget: Dictionary = {"remaining": MAX_STACK_VARIABLE_ITEMS}
+	return _normalized_stack_variable_dictionary(variables, 0, budget)
+
+
+func _normalized_stack_variable_dictionary(
+		variables: Dictionary,
+		container_depth: int,
+		budget: Dictionary,
+) -> Dictionary:
 	var normalized: Dictionary = {}
-	for key: Variant in variables.keys():
+	for key: Variant in variables:
+		if not _consume_stack_variable_item(budget):
+			break
 		if not (key is String) and not (key is StringName):
 			continue
 		var value: Variant = variables[key]
-		if _is_supported_stack_variable(value):
-			normalized[str(key)] = _normalized_stack_variable(value)
+		if _is_supported_stack_variable(value, container_depth + 1):
+			normalized[str(key)] = _normalized_stack_variable(
+					value,
+					container_depth + 1,
+					budget,
+			)
 	return normalized
 
 
-func _is_supported_stack_variable(value: Variant) -> bool:
+func _consume_stack_variable_item(budget: Dictionary) -> bool:
+	var remaining: int = budget["remaining"]
+	if remaining <= 0:
+		return false
+	budget["remaining"] = remaining - 1
+	return true
+
+
+func _is_supported_stack_variable(value: Variant, container_depth: int) -> bool:
 	if value is bool or value is int or value is String or value is StringName:
 		return true
 	if value is float:
 		return is_finite(value)
-	return value is Array or value is Dictionary
+	return (value is Array or value is Dictionary) \
+			and container_depth <= MAX_STACK_VARIABLE_CONTAINER_DEPTH
 
 
-func _normalized_stack_variable(value: Variant) -> Variant:
+func _normalized_stack_variable(
+		value: Variant,
+		container_depth: int,
+		budget: Dictionary,
+) -> Variant:
 	if value is StringName:
 		return str(value)
 	if value is Array:
-		var normalized_array: Array = []
-		for item: Variant in value:
-			if _is_supported_stack_variable(item):
-				normalized_array.append(_normalized_stack_variable(item))
-		return normalized_array
+		return _normalized_stack_variable_array(value, container_depth, budget)
 	if value is Dictionary:
-		return _normalized_stack_variables(value)
+		return _normalized_stack_variable_dictionary(value, container_depth, budget)
 	return value
+
+
+func _normalized_stack_variable_array(
+		values: Array,
+		container_depth: int,
+		budget: Dictionary,
+) -> Array:
+	var normalized: Array = []
+	for value: Variant in values:
+		if not _consume_stack_variable_item(budget):
+			break
+		if _is_supported_stack_variable(value, container_depth + 1):
+			normalized.append(_normalized_stack_variable(
+					value,
+					container_depth + 1,
+					budget,
+			))
+	return normalized
 
 
 func _capture_feedback(feedback: ObservabilityFeedback) -> String:

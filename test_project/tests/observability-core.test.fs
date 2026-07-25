@@ -190,8 +190,8 @@ func test_stack_frame_capture_can_disable_context_and_enable_variables() -> void
 				"label": &"sword",
 				"nested": {
 					"name": &"Knight",
-					"values": [false, 9, "safe", NAN, Object.new()],
-					"bad object": Object.new(),
+					"values": [false, 9, "safe", NAN, Vector2(1.0, 2.0)],
+					"bad vector": Vector2(3.0, 4.0),
 					7: "bad key",
 				},
 			},
@@ -371,6 +371,112 @@ func test_stack_frame_capture_normalizes_string_name_variable_keys() -> void:
 			"top": "value",
 			"nested": {"child": "nested value"},
 	})
+	service.shutdown()
+
+
+func test_stack_frame_capture_bounds_variable_container_depth() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var at_limit: Array = ["leaf"]
+	for _index: int in range(7):
+		at_limit = [at_limit]
+	var beyond_limit: Array = [at_limit]
+	var expected_beyond_limit: Array = []
+	for _index: int in range(7):
+		expected_beyond_limit = [expected_beyond_limit]
+	var frame := ObservabilityStackFrame.new(
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = {
+				"at limit": at_limit,
+				"beyond limit": beyond_limit,
+			},
+		)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	var variables: Dictionary = provider.events()[0].exception().frames()[0].variables()
+	Expect.that(variables["at limit"]).to_equal(at_limit)
+	Expect.that(variables["beyond limit"]).to_equal(expected_beyond_limit)
+	service.shutdown()
+
+
+func test_stack_frame_capture_bounds_total_variable_items() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var first_branch: Array = []
+	var second_branch: Array = []
+	var expected_second_branch: Array = []
+	for index: int in range(200):
+		first_branch.append(index)
+		second_branch.append(index)
+		if index < 53:
+			expected_second_branch.append(index)
+	var frame := ObservabilityStackFrame.new(
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = {"branches": [first_branch, second_branch]},
+		)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	Expect.that(provider.events()[0].exception().frames()[0].variables()).to_equal({
+			"branches": [first_branch, expected_second_branch],
+	})
+	service.shutdown()
+
+
+func test_stack_frame_capture_stops_cyclic_variable_traversal() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var cyclic: Array = []
+	cyclic.append(cyclic)
+	var frame := ObservabilityStackFrame.new(
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = {"cycle": cyclic, "finite": 7},
+		)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	var variables: Dictionary = provider.events()[0].exception().frames()[0].variables()
+	Expect.that(variables["finite"]).to_equal(7)
 	service.shutdown()
 
 
