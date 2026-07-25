@@ -14,16 +14,21 @@ on:
         default: patch
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   FOUNDRY_VERSION: "v0.1.0-alpha.7"
 
 jobs:
-  release:
-    name: Package and publish release
+  build:
+    name: Build and verify release
     runs-on: macos-26
     timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -117,6 +122,8 @@ jobs:
         run: task test
 
       - name: Build Apple Sentry artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: task ios:sentry
 
       - name: Build Android Sentry artifacts
@@ -128,13 +135,36 @@ jobs:
       - name: Verify Sentry native artifact archive
         run: task verify:sentry-package VERSION="${{ steps.version.outputs.version }}"
 
+      - name: Upload release archives
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-archives
+          path: |
+            dist/FoundryObservability-${{ steps.version.outputs.version }}.zip
+            dist/FoundryObservabilitySentry-${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-archives
+          path: dist
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create \
-            "${{ steps.version.outputs.tag }}" \
-            "dist/FoundryObservability-${{ steps.version.outputs.version }}.zip" \
-            "dist/FoundryObservabilitySentry-${{ steps.version.outputs.version }}.zip" \
-            --title "FoundryObservability ${{ steps.version.outputs.tag }}" \
+            "${{ needs.build.outputs.tag }}" \
+            "dist/FoundryObservability-${{ needs.build.outputs.version }}.zip" \
+            "dist/FoundryObservabilitySentry-${{ needs.build.outputs.version }}.zip" \
+            --title "FoundryObservability ${{ needs.build.outputs.tag }}" \
             --generate-notes

@@ -5,6 +5,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 sentry_source="$repo_root/addons/FoundryObservabilitySentry"
 source_version=$(awk -F'"' '/^version=/{print $2; exit}' "$sentry_source/plugin.cfg")
 version="${VERSION:-$source_version}"
+dist_dir="${DIST_DIR:-$repo_root/dist}"
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -48,12 +49,13 @@ if [[ "$version" != "$source_version" ]]; then
 fi
 
 find "$tmp_dir" -name '.DS_Store' -delete
-mkdir -p "$repo_root/dist"
-archive="$repo_root/dist/FoundryObservabilitySentry-${version}.zip"
+mkdir -p "$dist_dir"
+dist_dir=$(cd "$dist_dir" && pwd)
+archive="$dist_dir/FoundryObservabilitySentry-${version}.zip"
 rm -f "$archive"
 (
 	cd "$tmp_dir"
-	zip -qr "$archive" addons/FoundryObservabilitySentry
+	zip -qry "$archive" addons/FoundryObservabilitySentry
 )
 
 echo "$archive"

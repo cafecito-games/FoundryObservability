@@ -46,6 +46,61 @@ done
 [[ ! -e "$repo_root/requirements.txt" ]] \
 	|| fail "requirements.txt must remain absent"
 
+global_release_permission=$(
+	awk '/^permissions:$/{ getline; print; exit }' "$release_workflow"
+)
+[[ "$global_release_permission" == "  contents: read" ]] \
+	|| fail "release workflow must default to read-only contents permission"
+rg -q '^  build:$' "$release_workflow" \
+	|| fail "release workflow must have a build job"
+rg -q '^  publish:$' "$release_workflow" \
+	|| fail "release workflow must have a separate publish job"
+
+build_job=$(sed -n '/^  build:$/,/^  publish:$/p' "$release_workflow")
+publish_job=$(sed -n '/^  publish:$/,$p' "$release_workflow")
+rg -q '^    permissions:$' <<<"$build_job" \
+	|| fail "release build job must declare permissions"
+rg -q '^      contents: read$' <<<"$build_job" \
+	|| fail "release build job must use read-only contents permission"
+rg -q '^    outputs:$' <<<"$build_job" \
+	|| fail "release build job must expose version and tag outputs"
+rg -q 'version: \$\{\{ steps\.version\.outputs\.version \}\}' <<<"$build_job" \
+	|| fail "release build job must expose the computed version"
+rg -q 'tag: \$\{\{ steps\.version\.outputs\.tag \}\}' <<<"$build_job" \
+	|| fail "release build job must expose the computed tag"
+if rg -q 'gh release create' <<<"$build_job"; then
+	fail "release build job must not publish"
+fi
+
+rg -q '^    needs: build$' <<<"$publish_job" \
+	|| fail "release publish job must depend on the build job"
+rg -q '^    permissions:$' <<<"$publish_job" \
+	|| fail "release publish job must declare permissions"
+rg -q '^      contents: write$' <<<"$publish_job" \
+	|| fail "release publish job must be the only write-permission job"
+rg -q 'GH_REPO: \$\{\{ github\.repository \}\}' <<<"$publish_job" \
+	|| fail "release publish job must target the current repository without checkout"
+if rg -q 'actions/checkout' <<<"$publish_job"; then
+	fail "release publish job must not check out or build repository code"
+fi
+if rg -q 'task (test|ios:sentry|android:sentry|package)' <<<"$publish_job"; then
+	fail "release publish job must not run builds, tests, or packaging with write permission"
+fi
+
+rg -q -U -- '- name: Build Apple Sentry artifacts\n        env:\n          GH_TOKEN: \$\{\{ github\.token \}\}\n        run: task ios:sentry' \
+	<<<"$build_job" \
+	|| fail "Apple native build must receive GH_TOKEN explicitly"
+rg -q 'actions/upload-artifact@v7\.0\.1([[:space:]]|$)' <<<"$build_job" \
+	|| fail "release build job must upload finished archives with upload-artifact@v7.0.1"
+rg -q 'actions/download-artifact@v8\.0\.1([[:space:]]|$)' <<<"$publish_job" \
+	|| fail "release publish job must download archives with download-artifact@v8.0.1"
+rg -q 'dist/FoundryObservability-\$\{\{ needs\.build\.outputs\.version \}\}\.zip' \
+	<<<"$publish_job" \
+	|| fail "release publish job must publish the downloaded core archive"
+rg -q 'dist/FoundryObservabilitySentry-\$\{\{ needs\.build\.outputs\.version \}\}\.zip' \
+	<<<"$publish_job" \
+	|| fail "release publish job must publish the downloaded Sentry archive"
+
 rg -q '^  contents: read$' "$pr_workflow" \
 	|| fail "pull-request workflow must request read-only contents permission"
 rg -q '^      bump:$' "$release_workflow" \
@@ -77,15 +132,20 @@ release_ios_line=$(awk '/task ios:sentry/{ print NR; exit }' "$release_workflow"
 release_android_line=$(awk '/task android:sentry/{ print NR; exit }' "$release_workflow")
 release_package_line=$(awk '/REQUIRE_NATIVE_ARTIFACTS=1 task package/{ print NR; exit }' "$release_workflow")
 release_verify_line=$(awk '/task verify:sentry-package/{ print NR; exit }' "$release_workflow")
+release_upload_line=$(awk '/actions\/upload-artifact@v7\.0\.1/{ print NR; exit }' "$release_workflow")
+release_download_line=$(awk '/actions\/download-artifact@v8\.0\.1/{ print NR; exit }' "$release_workflow")
 release_publish_line=$(awk '/gh release create/{ print NR; exit }' "$release_workflow")
 [[ -n "$release_ios_line" && -n "$release_android_line" \
 	&& -n "$release_package_line" && -n "$release_verify_line" \
+	&& -n "$release_upload_line" && -n "$release_download_line" \
 	&& -n "$release_publish_line" ]] \
 	|| fail "release workflow must build, package, verify, and publish native Sentry artifacts"
 (( release_ios_line < release_android_line \
 	&& release_android_line < release_package_line \
 	&& release_package_line < release_verify_line \
-	&& release_verify_line < release_publish_line )) \
+	&& release_verify_line < release_upload_line \
+	&& release_upload_line < release_download_line \
+	&& release_download_line < release_publish_line )) \
 	|| fail "release native artifact steps are out of order"
 
 rg -q 'dist/FoundryObservability-\$\{\{ steps\.version\.outputs\.version \}\}\.zip' \
