@@ -7,14 +7,13 @@ on:
 permissions:
   contents: read
 
-env:
-  FOUNDRY_VERSION: "v0.1.0-alpha.7"
-
 jobs:
   validate-core:
-    name: Validate core addon
+    name: Validate FoundryObservability
     runs-on: macos-26
     timeout-minutes: 20
+    env:
+      FOUNDRY_VERSION: "v0.1.0-alpha.7"
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1

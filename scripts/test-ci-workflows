@@ -15,6 +15,40 @@ fail() {
 [[ -f "$release_workflow" ]] || fail "release.yml is missing"
 [[ -f "$taskfile" ]] || fail "Taskfile.yml is missing"
 
+extract_job() {
+	local job_id=$1
+	awk -v job_id="$job_id" '
+		BEGIN { job_key = "  " job_id ":" }
+		$0 == job_key { copying = 1 }
+		copying && $0 ~ /^  [[:alnum:]_-]+:$/ && $0 != job_key { exit }
+		copying { print }
+	' "$pr_workflow"
+}
+
+job_mentions_task_name() {
+	local job_body=$1
+	local task_name=$2
+	rg -q \
+		"(^|[^[:alnum:]_:-])${task_name}([^[:alnum:]_:-]|$)" \
+		<<<"$job_body"
+}
+
+job_line() {
+	local job_body=$1
+	local needle=$2
+	awk -v needle="$needle" 'index($0, needle) { print NR; exit }' \
+		<<<"$job_body"
+}
+
+for job_id in validate-core build-apple build-android; do
+	rg -q "^  $job_id:$" "$pr_workflow" \
+		|| fail "pull-request workflow must have a $job_id job"
+done
+
+core_job=$(extract_job validate-core)
+apple_job=$(extract_job build-apple)
+android_job=$(extract_job build-android)
+
 project_test_line=$(awk '/^[[:space:]]+- task: test:project$/{ print NR; exit }' "$taskfile")
 foundry_script_test_line=$(awk '/^[[:space:]]+- task: test:foundry-script$/{ print NR; exit }' "$taskfile")
 [[ -n "$project_test_line" && -n "$foundry_script_test_line" ]] \
@@ -22,24 +56,26 @@ foundry_script_test_line=$(awk '/^[[:space:]]+- task: test:foundry-script$/{ pri
 (( project_test_line < foundry_script_test_line )) \
 	|| fail "Taskfile.yml must install project packages before FoundryScript lint"
 
+rg -q 'actions/checkout@v7\.0\.1([[:space:]]|$)' "$release_workflow" \
+	|| fail "release.yml must use actions/checkout@v7.0.1"
+rg -q 'actions/setup-go@v7\.0\.0([[:space:]]|$)' "$release_workflow" \
+	|| fail "release.yml must use actions/setup-go@v7.0.0"
+rg -q 'go-task/setup-task@v2\.1\.0([[:space:]]|$)' "$release_workflow" \
+	|| fail "release.yml must use go-task/setup-task@v2.1.0"
+rg -q 'v0\.1\.0-alpha\.7' "$release_workflow" \
+	|| fail "release.yml must pin Foundry v0.1.0-alpha.7"
+rg -q 'project import --project' "$release_workflow" \
+	|| fail "release.yml must use command-first project import"
+rg -Fq 'go install github.com/cafecito-games/foundry-tools/cmd/anvil@176f5f7c5909c07c785fe6e1fd21051e0c13c5bf' \
+	"$release_workflow" \
+	|| fail "release.yml must pin Anvil to the immutable v0.0.1 commit"
+if rg -q 'foundry-tools/cmd/anvil@latest' "$release_workflow"; then
+	fail "release.yml must not install Anvil from a mutable latest reference"
+fi
+rg -q 'task test' "$release_workflow" \
+	|| fail "release.yml must run the repository test gate"
+
 for workflow in "$pr_workflow" "$release_workflow"; do
-	rg -q 'actions/checkout@v7\.0\.1([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/checkout@v7.0.1"
-	rg -q 'actions/setup-go@v7\.0\.0([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use actions/setup-go@v7.0.0"
-	rg -q 'go-task/setup-task@v2\.1\.0([[:space:]]|$)' "$workflow" \
-		|| fail "$(basename "$workflow") must use go-task/setup-task@v2.1.0"
-	rg -q 'v0\.1\.0-alpha\.7' "$workflow" \
-		|| fail "$(basename "$workflow") must pin Foundry v0.1.0-alpha.7"
-	rg -q 'project import --project' "$workflow" \
-		|| fail "$(basename "$workflow") must use command-first project import"
-	rg -Fq 'go install github.com/cafecito-games/foundry-tools/cmd/anvil@176f5f7c5909c07c785fe6e1fd21051e0c13c5bf' "$workflow" \
-		|| fail "$(basename "$workflow") must pin Anvil to the immutable v0.0.1 commit"
-	if rg -q 'foundry-tools/cmd/anvil@latest' "$workflow"; then
-		fail "$(basename "$workflow") must not install Anvil from a mutable latest reference"
-	fi
-	rg -q 'task test' "$workflow" \
-		|| fail "$(basename "$workflow") must run the repository test gate"
 	if rg -n -- '--headless[[:space:]]+--path|--headless[[:space:]]+--editor|--check-only' "$workflow"; then
 		fail "$(basename "$workflow") contains a deprecated Foundry invocation"
 	fi
@@ -173,37 +209,40 @@ rg -q 'dist/FoundryObservabilitySentry-\$\{\{ steps\.version\.outputs\.version \
 	"$release_workflow" \
 	|| fail "release workflow must publish the versioned Sentry archive"
 
-rg -q '^  validate-core:$' "$pr_workflow" \
-	|| fail "pull-request workflow must have a validate-core job"
-rg -q '^  build-apple:$' "$pr_workflow" \
-	|| fail "pull-request workflow must have a build-apple job"
-rg -q '^  build-android:$' "$pr_workflow" \
-	|| fail "pull-request workflow must have a build-android job"
+for job_id in validate-core build-apple build-android; do
+	if rg -q '^    needs:' <<<"$(extract_job "$job_id")"; then
+		fail "$job_id must run independently without needs"
+	fi
+done
 
-extract_job() {
-	local job_id=$1
-	awk -v job_id="$job_id" '
-		BEGIN { job_key = "  " job_id ":" }
-		$0 == job_key { copying = 1 }
-		copying && $0 ~ /^  [[:alnum:]_-]+:$/ && $0 != job_key { exit }
-		copying { print }
-	' "$pr_workflow"
-}
-
-job_mentions_task_name() {
-	local job_body=$1
-	local task_name=$2
-	rg -q \
-		"(^|[^[:alnum:]_:-])${task_name}([^[:alnum:]_:-]|$)" \
-		<<<"$job_body"
-}
-
-core_job=$(extract_job validate-core)
-apple_job=$(extract_job build-apple)
-android_job=$(extract_job build-android)
-
-rg -Fxq '    name: Validate core addon' <<<"$core_job" \
-	|| fail "validate-core job must be named Validate core addon"
+rg -Fxq '    name: Validate FoundryObservability' <<<"$core_job" \
+	|| fail "validate-core job must preserve the Validate FoundryObservability check context"
+rg -Fxq '    runs-on: macos-26' <<<"$core_job" \
+	|| fail "validate-core job must run on macos-26"
+rg -Fxq '        uses: actions/checkout@v7.0.1' <<<"$core_job" \
+	|| fail "validate-core job must use actions/checkout@v7.0.1"
+rg -Fxq '        run: brew install prek ripgrep' <<<"$core_job" \
+	|| fail "validate-core job must install prek and ripgrep"
+rg -Fxq '        uses: go-task/setup-task@v2.1.0' <<<"$core_job" \
+	|| fail "validate-core job must use go-task/setup-task@v2.1.0"
+rg -Fxq '        uses: actions/setup-go@v7.0.0' <<<"$core_job" \
+	|| fail "validate-core job must use actions/setup-go@v7.0.0"
+rg -Fq 'go install github.com/cafecito-games/foundry-tools/cmd/anvil@176f5f7c5909c07c785fe6e1fd21051e0c13c5bf' \
+	<<<"$core_job" \
+	|| fail "validate-core job must pin Anvil to the immutable v0.0.1 commit"
+if rg -q 'foundry-tools/cmd/anvil@latest' <<<"$core_job"; then
+	fail "validate-core job must not install Anvil from a mutable latest reference"
+fi
+rg -Fxq '      FOUNDRY_VERSION: "v0.1.0-alpha.7"' <<<"$core_job" \
+	|| fail "validate-core job must pin Foundry v0.1.0-alpha.7"
+rg -Fq 'https://github.com/cafecito-games/Foundry/releases/download/${FOUNDRY_VERSION}/${asset}' \
+	<<<"$core_job" \
+	|| fail "validate-core job must download the pinned Foundry editor"
+rg -Fq 'unzip -q "$foundry_dir/$asset" -d "$foundry_dir"' <<<"$core_job" \
+	|| fail "validate-core job must install the downloaded Foundry editor"
+rg -Fq '"$FOUNDRY_BIN" --headless project import --project test_project' \
+	<<<"$core_job" \
+	|| fail "validate-core job must use command-first project import"
 rg -Fxq '        run: task test:core' <<<"$core_job" \
 	|| fail "validate-core job must run task test:core"
 for forbidden_task in \
@@ -236,9 +275,14 @@ rg -q -U -- '^      - name: Build Apple artifacts$\n^        env:$\n^          G
 rg -q '^        run: brew install( [[:alnum:]_.@/+:-]+)* xcodegen( [[:alnum:]_.@/+:-]+)*$' \
 	<<<"$apple_job" \
 	|| fail "build-apple job must install XcodeGen via brew"
+rg -Fxq '        uses: go-task/setup-task@v2.1.0' <<<"$apple_job" \
+	|| fail "build-apple job must use go-task/setup-task@v2.1.0"
 
 rg -Fxq '    name: Build Android Sentry addon' <<<"$android_job" \
 	|| fail "build-android job must be named Build Android Sentry addon"
+rg -Fxq '        run: sudo apt-get update && sudo apt-get install --yes ripgrep' \
+	<<<"$android_job" \
+	|| fail "build-android job must install ripgrep"
 rg -Fxq '        run: task test:sentry-android' <<<"$android_job" \
 	|| fail "build-android job must run task test:sentry-android"
 rg -Fxq '        run: task android:sentry' <<<"$android_job" \
@@ -257,6 +301,8 @@ rg -q '^        uses: actions/setup-java@v5\.6\.0$' <<<"$android_job" \
 	|| fail "build-android job must set up Java 17"
 rg -q '^        uses: android-actions/setup-android@v4\.0\.1$' <<<"$android_job" \
 	|| fail "build-android job must set up the Android SDK"
+rg -Fxq '        uses: go-task/setup-task@v2.1.0' <<<"$android_job" \
+	|| fail "build-android job must use go-task/setup-task@v2.1.0"
 rg -q "^          java-version: ['\"]?17['\"]?$" <<<"$android_job" \
 	|| fail "build-android job must use Java 17"
 rg -q '^          (yes \| )?sdkmanager --licenses([[:space:]]|$)' <<<"$android_job" \
@@ -266,5 +312,44 @@ rg -q "^          sdkmanager ['\"]platforms;android-36['\"]$" <<<"$android_job" 
 rg -q '^        run: chmod \+x addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/gradlew$' \
 	<<<"$android_job" \
 	|| fail "build-android job must make the Android Gradle wrapper executable"
+
+core_test_line=$(job_line "$core_job" 'run: task test:core')
+for core_setup_line in \
+	"$(job_line "$core_job" 'run: brew install prek ripgrep')" \
+	"$(job_line "$core_job" 'uses: go-task/setup-task@v2.1.0')" \
+	"$(job_line "$core_job" 'uses: actions/setup-go@v7.0.0')" \
+	"$(job_line "$core_job" 'foundry-tools/cmd/anvil@176f5f7c5909c07c785fe6e1fd21051e0c13c5bf')" \
+	"$(job_line "$core_job" 'Foundry/releases/download/')" \
+	"$(job_line "$core_job" 'unzip -q')" \
+	"$(job_line "$core_job" '--headless project import --project test_project')"; do
+	(( core_setup_line < core_test_line )) \
+		|| fail "validate-core setup must run before task test:core"
+done
+
+apple_tooling_line=$(job_line "$apple_job" 'run: brew install ripgrep xcodegen')
+apple_task_setup_line=$(job_line "$apple_job" 'uses: go-task/setup-task@v2.1.0')
+apple_test_line=$(job_line "$apple_job" 'run: task test:sentry-apple')
+apple_build_line=$(job_line "$apple_job" 'run: task ios:sentry')
+(( apple_tooling_line < apple_test_line \
+	&& apple_task_setup_line < apple_test_line \
+	&& apple_test_line < apple_build_line )) \
+	|| fail "build-apple tooling, validation, and build steps are out of order"
+
+android_tooling_line=$(job_line "$android_job" 'run: sudo apt-get update')
+android_java_line=$(job_line "$android_job" 'uses: actions/setup-java@v5.6.0')
+android_sdk_line=$(job_line "$android_job" 'uses: android-actions/setup-android@v4.0.1')
+android_platform_line=$(job_line "$android_job" 'sdkmanager "platforms;android-36"')
+android_task_setup_line=$(job_line "$android_job" 'uses: go-task/setup-task@v2.1.0')
+android_chmod_line=$(job_line "$android_job" 'run: chmod +x addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/gradlew')
+android_test_line=$(job_line "$android_job" 'run: task test:sentry-android')
+android_build_line=$(job_line "$android_job" 'run: task android:sentry')
+(( android_tooling_line < android_test_line \
+	&& android_java_line < android_test_line \
+	&& android_sdk_line < android_test_line \
+	&& android_platform_line < android_test_line \
+	&& android_task_setup_line < android_test_line \
+	&& android_chmod_line < android_test_line \
+	&& android_test_line < android_build_line )) \
+	|| fail "build-android setup, validation, and build steps are out of order"
 
 echo "CI workflow contract checks passed"

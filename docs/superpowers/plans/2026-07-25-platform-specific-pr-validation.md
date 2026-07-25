@@ -40,8 +40,8 @@ core_job=$(sed -n '/^  validate-core:$/,/^  build-apple:$/p' "$pr_workflow")
 apple_job=$(sed -n '/^  build-apple:$/,/^  build-android:$/p' "$pr_workflow")
 android_job=$(sed -n '/^  build-android:$/,$p' "$pr_workflow")
 
-rg -q '^    name: Validate core addon$' <<<"$core_job" \
-	|| fail "pull-request workflow must name the core validation job"
+rg -q '^    name: Validate FoundryObservability$' <<<"$core_job" \
+	|| fail "pull-request workflow must preserve the existing core check context"
 rg -q 'run: task test:core' <<<"$core_job" \
 	|| fail "core pull-request job must run only the core validation group"
 if rg -q 'task (test:sentry-(apple|android)|ios:sentry|android:sentry)' <<<"$core_job"; then
@@ -154,12 +154,15 @@ be fixed before editing the workflow.
 
 - [ ] **Step 1: Rename and narrow the core job**
 
-Change the job identifier, display name, and final command while leaving its
-Foundry, Anvil, repository-tooling, and Task setup intact:
+Change the job identifier and final command while leaving its display name,
+Foundry, Anvil, repository-tooling, and Task setup intact. Retaining
+`Validate FoundryObservability` preserves the existing branch-protection check
+context, while the `validate-core` identifier and `task test:core` command make
+the job's ownership core-only:
 
 ```yaml
   validate-core:
-    name: Validate core addon
+    name: Validate FoundryObservability
     runs-on: macos-26
     timeout-minutes: 20
 ```

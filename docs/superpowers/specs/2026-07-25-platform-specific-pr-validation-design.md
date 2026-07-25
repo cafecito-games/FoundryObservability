@@ -35,9 +35,12 @@ composed by the new groups instead of duplicated.
 
 `.github/workflows/pr-check.yml` will contain three jobs:
 
-1. `Validate core addon` runs on macOS because the Foundry editor test suite is
-   a required core check. It installs the existing repository tooling, Anvil,
-   and Foundry editor, then runs `task test:core`.
+1. `Validate FoundryObservability` runs on macOS because the Foundry editor
+   test suite is a required core check. The display name remains unchanged to
+   preserve the existing branch-protection check context, while its
+   `validate-core` job identifier and `task test:core` command limit ownership
+   to core validation. It installs the existing repository tooling, Anvil, and
+   Foundry editor.
 2. `Build Apple Sentry addon` runs on macOS. It installs repository tooling,
    Task, and XcodeGen, runs `task test:sentry-apple`, and runs
    `task ios:sentry` with the GitHub token needed to resolve the pinned
