@@ -102,6 +102,8 @@ func capture(event: ObservabilityEvent) -> String:
 			}
 		var frames: Array = []
 		for frame: ObservabilityStackFrame in exception.frames():
+			if frame == null:
+				continue
 			frames.append(_stack_frame_payload(frame))
 		if not frames.is_empty():
 			exception_payload["frames"] = frames

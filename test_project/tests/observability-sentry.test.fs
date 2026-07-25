@@ -165,6 +165,37 @@ func test_service_preserves_legacy_exception_bridge_payload_without_frames() -> 
 	service.shutdown()
 
 
+func test_direct_provider_skips_null_exception_frames() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var frames: Array[ObservabilityStackFrame] = []
+	frames.append(null)
+	frames.append(null)
+	var exception := ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = frames,
+		)
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		))).to_equal(Error.OK)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_message = "attack failed",
+			p_attributes = {},
+			p_exception = exception,
+		))).to_equal("sentry:1")
+
+	var exception_payload: Dictionary = bridge.captured_payloads[0]["exception"]
+	Expect.that(exception_payload["stack_trace"]).to_equal("formatted fallback")
+	Expect.that(exception_payload.has("frames")).to_be_false()
+	provider.shutdown()
+
+
 func test_service_omits_empty_structured_frame_context_from_native_bridge() -> void:
 	var service: FoundryObservability = _service()
 	var bridge := FakeSentryBridge.new()
