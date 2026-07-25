@@ -8,6 +8,7 @@ uses FoundryObservabilityApi
 
 var captured_events: Array[ObservabilityEvent] = []
 var captured_logs: Array[Dictionary] = []
+var captured_breadcrumbs: Array[ObservabilityBreadcrumb] = []
 var captured_feedback: Array[ObservabilityFeedback] = []
 
 
@@ -66,6 +67,11 @@ func capture_log(
 			"attributes": attributes.duplicate(true),
 		})
 	return "log:1"
+
+
+func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
+	captured_breadcrumbs.append(breadcrumb)
+	return true
 
 
 func capture_feedback(feedback: ObservabilityFeedback) -> String:

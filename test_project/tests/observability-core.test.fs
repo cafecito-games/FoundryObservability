@@ -418,6 +418,39 @@ func test_memory_provider_captures_feedback_separately_from_events() -> void:
 	service.shutdown()
 
 
+func test_memory_provider_captures_and_clears_breadcrumbs() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	var breadcrumb := ObservabilityBreadcrumb.new(p_message = "trail")
+
+	Expect.that(service.capture_breadcrumb(breadcrumb)).to_be_true()
+	Expect.that(provider.breadcrumbs()).to_equal([breadcrumb])
+	provider.clear_breadcrumbs()
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	service.shutdown()
+
+
+func test_missing_breadcrumb_capability_is_observable_and_isolated() -> void:
+	var service: FoundryObservability = _service()
+	var provider := BreadcrumblessObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "unsupported"))).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(service.capture_message("still works")).to_equal("event:1")
+	service.shutdown()
+
+
 func test_feedback_accepts_anonymous_and_identified_submissions() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
