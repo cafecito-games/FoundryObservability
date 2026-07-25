@@ -34,19 +34,26 @@ for native_path in "${required_native_paths[@]}"; do
 done
 
 probe_artifact="$repo_root/addons/FoundryObservabilitySentry/bin/android/debug/FoundryObservabilitySentry-debug.aar"
+native_requirement_probe_version="9.8.6"
+native_requirement_core_archive="$repo_root/dist/FoundryObservability-${native_requirement_probe_version}.zip"
+native_requirement_sentry_archive="$repo_root/dist/FoundryObservabilitySentry-${native_requirement_probe_version}.zip"
 probe_backup_dir=""
 restore_probe_artifact() {
 	if [[ -n "$probe_backup_dir" && -e "$probe_backup_dir/FoundryObservabilitySentry-debug.aar" ]]; then
 		mv "$probe_backup_dir/FoundryObservabilitySentry-debug.aar" "$probe_artifact"
 		rmdir "$probe_backup_dir"
 	fi
+	rm -f "$native_requirement_core_archive" "$native_requirement_sentry_archive"
 }
 if [[ -e "$probe_artifact" ]]; then
 	probe_backup_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundryobservability-native-probe.XXXXXX")
 	mv "$probe_artifact" "$probe_backup_dir/FoundryObservabilitySentry-debug.aar"
-	trap restore_probe_artifact EXIT
 fi
-if native_failure=$(REQUIRE_NATIVE_ARTIFACTS=1 "$sentry_package_script" 2>&1); then
+trap restore_probe_artifact EXIT
+if native_failure=$(
+	cd "$repo_root"
+	REQUIRE_NATIVE_ARTIFACTS=1 task package VERSION="$native_requirement_probe_version" 2>&1
+); then
 	fail "required-native Sentry packaging succeeded with a missing artifact"
 fi
 rg -q 'required native artifact is missing or empty' <<<"$native_failure" \
@@ -143,5 +150,41 @@ while IFS= read -r resource; do
 done < <(
 	find "$repo_root/addons/FoundryObservabilitySentry" -maxdepth 1 -type f -name '*.fs' | sort
 )
+
+probe_version="9.8.7"
+sentry_only_probe_version="9.8.8"
+probe_core_archive="$repo_root/dist/FoundryObservability-${probe_version}.zip"
+probe_sentry_archive="$repo_root/dist/FoundryObservabilitySentry-${probe_version}.zip"
+probe_sentry_only_archive="$repo_root/dist/FoundryObservabilitySentry-${sentry_only_probe_version}.zip"
+cleanup_version_probes() {
+	rm -f "$probe_core_archive" "$probe_sentry_archive" "$probe_sentry_only_archive"
+}
+cleanup_version_probes
+trap cleanup_version_probes EXIT
+(
+	cd "$repo_root"
+	task package VERSION="$probe_version" >/dev/null
+)
+[[ -s "$probe_core_archive" ]] \
+	|| fail "task package did not create the requested core archive version"
+[[ -s "$probe_sentry_archive" ]] \
+	|| fail "task package did not create the requested Sentry archive version"
+unzip -p "$probe_core_archive" addons/FoundryObservability/plugin.cfg \
+	| grep -qx "version=\"$probe_version\"" \
+	|| fail "task package did not rewrite the core plugin version"
+unzip -p "$probe_sentry_archive" addons/FoundryObservabilitySentry/plugin.cfg \
+	| grep -qx "version=\"$probe_version\"" \
+	|| fail "task package did not rewrite the Sentry plugin version"
+(
+	cd "$repo_root"
+	task package:sentry VERSION="$sentry_only_probe_version" >/dev/null
+)
+[[ -s "$probe_sentry_only_archive" ]] \
+	|| fail "task package:sentry did not create the requested archive version"
+unzip -p "$probe_sentry_only_archive" addons/FoundryObservabilitySentry/plugin.cfg \
+	| grep -qx "version=\"$sentry_only_probe_version\"" \
+	|| fail "task package:sentry did not rewrite the Sentry plugin version"
+cleanup_version_probes
+trap - EXIT
 
 echo "Package contract checks passed: $archive and $sentry_archive"

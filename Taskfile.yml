@@ -64,13 +64,13 @@ tasks:
   package:
     desc: Create distributable FoundryObservability addon zips
     cmds:
-      - scripts/package-addon
-      - scripts/package-sentry-addon
+      - VERSION="{{.VERSION}}" scripts/package-addon
+      - VERSION="{{.VERSION}}" scripts/package-sentry-addon
 
   package:sentry:
     desc: Create a distributable FoundryObservabilitySentry addon zip
     cmds:
-      - scripts/package-sentry-addon
+      - VERSION="{{.VERSION}}" scripts/package-sentry-addon
 
   verify:sentry-package:
     desc: Verify native Apple and Android artifacts in a Sentry addon zip
