@@ -231,6 +231,15 @@ interpret the type or stack string; providers decide how to map them.
 
 ObservabilityEvent is the normalized provider-neutral payload.
 
+Timestamp sentinel:
+
+~~~
+const UNASSIGNED_TIMESTAMP: int = -1
+~~~
+
+The constructor uses this sentinel when the service should resolve wall-clock
+time at capture.
+
 Constructor:
 
 ~~~
@@ -239,7 +248,7 @@ ObservabilityEvent.new(
 		p_level: int = ObservabilityLevel.INFO,
 		p_message: String = "",
 		p_source: StringName = &"",
-		p_timestamp_msec: int = -1,
+		p_timestamp_msec: int = UNASSIGNED_TIMESTAMP,
 		p_attributes: Dictionary = {},
 		p_exception: ObservabilityException? = null,
 		p_engine_ticks_msec: int = -1,
