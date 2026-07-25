@@ -70,8 +70,17 @@ rg -q 'actions/setup-go@v7\.0\.0([[:space:]]|$)' "$release_workflow" \
 	|| fail "release.yml must use actions/setup-go@v7.0.0"
 rg -q 'go-task/setup-task@v2\.1\.0([[:space:]]|$)' "$release_workflow" \
 	|| fail "release.yml must use go-task/setup-task@v2.1.0"
-rg -q 'v0\.1\.0-alpha\.8' "$release_workflow" \
+rg -q -U '^env:\n  FOUNDRY_VERSION: "v0\.1\.0-alpha\.8"$' "$release_workflow" \
 	|| fail "release.yml must pin Foundry v0.1.0-alpha.8"
+release_foundry_version=$(
+	sed -n '
+		/^env:$/ {
+			n
+			s/^  FOUNDRY_VERSION: "\(v[^"]*\)"$/\1/p
+			q
+		}
+	' "$release_workflow"
+)
 rg -q 'project import --project' "$release_workflow" \
 	|| fail "release.yml must use command-first project import"
 rg -Fq 'go install github.com/cafecito-games/foundry-tools/cmd/anvil@176f5f7c5909c07c785fe6e1fd21051e0c13c5bf' \
@@ -243,6 +252,17 @@ if rg -q 'foundry-tools/cmd/anvil@latest' <<<"$core_job"; then
 fi
 rg -Fxq '      FOUNDRY_VERSION: "v0.1.0-alpha.8"' <<<"$core_job" \
 	|| fail "validate-core job must pin Foundry v0.1.0-alpha.8"
+core_foundry_version=$(
+	sed -n '
+		/^    env:$/ {
+			n
+			s/^      FOUNDRY_VERSION: "\(v[^"]*\)"$/\1/p
+			q
+		}
+	' <<<"$core_job"
+)
+[[ "$core_foundry_version" == "$release_foundry_version" ]] \
+	|| fail "validate-core and release workflows must pin the same Foundry version"
 rg -Fq 'https://github.com/cafecito-games/Foundry/releases/download/${FOUNDRY_VERSION}/${asset}' \
 	<<<"$core_job" \
 	|| fail "validate-core job must download the pinned Foundry editor"
