@@ -25,7 +25,8 @@ func mergedLogAttributes(
     event: [String: Any],
     kind: String,
     source: String,
-    timestampMsec: Int64
+    timestampMsec: Int64,
+    engineTicksMsec: Int64
 ) -> [String: Any] {
     var attributes = global
     for (key, value) in event {
@@ -34,6 +35,9 @@ func mergedLogAttributes(
     attributes["foundry.kind"] = kind
     attributes["foundry.source"] = source
     attributes["foundry.timestamp_msec"] = timestampMsec
+    if engineTicksMsec >= 0 {
+        attributes["foundry.engine_ticks_msec"] = engineTicksMsec
+    }
     return attributes
 }
 
@@ -115,6 +119,10 @@ func sentryTimeoutSeconds(milliseconds: Int) -> TimeInterval {
     TimeInterval(milliseconds) / 1000.0
 }
 
+func sentryDate(timestampMsec: Int64) -> Date {
+    Date(timeIntervalSince1970: TimeInterval(timestampMsec) / 1_000.0)
+}
+
 func sentryFeedbackAssociatedEventID(for value: String) -> SentryId? {
     if value.isEmpty {
         return nil
@@ -129,6 +137,7 @@ func mergedExtras(
     kind: String,
     source: String,
     timestampMsec: Int64,
+    engineTicksMsec: Int64,
     exception: FoundryExceptionPayload? = nil
 ) -> [String: Any] {
     var extras = global
@@ -149,6 +158,9 @@ func mergedExtras(
     extras["foundry.kind"] = kind
     extras["foundry.source"] = source
     extras["foundry.timestamp_msec"] = timestampMsec
+    if engineTicksMsec >= 0 {
+        extras["foundry.engine_ticks_msec"] = engineTicksMsec
+    }
     return extras
 }
 
@@ -158,6 +170,7 @@ func makeSentryEvent(
     source: String,
     kind: String,
     timestampMsec: Int64,
+    engineTicksMsec: Int64,
     globalAttributes: [String: Any] = [:],
     eventAttributes: [String: Any] = [:],
     exception: FoundryExceptionPayload? = nil
@@ -166,12 +179,14 @@ func makeSentryEvent(
     event.message = SentryMessage(formatted: message)
     event.level = sentryLevel(for: level)
     event.logger = source.isEmpty ? nil : source
+    event.timestamp = sentryDate(timestampMsec: timestampMsec)
     event.extra = mergedExtras(
         global: globalAttributes,
         event: eventAttributes,
         kind: kind,
         source: source,
         timestampMsec: timestampMsec,
+        engineTicksMsec: engineTicksMsec,
         exception: exception
     )
 
