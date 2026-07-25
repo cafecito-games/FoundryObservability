@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
         <meta-data
-            android:name="org.godotengine.plugin.v2.SentryObservabilityBridge"
+            android:name="org.foundryengine.plugin.v2.SentryObservabilityBridge"
             android:value="games.cafecito.android.foundryobservabilitysentry.SentryObservabilityBridge" />
         <meta-data android:name="io.sentry.auto-init" android:value="false" />
         <meta-data android:name="io.sentry.ndk.scope-sync.enable" android:value="true" />
