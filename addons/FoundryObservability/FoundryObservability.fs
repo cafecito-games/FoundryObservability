@@ -95,15 +95,25 @@ func capture_event(event: ObservabilityEvent) -> String:
 		return ""
 	if not is_enabled() or _provider == null:
 		return ""
-	if event.kind() == &"log":
-		if not _config.logs_enabled or event.level() < _config.log_minimum_level:
+	var capture_engine_ticks_msec: int = Time.get_ticks_msec()
+	var capture_unix_msec: int = floori(Time.get_unix_time_from_system() * 1000.0)
+	var normalized: ObservabilityEvent = _resolved_event_timestamp(
+			event,
+			capture_unix_msec,
+			capture_engine_ticks_msec,
+		)
+	if normalized.kind() == &"log":
+		if not _config.logs_enabled or normalized.level() < _config.log_minimum_level:
 			return ""
-		if not _accept_log(event.timestamp_msec()):
+		var rate_limit_ticks_msec: int = normalized.engine_ticks_msec()
+		if rate_limit_ticks_msec < 0:
+			rate_limit_ticks_msec = capture_engine_ticks_msec
+		if not _accept_log(rate_limit_ticks_msec):
 			return ""
-	return _capture_event(event)
+	return _capture_event(normalized)
 
 
-## Creates a game-sourced message event using the current engine timestamp.
+## Creates a game-sourced message event using the current wall-clock and engine times.
 func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String:
 	return capture_event(
 		ObservabilityEvent.new(
@@ -111,7 +121,6 @@ func capture_message(message: String, level: int = ObservabilityLevel.INFO, attr
 			p_level = level,
 			p_message = message,
 			p_source = &"game",
-			p_timestamp_msec = Time.get_ticks_msec(),
 			p_attributes = attributes,
 		),
 	)
@@ -128,37 +137,29 @@ func capture_exception(exception: ObservabilityException, attributes: Dictionary
 			p_level = ObservabilityLevel.ERROR,
 			p_message = exception.message(),
 			p_source = &"game",
-			p_timestamp_msec = Time.get_ticks_msec(),
 			p_attributes = attributes,
 			p_exception = exception,
 		),
 	)
 
 
-## Creates a structured log event using the supplied or current engine timestamp.
+## Creates a structured log using an optional Unix timestamp and original engine tick.
 func capture_log(
 		message: String,
 		level: int = ObservabilityLevel.INFO,
 		source: StringName = &"game",
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
+		engine_ticks_msec: int = -1,
 ) -> String:
-	if not is_enabled() or _provider == null:
-		return ""
-	if not _config.logs_enabled or level < _config.log_minimum_level:
-		return ""
-	var event_timestamp: int = timestamp_msec
-	if event_timestamp < 0:
-		event_timestamp = Time.get_ticks_msec()
-	if not _accept_log(event_timestamp):
-		return ""
-	return _capture_event(ObservabilityEvent.new(
+	return capture_event(ObservabilityEvent.new(
 			p_kind = &"log",
 			p_level = level,
 			p_message = message,
 			p_source = source,
-			p_timestamp_msec = event_timestamp,
+			p_timestamp_msec = timestamp_msec,
 			p_attributes = attributes,
+			p_engine_ticks_msec = engine_ticks_msec,
 	))
 
 
@@ -242,7 +243,44 @@ func capture_distribution(
 			p_value = value,
 			p_unit = unit,
 			p_attributes = attributes,
-		))
+	))
+
+
+static func _unix_msec_from_engine_ticks(
+		event_engine_ticks_msec: int,
+		capture_engine_ticks_msec: int,
+		capture_unix_msec: int,
+) -> int:
+	return capture_unix_msec + event_engine_ticks_msec - capture_engine_ticks_msec
+
+
+func _resolved_event_timestamp(
+		event: ObservabilityEvent,
+		capture_unix_msec: int,
+		capture_engine_ticks_msec: int,
+) -> ObservabilityEvent:
+	if event.timestamp_msec() >= 0:
+		return event
+	var resolved_unix_msec: int = capture_unix_msec
+	var resolved_engine_ticks_msec: int = event.engine_ticks_msec()
+	if resolved_engine_ticks_msec >= 0:
+		resolved_unix_msec = _unix_msec_from_engine_ticks(
+				resolved_engine_ticks_msec,
+				capture_engine_ticks_msec,
+				capture_unix_msec,
+			)
+	else:
+		resolved_engine_ticks_msec = capture_engine_ticks_msec
+	return ObservabilityEvent.new(
+			p_kind = event.kind(),
+			p_level = event.level(),
+			p_message = event.message(),
+			p_source = event.source(),
+			p_timestamp_msec = resolved_unix_msec,
+			p_attributes = event.attributes(),
+			p_exception = event.exception(),
+			p_engine_ticks_msec = resolved_engine_ticks_msec,
+		)
 
 
 func _normalized_metric(metric: ObservabilityMetric) -> ObservabilityMetric?:
@@ -400,8 +438,8 @@ func _has_control_character(value: String) -> bool:
 	return false
 
 
-func _accept_log(timestamp_msec: int) -> bool:
-	var window_second: int = floori(float(timestamp_msec) / 1000.0)
+func _accept_log(engine_ticks_msec: int) -> bool:
+	var window_second: int = floori(float(engine_ticks_msec) / 1000.0)
 	if window_second != _log_window_second:
 		_log_window_second = window_second
 		_log_window_count = 0
