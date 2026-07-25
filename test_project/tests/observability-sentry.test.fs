@@ -94,6 +94,29 @@ func test_forwards_config_event_and_flush_to_native_bridge() -> void:
 	Expect.that(bridge.flush_timeouts).to_equal([321])
 
 
+func test_forwards_mobile_diagnostic_config_to_native_bridge() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_application_hang_detection_enabled = false,
+			p_application_hang_timeout_msec = 3200,
+			p_android_anr_detection_enabled = false,
+			p_android_anr_timeout_msec = 6400,
+			p_android_anr_attach_thread_dump = true,
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(bridge.configured_payload["application_hang_detection_enabled"]).to_be_false()
+	Expect.that(bridge.configured_payload["application_hang_timeout_msec"]).to_equal(3200)
+	Expect.that(bridge.configured_payload["android_anr_detection_enabled"]).to_be_false()
+	Expect.that(bridge.configured_payload["android_anr_timeout_msec"]).to_equal(6400)
+	Expect.that(bridge.configured_payload["android_anr_attach_thread_dump"]).to_be_true()
+	provider.shutdown()
+
+
 func test_service_forwards_normalized_structured_exception_frames_to_native_bridge() -> void:
 	var service: FoundryObservability = _service()
 	var bridge := FakeSentryBridge.new()
