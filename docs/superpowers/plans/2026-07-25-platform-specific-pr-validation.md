@@ -8,16 +8,25 @@
 
 **Tech Stack:** Taskfile YAML, GitHub Actions YAML, Bash contract tests, Swift/Xcode, Gradle/Java, FoundryScript
 
+**Late scope extension:** At the user's request, the active PR and release
+workflows, `BUILD.md`, and the workflow contract move together to the
+published Foundry `v0.1.0-alpha.8`. Other historical specifications and plans
+are outside this extension and remain unchanged.
+
 ---
 
 ## File structure
 
 - Modify `scripts/test-ci-workflows`: define the required PR job ownership and
-  assert each job invokes only its grouped validation target and native build.
+  assert each job invokes only its grouped validation target and native build;
+  enforce the active Foundry `v0.1.0-alpha.8` pins.
 - Modify `Taskfile.yml`: add reusable core, Apple, and Android validation groups;
   retain existing leaf targets and aggregate all groups under `test`.
 - Modify `.github/workflows/pr-check.yml`: replace the two-job workflow with
-  independent core, Apple, and Android jobs.
+  independent core, Apple, and Android jobs and pin published alpha8.
+- Modify `.github/workflows/release.yml`: move the active release workflow to
+  the same published alpha8 pin.
+- Modify `BUILD.md`: document published alpha8 as the active prerequisite.
 
 ### Task 1: Add the failing three-job workflow contract
 
@@ -342,4 +351,5 @@ git diff --stat origin/main...HEAD
 ```
 
 Expected: no uncommitted files, no whitespace errors, and only the design,
-plan, Taskfile, PR workflow, and workflow contract changes appear.
+plan, Taskfile, PR and release workflows, `BUILD.md`, and workflow contract
+changes appear.

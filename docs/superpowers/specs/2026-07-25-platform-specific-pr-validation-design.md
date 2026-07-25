@@ -13,6 +13,15 @@ The complete local `task test` command remains the aggregate validation gate.
 The change reorganizes CI ownership without weakening local coverage or
 changing runtime addon behavior.
 
+## Late Foundry version scope extension
+
+At the user's request after the initial design approval, the active
+`.github/workflows/pr-check.yml`, `.github/workflows/release.yml`, `BUILD.md`,
+and `scripts/test-ci-workflows` contract move together to the published
+Foundry `v0.1.0-alpha.8`. This extension keeps the active CI pins, documented
+build prerequisite, and enforced contract synchronized. Other historical
+specifications and plans remain unchanged.
+
 ## Task boundaries
 
 Taskfile will expose three grouped validation targets:

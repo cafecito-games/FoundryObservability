@@ -25,12 +25,55 @@ extract_job() {
 	' "$pr_workflow"
 }
 
-job_mentions_task_name() {
-	local job_body=$1
+extract_task() {
+	local task_name=$1
+	awk -v task_name="$task_name" '
+		BEGIN { task_key = "  " task_name ":" }
+		$0 == task_key { copying = 1 }
+		copying && $0 ~ /^  [[:alnum:]_.:-]+:$/ && $0 != task_key { exit }
+		copying { print }
+	' "$taskfile"
+}
+
+body_mentions_task_name() {
+	local body=$1
 	local task_name=$2
 	rg -q \
 		"(^|[^[:alnum:]_:-])${task_name}([^[:alnum:]_:-]|$)" \
-		<<<"$job_body"
+		<<<"$body"
+}
+
+assert_no_task_names() {
+	local body=$1
+	local owner=$2
+	shift 2
+	local forbidden_task
+	for forbidden_task in "$@"; do
+		if body_mentions_task_name "$body" "$forbidden_task"; then
+			fail "$owner must not mention forbidden task name $forbidden_task"
+		fi
+	done
+}
+
+task_dependencies() {
+	awk '
+		/^    deps:$/ { in_deps = 1; next }
+		in_deps && /^      - / {
+			sub(/^      - /, "")
+			print
+			next
+		}
+		in_deps { exit }
+	' <<<"$1"
+}
+
+task_commands() {
+	awk '
+		/^      - task: / {
+			sub(/^      - task: /, "")
+			print
+		}
+	' <<<"$1"
 }
 
 job_line() {
@@ -56,6 +99,70 @@ done
 core_job=$(extract_job validate-core)
 apple_job=$(extract_job build-apple)
 android_job=$(extract_job build-android)
+
+for task_name in test:core test:sentry-apple test:sentry-android test; do
+	rg -Fxq "  $task_name:" "$taskfile" \
+		|| fail "Taskfile.yml must have a $task_name target"
+done
+
+core_task=$(extract_task test:core)
+apple_task=$(extract_task test:sentry-apple)
+android_task=$(extract_task test:sentry-android)
+aggregate_task=$(extract_task test)
+
+[[ "$(task_dependencies "$core_task")" == $'lint\ntest:ci\ntest:package' ]] \
+	|| fail "test:core dependencies must match the approved composition"
+[[ "$(task_commands "$core_task")" == $'test:project\ntest:foundry-script' ]] \
+	|| fail "test:core commands must own project then FoundryScript validation"
+assert_no_task_names "$core_task" test:core \
+	test:sentry-apple \
+	test:sentry-android \
+	test:sentry-swift \
+	test:sentry-contract \
+	test:sentry-android-contract \
+	ios:sentry \
+	android:sentry
+
+[[ "$(task_dependencies "$apple_task")" == $'test:sentry-swift\ntest:sentry-contract' ]] \
+	|| fail "test:sentry-apple dependencies must match the approved composition"
+assert_no_task_names "$apple_task" test:sentry-apple \
+	test:core \
+	test:sentry-android \
+	test:sentry-android-contract \
+	lint \
+	test:ci \
+	test:package \
+	test:project \
+	test:foundry-script \
+	android:sentry
+
+[[ "$(task_dependencies "$android_task")" == 'test:sentry-android-contract' ]] \
+	|| fail "test:sentry-android dependencies must match the approved composition"
+assert_no_task_names "$android_task" test:sentry-android \
+	test:core \
+	test:sentry-apple \
+	test:sentry-swift \
+	test:sentry-contract \
+	lint \
+	test:ci \
+	test:package \
+	test:project \
+	test:foundry-script \
+	ios:sentry
+
+[[ "$(task_dependencies "$aggregate_task")" == $'test:core\ntest:sentry-apple\ntest:sentry-android' ]] \
+	|| fail "test dependencies must be exactly the three validation groups"
+assert_no_task_names "$aggregate_task" test \
+	lint \
+	test:ci \
+	test:package \
+	test:project \
+	test:foundry-script \
+	test:sentry-swift \
+	test:sentry-contract \
+	test:sentry-android-contract \
+	ios:sentry \
+	android:sentry
 
 project_test_line=$(awk '/^[[:space:]]+- task: test:project$/{ print NR; exit }' "$taskfile")
 foundry_script_test_line=$(awk '/^[[:space:]]+- task: test:foundry-script$/{ print NR; exit }' "$taskfile")
@@ -273,16 +380,15 @@ rg -Fq '"$FOUNDRY_BIN" --headless project import --project test_project' \
 	|| fail "validate-core job must use command-first project import"
 rg -Fxq '        run: task test:core' <<<"$core_job" \
 	|| fail "validate-core job must run task test:core"
-for forbidden_task in \
+assert_no_task_names "$core_job" "validate-core job" \
 	test \
 	test:sentry-apple \
 	test:sentry-android \
+	test:sentry-swift \
+	test:sentry-contract \
+	test:sentry-android-contract \
 	ios:sentry \
-	android:sentry; do
-	if job_mentions_task_name "$core_job" "$forbidden_task"; then
-		fail "validate-core job must not mention forbidden task name $forbidden_task"
-	fi
-done
+	android:sentry
 
 rg -Fxq '    name: Build Apple Sentry addon' <<<"$apple_job" \
 	|| fail "build-apple job must be named Build Apple Sentry addon"
@@ -292,15 +398,12 @@ rg -Fxq '        uses: actions/checkout@v7.0.1' <<<"$apple_job" \
 	|| fail "build-apple job must use actions/checkout@v7.0.1"
 rg -Fxq '        run: task test:sentry-apple' <<<"$apple_job" \
 	|| fail "build-apple job must run task test:sentry-apple"
-for forbidden_task in \
+assert_no_task_names "$apple_job" "build-apple job" \
 	test \
 	test:core \
 	test:sentry-android \
-	android:sentry; do
-	if job_mentions_task_name "$apple_job" "$forbidden_task"; then
-		fail "build-apple job must not mention forbidden task name $forbidden_task"
-	fi
-done
+	test:sentry-android-contract \
+	android:sentry
 rg -q -U -- '^      - name: Build Apple artifacts$\n^        env:$\n^          GH_TOKEN: \$\{\{ github\.token \}\}$\n^        run: task ios:sentry$' \
 	<<<"$apple_job" \
 	|| fail "build-apple job must build Apple artifacts with GH_TOKEN"
@@ -322,15 +425,13 @@ rg -Fxq '        run: task test:sentry-android' <<<"$android_job" \
 	|| fail "build-android job must run task test:sentry-android"
 rg -Fxq '        run: task android:sentry' <<<"$android_job" \
 	|| fail "build-android job must build the Android Sentry AARs"
-for forbidden_task in \
+assert_no_task_names "$android_job" "build-android job" \
 	test \
 	test:core \
 	test:sentry-apple \
-	ios:sentry; do
-	if job_mentions_task_name "$android_job" "$forbidden_task"; then
-		fail "build-android job must not mention forbidden task name $forbidden_task"
-	fi
-done
+	test:sentry-swift \
+	test:sentry-contract \
+	ios:sentry
 
 rg -q '^        uses: actions/setup-java@v5\.6\.0$' <<<"$android_job" \
 	|| fail "build-android job must set up Java 17"
