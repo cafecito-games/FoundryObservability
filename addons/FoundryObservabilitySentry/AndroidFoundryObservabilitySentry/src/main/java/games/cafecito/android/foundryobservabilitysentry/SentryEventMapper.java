@@ -7,6 +7,8 @@ import io.sentry.protocol.SentryException;
 import io.sentry.protocol.SentryStackFrame;
 import io.sentry.protocol.SentryStackTrace;
 import java.lang.reflect.Array;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -310,7 +312,29 @@ final class SentryEventMapper {
   }
 
   private static Integer positiveLineNumber(Object value) {
-    if (!(value instanceof Number)) {
+    if (value instanceof Byte
+        || value instanceof Short
+        || value instanceof Integer
+        || value instanceof Long) {
+      long number = ((Number) value).longValue();
+      return number > 0L && number <= Integer.MAX_VALUE ? (int) number : null;
+    }
+    if (value instanceof BigInteger) {
+      BigInteger number = (BigInteger) value;
+      return number.signum() > 0
+              && number.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) <= 0
+          ? number.intValue()
+          : null;
+    }
+    if (value instanceof BigDecimal) {
+      try {
+        int number = ((BigDecimal) value).intValueExact();
+        return number > 0 ? number : null;
+      } catch (ArithmeticException ignored) {
+        return null;
+      }
+    }
+    if (!(value instanceof Float) && !(value instanceof Double)) {
       return null;
     }
     double number = ((Number) value).doubleValue();

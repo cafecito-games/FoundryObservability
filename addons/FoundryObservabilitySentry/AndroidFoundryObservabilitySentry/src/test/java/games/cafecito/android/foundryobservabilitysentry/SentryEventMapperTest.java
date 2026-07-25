@@ -10,6 +10,7 @@ import io.sentry.SentryEvent;
 import io.sentry.SentryLevel;
 import io.sentry.protocol.SentryException;
 import io.sentry.protocol.SentryStackFrame;
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
@@ -191,7 +192,7 @@ public class SentryEventMapperTest {
     Map<String, Object> secondFrame = new HashMap<>();
     secondFrame.put("file", "res://Combat.fs");
     secondFrame.put("function", "Combat.resolve");
-    secondFrame.put("line", 8);
+    secondFrame.put("line", new BigDecimal("8"));
     secondFrame.put("language", "fsharp");
     secondFrame.put("in_app", false);
 
@@ -256,6 +257,8 @@ public class SentryEventMapperTest {
     frames.add(Map.of("variables", Map.of("value", 1)));
     frames.add(Map.of("in_app", false));
     frames.add(Map.of("line", 1.5D));
+    frames.add(Map.of("line", new BigDecimal("1.0000000000000000000000000001")));
+    frames.add(Map.of("line", new BigDecimal("2147483646.0000000001")));
     frames.add(Map.of("line", Double.NaN));
     frames.add(Map.of("line", Double.POSITIVE_INFINITY));
     frames.add(Map.of("line", Long.MAX_VALUE));
