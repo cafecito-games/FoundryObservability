@@ -12,10 +12,14 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 
 final class SentryEventMapper {
+  private static final int MAX_VARIABLE_CONTAINER_DEPTH = 8;
+  private static final int MAX_VARIABLE_ITEMS = 256;
+
   private SentryEventMapper() {}
 
   static final class MetricPayload {
@@ -295,13 +299,112 @@ final class SentryEventMapper {
     if (!(value instanceof Map)) {
       return null;
     }
+    Map<String, Object> result = sanitizeVariableMap(
+        (Map<?, ?>) value,
+        0,
+        new VariableCopyState());
+    return result == null || result.isEmpty() ? null : result;
+  }
+
+  private static Map<String, Object> sanitizeVariableMap(
+      Map<?, ?> value,
+      int depth,
+      VariableCopyState state) {
+    if (depth > MAX_VARIABLE_CONTAINER_DEPTH || !state.visit(value)) {
+      return null;
+    }
     Map<String, Object> result = new HashMap<>();
-    for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
-      if (entry.getKey() instanceof String) {
-        result.put((String) entry.getKey(), entry.getValue());
+    for (Map.Entry<?, ?> entry : value.entrySet()) {
+      if (!state.consumeItem()) {
+        break;
+      }
+      if (!(entry.getKey() instanceof String)) {
+        continue;
+      }
+      Object copied = sanitizeVariableValue(entry.getValue(), depth, state);
+      if (copied != null) {
+        result.put((String) entry.getKey(), copied);
       }
     }
-    return result.isEmpty() ? null : result;
+    return result;
+  }
+
+  private static List<Object> sanitizeVariableCollection(
+      Object value,
+      int depth,
+      VariableCopyState state) {
+    if (depth > MAX_VARIABLE_CONTAINER_DEPTH || !state.visit(value)) {
+      return null;
+    }
+    List<Object> result = new ArrayList<>();
+    if (value instanceof Iterable) {
+      for (Object element : (Iterable<?>) value) {
+        if (!state.consumeItem()) {
+          break;
+        }
+        Object copied = sanitizeVariableValue(element, depth, state);
+        if (copied != null) {
+          result.add(copied);
+        }
+      }
+    } else {
+      for (int index = 0; index < Array.getLength(value); index++) {
+        if (!state.consumeItem()) {
+          break;
+        }
+        Object copied = sanitizeVariableValue(Array.get(value, index), depth, state);
+        if (copied != null) {
+          result.add(copied);
+        }
+      }
+    }
+    return result;
+  }
+
+  private static Object sanitizeVariableValue(
+      Object value,
+      int parentDepth,
+      VariableCopyState state) {
+    if (value instanceof Boolean
+        || value instanceof String
+        || value instanceof Byte
+        || value instanceof Short
+        || value instanceof Integer
+        || value instanceof Long
+        || value instanceof BigInteger
+        || value instanceof BigDecimal) {
+      return value;
+    }
+    if (value instanceof Float) {
+      return Float.isFinite((Float) value) ? value : null;
+    }
+    if (value instanceof Double) {
+      return Double.isFinite((Double) value) ? value : null;
+    }
+    if (value instanceof Map) {
+      return sanitizeVariableMap((Map<?, ?>) value, parentDepth + 1, state);
+    }
+    if (value instanceof Iterable || (value != null && value.getClass().isArray())) {
+      return sanitizeVariableCollection(value, parentDepth + 1, state);
+    }
+    return null;
+  }
+
+  private static final class VariableCopyState {
+    private final Map<Object, Boolean> visited = new IdentityHashMap<>();
+    private int itemCount;
+
+    boolean visit(Object container) {
+      return visited.put(container, Boolean.TRUE) == null;
+    }
+
+    boolean consumeItem() {
+      if (itemCount >= MAX_VARIABLE_ITEMS) {
+        return false;
+      }
+      itemCount++;
+      return true;
+    }
   }
 
   private static String nonEmptyString(Object value) {

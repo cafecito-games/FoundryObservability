@@ -315,6 +315,89 @@ public class SentryEventMapperTest {
   }
 
   @Test
+  public void sanitizesNestedFrameVariablesWithoutAliasingOrCycles() {
+    Map<Object, Object> nested = new HashMap<>();
+    nested.put("kept", "nested value");
+    nested.put(7, "discarded key");
+    nested.put("unsupported", new Object());
+    nested.put("nan", Double.NaN);
+    List<Object> list = new ArrayList<>();
+    list.add("list value");
+    list.add(2L);
+    list.add(Double.NEGATIVE_INFINITY);
+    list.add(new Object());
+    Object[] array = new Object[] {"array value", 3, Float.POSITIVE_INFINITY};
+    Map<String, Object> cycle = new HashMap<>();
+    cycle.put("kept", "cycle value");
+    cycle.put("self", cycle);
+    Map<Object, Object> variables = new HashMap<>();
+    variables.put("nested", nested);
+    variables.put("list", list);
+    variables.put("array", array);
+    variables.put("cycle", cycle);
+    variables.put(8, "discarded top-level key");
+
+    SentryEvent result = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "frames", List.of(Map.of("file", "res://variables.fs", "variables", variables))));
+
+    Map<String, Object> sanitized = result.getExceptions().get(0).getStacktrace().getFrames().get(0).getVars();
+    assertEquals(Map.of("kept", "nested value"), sanitized.get("nested"));
+    assertEquals(Arrays.asList("list value", 2L), sanitized.get("list"));
+    assertEquals(Arrays.asList("array value", 3), sanitized.get("array"));
+    assertEquals(Map.of("kept", "cycle value"), sanitized.get("cycle"));
+    assertFalse(sanitized.containsKey("8"));
+    assertFalse(sanitized == (Object) variables);
+
+    nested.put("kept", "mutated nested value");
+    list.set(0, "mutated list value");
+    array[0] = "mutated array value";
+    cycle.put("kept", "mutated cycle value");
+
+    assertEquals(Map.of("kept", "nested value"), sanitized.get("nested"));
+    assertEquals(Arrays.asList("list value", 2L), sanitized.get("list"));
+    assertEquals(Arrays.asList("array value", 3), sanitized.get("array"));
+    assertEquals(Map.of("kept", "cycle value"), sanitized.get("cycle"));
+  }
+
+  @Test
+  public void boundsFrameVariableContainerDepthAndItemCount() {
+    Map<String, Object> variables = new HashMap<>();
+    for (int index = 0; index < 257; index++) {
+      variables.put("item" + index, index);
+    }
+
+    SentryEvent itemResult = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "frames", List.of(Map.of("file", "res://items.fs", "variables", variables))));
+
+    assertEquals(256, itemResult.getExceptions().get(0).getStacktrace().getFrames().get(0).getVars().size());
+
+    Map<String, Object> depthVariables = new HashMap<>();
+    Map<String, Object> current = depthVariables;
+    for (int depth = 0; depth < 9; depth++) {
+      Map<String, Object> child = new HashMap<>();
+      current.put("child", child);
+      current = child;
+    }
+    current.put("leaf", "discarded");
+
+    SentryEvent depthResult = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "frames", List.of(Map.of("file", "res://depth.fs", "variables", depthVariables))));
+
+    Map<?, ?> sanitized = depthResult.getExceptions().get(0).getStacktrace().getFrames().get(0).getVars();
+    for (int depth = 0; depth < 8; depth++) {
+      assertTrue(sanitized.get("child") instanceof Map);
+      sanitized = (Map<?, ?>) sanitized.get("child");
+    }
+    assertFalse(sanitized.containsKey("child"));
+  }
+
+  @Test
   public void leavesStringOnlyExceptionsWithoutStructuredStacktrace() {
     SentryEvent result = eventWithException(Map.of(
         "type_name", "InvalidState",
