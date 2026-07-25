@@ -264,6 +264,22 @@ public class SentryObservabilityBridgeTest {
     }
   }
 
+  @Test
+  public void belowMinimumAndroidAnrTimeoutValuesPreserveExistingOption() {
+    Object[] belowMinimumValues = {0, -1L, 999.0};
+    Map<String, Object> payload = new HashMap<>();
+
+    for (Object belowMinimumValue : belowMinimumValues) {
+      SentryAndroidOptions options = new SentryAndroidOptions();
+      options.setAnrTimeoutIntervalMillis(7300L);
+      payload.put("android_anr_timeout_msec", belowMinimumValue);
+
+      SentryObservabilityBridge.applyAndroidAnrDiagnostics(options, payload);
+
+      assertEquals(7300L, options.getAnrTimeoutIntervalMillis());
+    }
+  }
+
   private static SentryObservabilityBridge newBridge() {
     return new SentryObservabilityBridge(
         Foundry.getInstance(RuntimeEnvironment.getApplication()));

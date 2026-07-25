@@ -49,6 +49,20 @@ final class SentryDiagnosticsConfiguratorTests: XCTestCase {
         }
     }
 
+    func testBelowMinimumTimeoutsPreserveExistingTimeout() {
+        for timeoutMsec in [0, -1, 999] {
+            let options = Options()
+            options.appHangTimeoutInterval = 7.3
+
+            applyAppleHangDiagnostics(
+                from: ["application_hang_timeout_msec": timeoutMsec],
+                to: options
+            )
+
+            XCTAssertEqual(options.appHangTimeoutInterval, 7.3, accuracy: 0.000_001)
+        }
+    }
+
     func testMissingPayloadKeysPreserveNativeDefaults() {
         let options = Options()
         let originalEnabled = options.enableAppHangTracking

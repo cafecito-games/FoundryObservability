@@ -10,7 +10,7 @@ func applyAppleHangDiagnostics(
     }
     if let timeoutMsec = diagnosticInteger(
         values["application_hang_timeout_msec"]
-    ) {
+    ), timeoutMsec >= 1_000 {
         options.appHangTimeoutInterval = Double(timeoutMsec) / 1000.0
     }
 }

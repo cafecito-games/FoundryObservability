@@ -117,6 +117,22 @@ func test_forwards_mobile_diagnostic_config_to_native_bridge() -> void:
 	provider.shutdown()
 
 
+func test_normalizes_mutated_mobile_diagnostic_timeouts_at_provider_boundary() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+	config.application_hang_timeout_msec = 0
+	config.android_anr_timeout_msec = -25
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(bridge.configured_payload["application_hang_timeout_msec"]).to_equal(1000)
+	Expect.that(bridge.configured_payload["android_anr_timeout_msec"]).to_equal(1000)
+	provider.shutdown()
+
+
 func test_service_forwards_normalized_structured_exception_frames_to_native_bridge() -> void:
 	var service: FoundryObservability = _service()
 	var bridge := FakeSentryBridge.new()

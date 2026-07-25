@@ -246,7 +246,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     }
     if (payload.containsKey("android_anr_timeout_msec")) {
       Long anrTimeoutMsec = exactDiagnosticLong(payload.get("android_anr_timeout_msec"));
-      if (anrTimeoutMsec != null) {
+      if (anrTimeoutMsec != null && anrTimeoutMsec >= 1000L) {
         options.setAnrTimeoutIntervalMillis(anrTimeoutMsec);
       }
     }
