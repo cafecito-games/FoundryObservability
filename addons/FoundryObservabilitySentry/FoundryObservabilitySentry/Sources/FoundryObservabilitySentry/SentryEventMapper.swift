@@ -240,6 +240,39 @@ private func foundrySanitizedVariables(_ value: Any?) -> [String: Any]? {
     return dictionary
 }
 
+func foundrySentryContexts(_ value: Any?) -> [String: [String: Any]] {
+    guard let contexts = value as? NSDictionary else {
+        return [:]
+    }
+
+    var result: [String: [String: Any]] = [:]
+    for (rawKey, rawValue) in contexts {
+        guard
+            let key = rawKey as? String,
+            !key.isEmpty,
+            let context = foundrySanitizedVariableDictionary(
+                rawValue,
+                depth: 0,
+                state: FoundryVariableCopyState()
+            ),
+            !context.isEmpty
+        else {
+            continue
+        }
+        result[key] = context
+    }
+    return result
+}
+
+func applySentryContexts(
+    _ contexts: [String: [String: Any]],
+    to scope: Scope
+) {
+    for (key, value) in contexts {
+        scope.setContext(value: value, key: key)
+    }
+}
+
 private func foundrySanitizedVariableDictionary(
     _ value: Any,
     depth: Int,
