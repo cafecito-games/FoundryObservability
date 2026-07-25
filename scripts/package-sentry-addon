@@ -15,6 +15,21 @@ fail() {
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
 	|| fail "version must be numeric semver: $version"
 
+if [[ "${REQUIRE_NATIVE_ARTIFACTS:-0}" == "1" ]]; then
+	required_native_files=(
+		"bin/ios/FoundryObservabilitySentry.xcframework/Info.plist"
+		"bin/ios/FoundryObservabilitySentry.xcframework/ios-arm64/FoundryObservabilitySentry.framework/FoundryObservabilitySentry"
+		"bin/ios/FoundryObservabilitySentry.xcframework/ios-arm64-simulator/FoundryObservabilitySentry.framework/FoundryObservabilitySentry"
+		"bin/macos_arm64/FoundryObservabilitySentry.framework/Versions/A/FoundryObservabilitySentry"
+		"bin/android/debug/FoundryObservabilitySentry-debug.aar"
+		"bin/android/release/FoundryObservabilitySentry-release.aar"
+	)
+	for relative_path in "${required_native_files[@]}"; do
+		[[ -s "$sentry_source/$relative_path" ]] \
+			|| fail "required native artifact is missing or empty: $relative_path"
+	done
+fi
+
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundryobservability-sentry-package.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
 mkdir -p "$tmp_dir/addons/FoundryObservabilitySentry"

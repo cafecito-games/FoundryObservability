@@ -72,6 +72,11 @@ tasks:
     cmds:
       - scripts/package-sentry-addon
 
+  verify:sentry-package:
+    desc: Verify native Apple and Android artifacts in a Sentry addon zip
+    cmds:
+      - scripts/verify-sentry-package "{{.VERSION}}"
+
   ios:sentry:
     desc: Build the FoundryObservabilitySentry iOS xcframework
     dir: addons/FoundryObservabilitySentry/FoundryObservabilitySentry

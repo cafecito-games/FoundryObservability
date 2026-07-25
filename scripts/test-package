@@ -2,11 +2,57 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+sentry_package_script="$repo_root/scripts/package-sentry-addon"
+sentry_package_verifier="$repo_root/scripts/verify-sentry-package"
+taskfile="$repo_root/Taskfile.yml"
 
 fail() {
 	echo "FAIL: $*" >&2
 	exit 1
 }
+
+rg -q 'REQUIRE_NATIVE_ARTIFACTS' "$sentry_package_script" \
+	|| fail "Sentry packaging must support required native artifacts"
+[[ -x "$sentry_package_verifier" ]] \
+	|| fail "Sentry package verifier is missing or not executable"
+rg -q '^  verify:sentry-package:' "$taskfile" \
+	|| fail "Taskfile.yml must expose Sentry package verification"
+
+required_native_paths=(
+	"bin/ios/FoundryObservabilitySentry.xcframework/Info.plist"
+	"bin/ios/FoundryObservabilitySentry.xcframework/ios-arm64/FoundryObservabilitySentry.framework/FoundryObservabilitySentry"
+	"bin/ios/FoundryObservabilitySentry.xcframework/ios-arm64-simulator/FoundryObservabilitySentry.framework/FoundryObservabilitySentry"
+	"bin/macos_arm64/FoundryObservabilitySentry.framework/Versions/A/FoundryObservabilitySentry"
+	"bin/android/debug/FoundryObservabilitySentry-debug.aar"
+	"bin/android/release/FoundryObservabilitySentry-release.aar"
+)
+for native_path in "${required_native_paths[@]}"; do
+	rg -Fq "$native_path" "$sentry_package_script" \
+		|| fail "Sentry packaging does not require $native_path"
+	rg -Fq "addons/FoundryObservabilitySentry/$native_path" "$sentry_package_verifier" \
+		|| fail "Sentry package verification does not inspect $native_path"
+done
+
+probe_artifact="$repo_root/addons/FoundryObservabilitySentry/bin/android/debug/FoundryObservabilitySentry-debug.aar"
+probe_backup_dir=""
+restore_probe_artifact() {
+	if [[ -n "$probe_backup_dir" && -e "$probe_backup_dir/FoundryObservabilitySentry-debug.aar" ]]; then
+		mv "$probe_backup_dir/FoundryObservabilitySentry-debug.aar" "$probe_artifact"
+		rmdir "$probe_backup_dir"
+	fi
+}
+if [[ -e "$probe_artifact" ]]; then
+	probe_backup_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundryobservability-native-probe.XXXXXX")
+	mv "$probe_artifact" "$probe_backup_dir/FoundryObservabilitySentry-debug.aar"
+	trap restore_probe_artifact EXIT
+fi
+if native_failure=$(REQUIRE_NATIVE_ARTIFACTS=1 "$sentry_package_script" 2>&1); then
+	fail "required-native Sentry packaging succeeded with a missing artifact"
+fi
+rg -q 'required native artifact is missing or empty' <<<"$native_failure" \
+	|| fail "required-native Sentry packaging failed for an unexpected reason"
+restore_probe_artifact
+trap - EXIT
 
 rg -q 'capture_log' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing capture_log"

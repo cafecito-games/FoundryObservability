@@ -59,6 +59,42 @@ rg -q 'GITHUB_OUTPUT' "$release_workflow" \
 rg -q 'gh release create' "$release_workflow" \
 	|| fail "release workflow must publish a GitHub release"
 
+rg -q 'actions/setup-java@v5\.6\.0([[:space:]]|$)' "$release_workflow" \
+	|| fail "release workflow must set up Java 17 for Android"
+rg -q 'android-actions/setup-android@v4\.0\.1([[:space:]]|$)' "$release_workflow" \
+	|| fail "release workflow must set up the Android SDK"
+rg -q "java-version: ['\"]?17['\"]?" "$release_workflow" \
+	|| fail "release workflow must use Java 17 for Android"
+rg -q 'sdkmanager --licenses' "$release_workflow" \
+	|| fail "release workflow must accept Android SDK licenses"
+rg -q 'platforms;android-36' "$release_workflow" \
+	|| fail "release workflow must install Android SDK Platform 36"
+rg -q 'chmod \+x addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/gradlew' \
+	"$release_workflow" \
+	|| fail "release workflow must make the Android Gradle wrapper executable"
+
+release_ios_line=$(awk '/task ios:sentry/{ print NR; exit }' "$release_workflow")
+release_android_line=$(awk '/task android:sentry/{ print NR; exit }' "$release_workflow")
+release_package_line=$(awk '/REQUIRE_NATIVE_ARTIFACTS=1 task package/{ print NR; exit }' "$release_workflow")
+release_verify_line=$(awk '/task verify:sentry-package/{ print NR; exit }' "$release_workflow")
+release_publish_line=$(awk '/gh release create/{ print NR; exit }' "$release_workflow")
+[[ -n "$release_ios_line" && -n "$release_android_line" \
+	&& -n "$release_package_line" && -n "$release_verify_line" \
+	&& -n "$release_publish_line" ]] \
+	|| fail "release workflow must build, package, verify, and publish native Sentry artifacts"
+(( release_ios_line < release_android_line \
+	&& release_android_line < release_package_line \
+	&& release_package_line < release_verify_line \
+	&& release_verify_line < release_publish_line )) \
+	|| fail "release native artifact steps are out of order"
+
+rg -q 'dist/FoundryObservability-\$\{\{ steps\.version\.outputs\.version \}\}\.zip' \
+	"$release_workflow" \
+	|| fail "release workflow must publish the versioned core archive"
+rg -q 'dist/FoundryObservabilitySentry-\$\{\{ steps\.version\.outputs\.version \}\}\.zip' \
+	"$release_workflow" \
+	|| fail "release workflow must publish the versioned Sentry archive"
+
 rg -q '^  build-android:' "$pr_workflow" \
 	|| fail "pull-request workflow must build the Android Sentry addon"
 

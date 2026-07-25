@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+sentry_source="$repo_root/addons/FoundryObservabilitySentry"
+source_version=$(awk -F'"' '/^version=/{print $2; exit}' "$sentry_source/plugin.cfg")
+version="${VERSION:-${1:-$source_version}}"
+archive="${SENTRY_ARCHIVE:-$repo_root/dist/FoundryObservabilitySentry-${version}.zip}"
+
+fail() {
+	echo "FAIL: $*" >&2
+	exit 1
+}
+
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+	|| fail "version must be numeric semver: $version"
+[[ -s "$archive" ]] || fail "Sentry archive is missing or empty: $archive"
+command -v unzip >/dev/null 2>&1 || fail "unzip is required"
+unzip -tq "$archive" >/dev/null || fail "Sentry archive is not a valid zip: $archive"
+
+required_archive_files=(
+	"addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework/Info.plist"
+	"addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework/ios-arm64/FoundryObservabilitySentry.framework/FoundryObservabilitySentry"
+	"addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework/ios-arm64-simulator/FoundryObservabilitySentry.framework/FoundryObservabilitySentry"
+	"addons/FoundryObservabilitySentry/bin/macos_arm64/FoundryObservabilitySentry.framework/Versions/A/FoundryObservabilitySentry"
+	"addons/FoundryObservabilitySentry/bin/android/debug/FoundryObservabilitySentry-debug.aar"
+	"addons/FoundryObservabilitySentry/bin/android/release/FoundryObservabilitySentry-release.aar"
+)
+
+listing=$(unzip -Z1 "$archive")
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundryobservability-sentry-verify.XXXXXX")
+trap 'rm -rf "$tmp_dir"' EXIT
+index=0
+for archive_path in "${required_archive_files[@]}"; do
+	grep -Fqx "$archive_path" <<<"$listing" \
+		|| fail "Sentry archive is missing native artifact: $archive_path"
+	extracted_path="$tmp_dir/artifact-$index"
+	unzip -p "$archive" "$archive_path" >"$extracted_path"
+	[[ -s "$extracted_path" ]] \
+		|| fail "Sentry archive contains an empty native artifact: $archive_path"
+	index=$((index + 1))
+done
+
+echo "Sentry native artifact package checks passed: $archive"

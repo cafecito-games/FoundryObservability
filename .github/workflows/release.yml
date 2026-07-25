@@ -23,7 +23,7 @@ jobs:
   release:
     name: Package and publish release
     runs-on: macos-26
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -67,6 +67,23 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5.6.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4.0.1
+
+      - name: Install Android SDK platform 36
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platforms;android-36"
+
+      - name: Make gradlew executable
+        run: chmod +x addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/gradlew
+
       - name: Set up Go
         uses: actions/setup-go@v7.0.0
         with:
@@ -99,8 +116,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: task test
 
+      - name: Build Apple Sentry artifacts
+        run: task ios:sentry
+
+      - name: Build Android Sentry artifacts
+        run: task android:sentry
+
       - name: Build versioned addon archive
-        run: task package VERSION="${{ steps.version.outputs.version }}"
+        run: REQUIRE_NATIVE_ARTIFACTS=1 task package VERSION="${{ steps.version.outputs.version }}"
+
+      - name: Verify Sentry native artifact archive
+        run: task verify:sentry-package VERSION="${{ steps.version.outputs.version }}"
 
       - name: Publish GitHub release
         env:
@@ -109,5 +135,6 @@ jobs:
           gh release create \
             "${{ steps.version.outputs.tag }}" \
             "dist/FoundryObservability-${{ steps.version.outputs.version }}.zip" \
+            "dist/FoundryObservabilitySentry-${{ steps.version.outputs.version }}.zip" \
             --title "FoundryObservability ${{ steps.version.outputs.tag }}" \
             --generate-notes
