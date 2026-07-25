@@ -451,6 +451,104 @@ func test_missing_breadcrumb_capability_is_observable_and_isolated() -> void:
 	service.shutdown()
 
 
+func test_automatic_logger_routes_error_metadata_by_independent_masks() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1234, func() -> int: return 7)
+	var backtraces: Array[ScriptBacktrace] = Engine.capture_script_backtraces(false)
+
+	logger._log_error(
+			"attack", "res://player.fs", 42, "ERR_INVALID_DATA", "bad hit",
+			false, Logger.ERROR_TYPE_ERROR, backtraces)
+
+	Expect.that(provider.events()).to_have_size(2)
+	var exception_event: ObservabilityEvent = provider.events()[0]
+	Expect.that(exception_event.kind()).to_equal(&"exception")
+	Expect.that(exception_event.source()).to_equal(&"foundry.engine")
+	Expect.that(exception_event.timestamp_msec()).to_equal(1234)
+	Expect.that(exception_event.exception().type_name()).to_equal("ERROR")
+	Expect.that(exception_event.exception().stack_trace()).to_contain("observability-core.test.fs")
+	Expect.that(exception_event.attributes()["error.function"]).to_equal("attack")
+	Expect.that(exception_event.attributes()["error.file"]).to_equal("res://player.fs")
+	Expect.that(exception_event.attributes()["error.line"]).to_equal(42)
+	Expect.that(exception_event.attributes()["error.code"]).to_equal("ERR_INVALID_DATA")
+	Expect.that(exception_event.attributes()["error.rationale"]).to_equal("bad hit")
+	var serialized_backtraces: Array = exception_event.attributes()["error.script_backtraces"]
+	Expect.that(serialized_backtraces.size()).to_be_greater_than(0)
+	Expect.that(provider.breadcrumbs()).to_have_size(1)
+	Expect.that(provider.events()[1].kind()).to_equal(&"log")
+	service.shutdown()
+
+
+func test_automatic_logger_maps_error_categories_and_levels() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ALL_ERRORS,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_repeated_error_window_msec = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1, func() -> int: return 1)
+
+	logger._log_error("run", "res://case.fs", 1, "warning", "", false,
+			Logger.ERROR_TYPE_WARNING, [])
+	logger._log_error("run", "res://case.fs", 2, "script", "", false,
+			Logger.ERROR_TYPE_SCRIPT, [])
+	logger._log_error("run", "res://case.fs", 3, "shader", "", false,
+			Logger.ERROR_TYPE_SHADER, [])
+	logger._log_error("run", "res://case.fs", 4, "fatal", "", false,
+			Logger.ERROR_TYPE_FATAL, [])
+
+	Expect.that(provider.events()[0].level()).to_equal(ObservabilityLevel.WARN)
+	Expect.that(provider.events()[0].exception().type_name()).to_equal("WARNING")
+	Expect.that(provider.events()[1].level()).to_equal(ObservabilityLevel.ERROR)
+	Expect.that(provider.events()[1].exception().type_name()).to_equal("SCRIPT ERROR")
+	Expect.that(provider.events()[2].exception().type_name()).to_equal("SHADER ERROR")
+	Expect.that(provider.events()[3].level()).to_equal(ObservabilityLevel.FATAL)
+	Expect.that(provider.events()[3].exception().type_name()).to_equal("FATAL")
+	service.shutdown()
+
+
+func test_automatic_logger_filters_and_routes_messages_without_events() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ALL_ERRORS,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.MESSAGE,
+			p_automatic_log_mask = ObservabilityCaptureMask.MESSAGE,
+			p_automatic_message_filter_prefixes = PackedStringArray(["Internal: "]),
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1234, func() -> int: return 1)
+
+	logger._log_message("\u001b[31mhello\u001b[0m\n", false)
+	logger._log_message("Internal: ignored", true)
+
+	Expect.that(provider.breadcrumbs()).to_have_size(1)
+	Expect.that(provider.breadcrumbs()[0].message()).to_equal("hello")
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].kind()).to_equal(&"log")
+	Expect.that(provider.events()[0].level()).to_equal(ObservabilityLevel.INFO)
+	service.shutdown()
+
+
 func test_feedback_accepts_anonymous_and_identified_submissions() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
