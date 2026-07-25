@@ -95,6 +95,9 @@ fi
 rg -q -U -- '- name: Build Apple Sentry artifacts\n        env:\n          GH_TOKEN: \$\{\{ github\.token \}\}\n        run: task ios:sentry' \
 	<<<"$build_job" \
 	|| fail "Apple native build must receive GH_TOKEN explicitly"
+rg -q -U -- '- name: Verify Apple Sentry runtime\n        env:\n          GH_TOKEN: \$\{\{ github\.token \}\}\n          FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME: "1"\n        run: scripts/test-project' \
+	<<<"$build_job" \
+	|| fail "release build must strictly verify the Apple Sentry runtime"
 rg -q 'actions/upload-artifact@v7\.0\.1([[:space:]]|$)' <<<"$build_job" \
 	|| fail "release build job must upload finished archives with upload-artifact@v7.0.1"
 rg -q 'actions/download-artifact@v8\.0\.1([[:space:]]|$)' <<<"$publish_job" \
@@ -136,18 +139,21 @@ rg -q 'chmod \+x addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySe
 	|| fail "release workflow must make the Android Gradle wrapper executable"
 
 release_ios_line=$(awk '/task ios:sentry/{ print NR; exit }' "$release_workflow")
+release_apple_runtime_line=$(awk '/FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME/{ print NR; exit }' "$release_workflow")
 release_android_line=$(awk '/task android:sentry/{ print NR; exit }' "$release_workflow")
 release_package_line=$(awk '/REQUIRE_NATIVE_ARTIFACTS=1 task package/{ print NR; exit }' "$release_workflow")
 release_verify_line=$(awk '/task verify:sentry-package/{ print NR; exit }' "$release_workflow")
 release_upload_line=$(awk '/actions\/upload-artifact@v7\.0\.1/{ print NR; exit }' "$release_workflow")
 release_download_line=$(awk '/actions\/download-artifact@v8\.0\.1/{ print NR; exit }' "$release_workflow")
 release_publish_line=$(awk '/gh release create/{ print NR; exit }' "$release_workflow")
-[[ -n "$release_ios_line" && -n "$release_android_line" \
+[[ -n "$release_ios_line" && -n "$release_apple_runtime_line" \
+	&& -n "$release_android_line" \
 	&& -n "$release_package_line" && -n "$release_verify_line" \
 	&& -n "$release_upload_line" && -n "$release_download_line" \
 	&& -n "$release_publish_line" ]] \
 	|| fail "release workflow must build, package, verify, and publish native Sentry artifacts"
-(( release_ios_line < release_android_line \
+(( release_ios_line < release_apple_runtime_line \
+	&& release_apple_runtime_line < release_android_line \
 	&& release_android_line < release_package_line \
 	&& release_package_line < release_verify_line \
 	&& release_verify_line < release_upload_line \

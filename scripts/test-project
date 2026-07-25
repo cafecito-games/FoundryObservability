@@ -6,6 +6,8 @@ project_dir="$repo_root/test_project"
 core_addon="$project_dir/addons/FoundryObservability"
 sentry_addon="$project_dir/addons/FoundryObservabilitySentry"
 sentry_source="$repo_root/addons/FoundryObservabilitySentry"
+strict_native_runtime="${FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME:-0}"
+runtime_log=""
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -26,6 +28,12 @@ fi
 command -v anvil >/dev/null 2>&1 \
 	|| fail "anvil is required; install github.com/cafecito-games/foundry-tools/cmd/anvil"
 
+if [[ "$strict_native_runtime" == "1" ]]; then
+	sentry_binary="$sentry_source/bin/macos_arm64/FoundryObservabilitySentry.framework/Versions/A/FoundryObservabilitySentry"
+	[[ -s "$sentry_binary" ]] \
+		|| fail "strict native runtime verification requires a built macOS Sentry framework"
+fi
+
 materialize_sentry_addon() {
 	destination=$1
 	mkdir -p "$destination"
@@ -38,6 +46,9 @@ materialize_sentry_addon() {
 }
 
 restore_test_addons() {
+	if [[ -n "$runtime_log" && -e "$runtime_log" ]]; then
+		rm -f "$runtime_log"
+	fi
 	if [[ -d "$core_addon" && ! -L "$core_addon" ]]; then
 		rm -rf "$core_addon"
 	fi
@@ -73,7 +84,27 @@ if [[ "${FOUNDRYOBSERVABILITY_SKIP_ANVIL_INSTALL:-0}" != "1" ]]; then
 	anvil pkg install --dir "$project_dir"
 fi
 
-"$foundry_bin" --headless project test \
-	--project "$project_dir" \
-	--runner res://addons/foundrylib/testlib/cli/run.fs \
-	-- --path res://tests
+run_project_tests() {
+	"$foundry_bin" --headless project test \
+		--project "$project_dir" \
+		--runner res://addons/foundrylib/testlib/cli/run.fs \
+		-- --path res://tests
+}
+
+if [[ "$strict_native_runtime" == "1" ]]; then
+	[[ -d "$project_dir/addons/FoundrySwift" ]] \
+		|| fail "strict native runtime verification requires the installed FoundrySwift addon"
+	runtime_log=$(mktemp "${TMPDIR:-/tmp}/foundryobservability-native-runtime.XXXXXX")
+	set +e
+	run_project_tests 2>&1 | tee "$runtime_log"
+	foundry_status=${PIPESTATUS[0]}
+	set -e
+	(( foundry_status == 0 )) \
+		|| fail "strict native runtime Foundry tests failed with status $foundry_status"
+	loader_error_pattern="Can't open dynamic library:.*(FoundryObservabilitySentry|FoundrySwift)|Can't open FoundryExtension dynamic library:.*(FoundryObservabilitySentry|FoundrySwift)|Library not loaded:.*(FoundryObservabilitySentry|FoundrySwift)|Error loading extension:.*(FoundryObservabilitySentry|FoundrySwift)"
+	if rg -n "$loader_error_pattern" "$runtime_log"; then
+		fail "strict native runtime verification detected a native loader error"
+	fi
+else
+	run_project_tests
+fi

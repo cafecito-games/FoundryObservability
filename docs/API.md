@@ -20,6 +20,11 @@ plugin. The plugin registers the FoundryObservability autoload.
 The addon currently requires FoundryLib because its core package includes the
 FoundryLib LogSink adapter. The optional FoundryObservabilitySentry sibling
 addon provides the first production backend for Apple and Android exports.
+Apple projects using that provider must also install the FoundrySwift
+`0.1.0-alpha.2` companion addon. Its `FoundrySwiftEmbed` extension owns the
+single shared FoundrySwift runtime; the Sentry extension intentionally does not
+declare or embed another copy. Android uses the Sentry Android bridge and does
+not require FoundrySwift.
 
 The smallest setup is:
 

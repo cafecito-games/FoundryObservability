@@ -14,15 +14,17 @@ func test_provider_name_is_sentry() -> void:
 	Expect.that(provider.provider_name()).to_equal(&"sentry")
 
 
-func test_enabled_configuration_requires_native_bridge_and_dsn() -> void:
+func test_enabled_configuration_requires_compatible_native_bridge_and_dsn() -> void:
 	var missing_dsn := SentryObservabilityProvider.new(p_bridge = FakeSentryBridge.new())
 	Expect.that(missing_dsn.configure(ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {},
 		))).to_equal(Error.FAILED)
 
-	var missing_bridge := SentryObservabilityProvider.new()
-	Expect.that(missing_bridge.configure(ObservabilityConfig.new(
+	var incompatible_bridge := SentryObservabilityProvider.new(
+			p_bridge = IncompatibleSentryBridge.new(),
+		)
+	Expect.that(incompatible_bridge.configure(ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 		))).to_equal(Error.FAILED)

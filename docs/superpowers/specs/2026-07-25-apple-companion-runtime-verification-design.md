@@ -23,6 +23,13 @@ FoundrySwift framework used by Apple exports and runtime loading. The Sentry
 archive does not duplicate the FoundrySwift runtime. Android uses its own Sentry
 Android bridge and does not require the FoundrySwift companion addon.
 
+The macOS Sentry framework binary is nested under
+`FoundryObservabilitySentry.framework/Versions/A`. Its `LC_RPATH` therefore
+uses `@loader_path/../../../../../../FoundrySwift/bin/macos_arm64` to reach the
+sibling companion addon from the binary's actual loader directory. The native
+build contract validates this exact path in both `project.yml` and the generated
+Xcode project.
+
 ## Strict runtime smoke
 
 `scripts/test-project` will accept
@@ -37,7 +44,10 @@ process cannot be hidden by a successful `tee`. Strict mode also fails if the
 captured log contains Foundry diagnostics indicating that the
 FoundryObservabilitySentry or FoundrySwift dynamic libraries/extensions could
 not be opened or loaded. The existing test runner exit status continues to
-prove the complete project suite passed.
+prove the complete project suite passed. Provider compatibility tests inject an
+explicitly incompatible bridge instead of assuming the native class is absent,
+so the same 78-test suite is deterministic with and without loaded native
+artifacts.
 
 ## Release integration
 
@@ -65,6 +75,8 @@ mode behavior, release command/environment, and release-step ordering.
 The implementation will first demonstrate contract failures for the missing
 package/docs/strict-mode/workflow behavior. After implementation, Anvil will
 install the exact companion release into the test project. The strict smoke
-will run against the pinned local Foundry binary and current Apple artifact,
-with no loader errors and all 78 project tests passing. Focused contracts,
-workflow checks, lint, Bash syntax, and diff checks complete the gate.
+will run against the pinned local Foundry binary and a freshly rebuilt Apple
+artifact carrying the six-level companion runpath, with no loader errors and
+all 78 project tests passing. A no-native ordinary run will also prove that
+clean development tests remain non-strict. Focused contracts, workflow checks,
+lint, Bash syntax, and diff checks complete the gate.

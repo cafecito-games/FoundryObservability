@@ -17,6 +17,10 @@ tests="$native_root/Tests/FoundryObservabilitySentryTests"
 descriptor="$repo_root/addons/FoundryObservabilitySentry/FoundryObservabilitySentry.foundryextension"
 export_plugin="$repo_root/addons/FoundryObservabilitySentry/export_plugin.fs"
 package_swift="$native_root/Package.swift"
+packages_manifest="$repo_root/test_project/packages.toml"
+gitignore="$repo_root/.gitignore"
+readme="$repo_root/README.md"
+project_test="$repo_root/scripts/test-project"
 
 [[ -f "$taskfile" ]] || fail "Taskfile.yml is missing"
 [[ -f "$project_yml" ]] || fail "Sentry project.yml is missing"
@@ -24,6 +28,8 @@ package_swift="$native_root/Package.swift"
 [[ -f "$descriptor" ]] || fail "Sentry FoundryExtension descriptor is missing"
 [[ -f "$export_plugin" ]] || fail "Sentry export plugin is missing"
 [[ -f "$package_swift" ]] || fail "Sentry Package.swift is missing"
+[[ -f "$packages_manifest" ]] || fail "test project packages.toml is missing"
+[[ -x "$project_test" ]] || fail "project runtime test is missing or not executable"
 [[ -f "$swift_sources/FoundryObservabilitySentry.swift" ]] || fail "Sentry bridge source is missing"
 [[ -f "$swift_sources/SentryEventMapper.swift" ]] || fail "Sentry mapper source is missing"
 [[ -f "$tests/SentryEventMapperTests.swift" ]] || fail "Sentry mapper tests are missing"
@@ -48,6 +54,47 @@ rg -q 'exact: "9\.23\.0"' "$package_swift" \
 	|| fail "SwiftPM mapper tests must pin Sentry Cocoa 9.23.0"
 rg -q 'GENERATE_INFOPLIST_FILE = YES' "$pbxproj" \
 	|| fail "generated Xcode project is missing generated Info.plist settings"
+expected_foundryswift_runpath='@loader_path/../../../../../../FoundrySwift/bin/macos_arm64'
+rg -Fq "$expected_foundryswift_runpath" "$project_yml" \
+	|| fail "native project must resolve the sibling FoundrySwift addon from Versions/A"
+rg -Fq "$expected_foundryswift_runpath" "$pbxproj" \
+	|| fail "generated Xcode project must preserve the sibling FoundrySwift runpath"
+
+rg -q '^\[packages\.FoundrySwift\]$' "$packages_manifest" \
+	|| fail "test project must pin the FoundrySwift companion addon"
+for package_field in \
+	'source = "github-release"' \
+	'repo = "cafecito-games/Foundry-Swift"' \
+	'version = "0.1.0-alpha.2"' \
+	'asset = "FoundrySwift-0.1.0-alpha.2.zip"' \
+	'source_path = "addons/FoundrySwift"'; do
+	rg -Fq "$package_field" "$packages_manifest" \
+		|| fail "FoundrySwift package is missing exact field: $package_field"
+done
+rg -q '^test_project/addons/FoundrySwift/$' "$gitignore" \
+	|| fail "installed FoundrySwift test addon must be ignored"
+rg -q 'FoundrySwift-0\.1\.0-alpha\.2\.zip' "$readme" \
+	|| fail "README must show the exact compatible FoundrySwift release asset"
+rg -q 'FoundrySwiftEmbed' "$readme" \
+	|| fail "README must explain shared runtime ownership by FoundrySwiftEmbed"
+rg -Fq -U $'Android uses the Sentry Android AAR and does not\nrequire the FoundrySwift companion addon.' "$readme" \
+	|| fail "README must state that Android does not require FoundrySwift"
+
+rg -q 'FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME' "$project_test" \
+	|| fail "project test must expose strict native runtime verification"
+rg -Fq '2>&1 | tee "$runtime_log"' "$project_test" \
+	|| fail "strict runtime verification must capture combined Foundry output"
+rg -Fq 'foundry_status=${PIPESTATUS[0]}' "$project_test" \
+	|| fail "strict runtime verification must preserve Foundry status under Bash 3.2"
+for loader_marker in \
+	"Can't open dynamic library" \
+	"Can't open FoundryExtension dynamic library" \
+	"Error loading extension" \
+	"FoundryObservabilitySentry" \
+	"FoundrySwift"; do
+	rg -Fq "$loader_marker" "$project_test" \
+		|| fail "strict runtime verification must reject loader diagnostic: $loader_marker"
+done
 
 rg -q '#initFoundryExtension' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must register the Foundry entry point"

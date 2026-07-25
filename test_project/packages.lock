@@ -1,4 +1,9 @@
 [packages]
+  [packages.FoundrySwift]
+    resolved_version = "0.1.0-alpha.2"
+    source_path = "addons/FoundrySwift"
+    checksum = "51fedac51e9157430df2e3802dbb0c827c5d35500af418bb1fcb04114d040ffb"
+    spec_hash = "b055d6d1974a24f04048a4602030745aca5fcb88b069e54e32c1f3fecd79316e"
   [packages.foundrylib]
     resolved_version = "1e0a7d707562d4ef4435b6b2015bbb5d84266ecb"
     source_path = "addons/foundrylib"

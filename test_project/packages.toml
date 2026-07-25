@@ -5,3 +5,10 @@
     version = "1e0a7d707562d4ef4435b6b2015bbb5d84266ecb"
     source_path = "addons/foundrylib"
     install_as = "foundrylib"
+
+[packages.FoundrySwift]
+source = "github-release"
+repo = "cafecito-games/Foundry-Swift"
+version = "0.1.0-alpha.2"
+asset = "FoundrySwift-0.1.0-alpha.2.zip"
+source_path = "addons/FoundrySwift"

@@ -210,7 +210,82 @@ scripts/test-ci-workflows
 
 Expected: both pass.
 
-### Task 6: Verify runtime and repository gates
+### Task 6: Correct and verify the sibling companion runpath
+
+**Files:**
+- Modify: `addons/FoundryObservabilitySentry/FoundryObservabilitySentry/project.yml`
+- Modify: `addons/FoundryObservabilitySentry/FoundryObservabilitySentry/FoundryObservabilitySentry.xcodeproj/project.pbxproj`
+- Modify: `scripts/test-sentry-ios-build-contract`
+
+- [ ] **Step 1: Contract the framework binary's exact sibling runpath**
+
+Require both native project files to contain:
+
+```text
+@loader_path/../../../../../../FoundrySwift/bin/macos_arm64
+```
+
+The six parent traversals are required because the loader starts from the
+framework binary under `FoundryObservabilitySentry.framework/Versions/A`.
+
+- [ ] **Step 2: Run the contract and verify RED**
+
+Run:
+
+```sh
+scripts/test-sentry-ios-build-contract
+```
+
+Expected: failure stating that the native project must resolve the sibling
+FoundrySwift addon from `Versions/A`.
+
+- [ ] **Step 3: Correct and regenerate the native project**
+
+Replace the four-level runpath in `project.yml` with the exact six-level path,
+regenerate the Xcode project with XcodeGen, and rebuild:
+
+```sh
+task ios:sentry
+```
+
+Use `otool -l` on the rebuilt macOS framework binary to confirm the resulting
+`LC_RPATH`. Do not inject `DYLD_FRAMEWORK_PATH`; the artifact must resolve its
+declared runtime dependency itself.
+
+- [ ] **Step 4: Run the contract and verify GREEN**
+
+Run:
+
+```sh
+scripts/test-sentry-ios-build-contract
+```
+
+Expected: pass.
+
+### Task 7: Make bridge-compatibility tests runtime-independent
+
+**Files:**
+- Modify: `test_project/tests/observability-sentry.test.fs`
+- Create: `test_project/tests/support/incompatible_sentry_bridge.notest.fs`
+
+- [ ] **Step 1: Preserve the strict-smoke failure as RED**
+
+With the native extension successfully loaded, the test that constructs a
+provider without an injected bridge resolves the real engine class and no
+longer represents a missing-bridge case.
+
+Expected: the strict run reaches all tests without loader diagnostics but
+reports 77/78 because the test expected `Error.FAILED` from a real compatible
+bridge.
+
+- [ ] **Step 2: Inject an explicitly incompatible bridge**
+
+Rename the test to describe a compatible native bridge requirement and inject a
+minimal bridge object that deliberately implements none of the native methods.
+This avoids real Sentry configuration or network side effects and behaves the
+same whether native artifacts are loaded or absent.
+
+### Task 8: Verify runtime and repository gates
 
 **Files:**
 - Modify only files required to correct verified failures.
@@ -228,7 +303,16 @@ scripts/test-project
 Expected: no FoundrySwift or FoundryObservabilitySentry loader diagnostics and
 `Ran 78 tests: 78 passed, 0 failed, 0 skipped.`
 
-- [ ] **Step 2: Run focused repository verification**
+- [ ] **Step 2: Verify ordinary no-native behavior**
+
+Temporarily remove the generated macOS Sentry framework from the runtime path
+and run `scripts/test-project` without strict mode. Restore the artifact after
+the command.
+
+Expected: loader diagnostics are reported, but the ordinary test command exits
+zero with `Ran 78 tests: 78 passed, 0 failed, 0 skipped.`
+
+- [ ] **Step 3: Run focused repository verification**
 
 Run:
 
@@ -242,18 +326,22 @@ git diff --check
 
 Expected: every command exits zero.
 
-- [ ] **Step 3: Commit the focused implementation**
+- [ ] **Step 4: Commit the focused implementation**
 
 Run:
 
 ```sh
 git add .gitignore .github/workflows/release.yml README.md BUILD.md docs/API.md \
+  addons/FoundryObservabilitySentry/FoundryObservabilitySentry/project.yml \
+  addons/FoundryObservabilitySentry/FoundryObservabilitySentry/FoundryObservabilitySentry.xcodeproj/project.pbxproj \
   scripts/test-project scripts/test-sentry-ios-build-contract \
-  scripts/test-ci-workflows test_project/packages.toml test_project/packages.lock
+  scripts/test-ci-workflows test_project/packages.toml test_project/packages.lock \
+  test_project/tests/observability-sentry.test.fs \
+  test_project/tests/support/incompatible_sentry_bridge.notest.fs
 git commit -m "ci: verify Apple companion runtime"
 ```
 
-- [ ] **Step 4: Audit final state**
+- [ ] **Step 5: Audit final state**
 
 Run:
 

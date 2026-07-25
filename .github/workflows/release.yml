@@ -131,6 +131,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: task ios:sentry
 
+      - name: Verify Apple Sentry runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME: "1"
+        run: scripts/test-project
+
       - name: Build Android Sentry artifacts
         run: task android:sentry
 
