@@ -7,7 +7,8 @@
 - Task
 - Xcode 15+, Swift 6, and XcodeGen
 - Java 17 and Android SDK Platform 36
-- GitHub CLI (`gh`) authenticated for Foundry-Swift release downloads
+- GitHub CLI (`gh`) authenticated for Foundry-Swift release downloads; set
+  `GH_TOKEN` for non-interactive builds and CI
 - `jq`, `prek`, `ripgrep`, `zip`, and `unzip`
 
 The repository scripts use the local Foundry development binary at
@@ -55,6 +56,23 @@ Run `task ios:sentry` to build the iOS and macOS Apple artifacts and
 `task android:sentry` to build the Android debug/release AARs. The Apple task
 downloads and checksum-verifies the prebuilt Foundry-Swift alpha.2 framework
 and macro artifact into derived data, then compiles only the Sentry bridge.
+
+## Native release packaging
+
+Release archives must be assembled only after both native builds complete:
+
+```sh
+task ios:sentry
+task android:sentry
+REQUIRE_NATIVE_ARTIFACTS=1 task package VERSION=1.2.3
+task verify:sentry-package VERSION=1.2.3
+```
+
+`REQUIRE_NATIVE_ARTIFACTS=1` rejects a release package when any expected Apple
+framework or Android debug/release AAR is missing or empty. The verification
+step checks the framework symlinks, macOS binary, and both nested AAR zip files.
+Set `DIST_DIR` on the packaging and verification commands to write and inspect
+the archives in an isolated output directory.
 
 Current public source namespaces are `foundry.observability`,
 `foundry.observability.foundrylib`, and `foundry.observability.sentry`.
