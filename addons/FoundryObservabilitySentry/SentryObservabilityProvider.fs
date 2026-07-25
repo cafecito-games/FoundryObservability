@@ -8,15 +8,18 @@ extends RefCounted
 uses ObservabilityProvider, ObservabilityMetricsProvider, ObservabilityBreadcrumbsProvider
 
 const _NATIVE_CLASS: String = "SentryObservabilityBridge"
+const _LIFECYCLE_VERSION: int = 1
 
 var _bridge: Object? = null
 var _enabled: bool = false
+var _owner: String = ""
 var _shutdown: bool = false
 
 
 ## Creates a provider with an optional bridge seam used by deterministic tests.
 func _init(p_bridge: Object? = null) -> void:
 	_bridge = p_bridge
+	_owner = str(get_instance_id())
 
 
 ## Returns the stable Sentry provider identifier.
@@ -29,9 +32,9 @@ func is_available() -> bool:
 	if not _enabled or _shutdown:
 		return false
 	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not bridge.has_method("isAvailable"):
+	if bridge == null or not _has_lifecycle_contract(bridge):
 		return false
-	return bridge.call("isAvailable") == true
+	return bridge.call("isAvailable", _owner) == true
 
 
 ## Validates and forwards the complete provider configuration.
@@ -43,7 +46,13 @@ func configure(config: ObservabilityConfig) -> int:
 
 	var bridge: Object? = _resolve_bridge()
 	if config.enabled and bridge == null:
-		return Error.FAILED
+		return Error.ERR_UNAVAILABLE
+	if bridge != null and not _has_lifecycle_contract(bridge):
+		if config.enabled or _enabled:
+			return Error.ERR_UNAVAILABLE
+		_enabled = false
+		_shutdown = false
+		return Error.OK
 	if config.enabled and config.logs_enabled and (bridge == null or not bridge.has_method("captureLog")):
 		return Error.FAILED
 
@@ -71,6 +80,7 @@ func configure(config: ObservabilityConfig) -> int:
 			"android_anr_detection_enabled": config.android_anr_detection_enabled,
 			"android_anr_timeout_msec": maxi(1000, config.android_anr_timeout_msec),
 			"android_anr_attach_thread_dump": config.android_anr_attach_thread_dump,
+			"lifecycle_owner": _owner,
 		}
 	var result: Variant = bridge.call("configure", payload)
 	if not (result is int):
@@ -187,9 +197,9 @@ func capture_metric(metric: ObservabilityMetric) -> bool:
 ## Flushes native Sentry work within the requested timeout.
 func flush(timeout_msec: int = 2000) -> int:
 	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not _enabled or _shutdown:
+	if bridge == null or not _enabled or _shutdown or not is_available():
 		return Error.OK
-	var result: Variant = bridge.call("flush", timeout_msec)
+	var result: Variant = bridge.call("flush", _owner, timeout_msec)
 	if not (result is int):
 		return Error.FAILED
 	return result
@@ -202,8 +212,8 @@ func shutdown() -> void:
 	_shutdown = true
 	_enabled = false
 	var bridge: Object? = _resolve_bridge()
-	if bridge != null and bridge.has_method("shutdown"):
-		bridge.call("shutdown")
+	if bridge != null and _has_lifecycle_contract(bridge):
+		bridge.call("shutdown", _owner)
 
 
 func _resolve_bridge() -> Object?:
@@ -216,6 +226,21 @@ func _resolve_bridge() -> Object?:
 		return null
 	_bridge = ClassDB.instantiate(_NATIVE_CLASS)
 	return _bridge
+
+
+func _has_lifecycle_contract(bridge: Object) -> bool:
+	for method: String in [
+		"lifecycleVersion",
+		"configure",
+		"isAvailable",
+		"capture",
+		"flush",
+		"shutdown",
+	]:
+		if not bridge.has_method(method):
+			return false
+	var version_result: Variant = bridge.call("lifecycleVersion")
+	return version_result is int and version_result >= _LIFECYCLE_VERSION
 
 
 func _stack_frame_payload(frame: ObservabilityStackFrame) -> Dictionary:
