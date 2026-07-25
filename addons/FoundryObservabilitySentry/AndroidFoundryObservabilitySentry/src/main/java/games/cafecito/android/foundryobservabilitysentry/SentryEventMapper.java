@@ -6,6 +6,7 @@ import io.sentry.protocol.Message;
 import io.sentry.protocol.SentryException;
 import java.lang.reflect.Array;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -75,6 +76,7 @@ final class SentryEventMapper {
       String kind,
       String source,
       long timestampMsec,
+      long engineTicksMsec,
       Map<?, ?> exception) {
     Map<String, Object> extras = copyDictionary(global);
     extras.putAll(copyDictionary(event));
@@ -92,7 +94,14 @@ final class SentryEventMapper {
     extras.put("foundry.kind", safeString(kind));
     extras.put("foundry.source", safeString(source));
     extras.put("foundry.timestamp_msec", timestampMsec);
+    if (engineTicksMsec >= 0L) {
+      extras.put("foundry.engine_ticks_msec", engineTicksMsec);
+    }
     return extras;
+  }
+
+  static Date sentryDate(long timestampMsec) {
+    return new Date(timestampMsec);
   }
 
   static SentryEvent makeEvent(Map<?, ?> payload, Map<String, Object> globalAttributes) {
@@ -102,6 +111,7 @@ final class SentryEventMapper {
     String kind = stringValue(values.get("kind"));
     int level = intValue(values.get("level"), 50);
     long timestampMsec = longValue(values.get("timestamp_msec"), 0L);
+    long engineTicksMsec = longValue(values.get("engine_ticks_msec"), -1L);
     Map<String, Object> attributes = asMap(values.get("attributes"));
     Map<?, ?> exception = values.get("exception") instanceof Map
         ? (Map<?, ?>) values.get("exception")
@@ -115,12 +125,14 @@ final class SentryEventMapper {
     if (!source.isEmpty()) {
       event.setLogger(source);
     }
+    event.setTimestamp(sentryDate(timestampMsec));
     event.setExtras(mergedExtras(
         globalAttributes,
         attributes,
         kind,
         source,
         timestampMsec,
+        engineTicksMsec,
         exception));
 
     if (exception != null) {
