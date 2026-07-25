@@ -385,10 +385,11 @@ frames are omitted. A partial identity is still useful and survives. Malformed
 native frame entries never prevent use of the formatted-stack fallback.
 
 The constructor copies `pre_context` and `post_context` and deep-copies
-`variables`; their accessors return new copies. Scalar fields are immutable
-after construction. The capture boundary applies the source-context and
-variables policy described under `ObservabilityConfig` before dispatching to a
-provider.
+`variables`; their accessors return new copies. The constructor's variable
+ownership copy applies the same maximum of eight nested containers and 256
+examined items, and omits cycle back-edges. Scalar fields are immutable after
+construction. The capture boundary applies the source-context and variables
+policy described under `ObservabilityConfig` before dispatching to a provider.
 
 ## ObservabilityEvent
 
