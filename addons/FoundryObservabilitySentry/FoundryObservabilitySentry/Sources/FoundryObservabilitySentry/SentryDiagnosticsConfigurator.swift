@@ -20,10 +20,10 @@ private func diagnosticInteger(_ value: Any?) -> Int? {
         return value
     }
     if let value = value as? Int64 {
-        return Int(value)
+        return Int(exactly: value)
     }
     if let value = value as? Double {
-        return Int(value)
+        return Int(exactly: value)
     }
     return nil
 }
