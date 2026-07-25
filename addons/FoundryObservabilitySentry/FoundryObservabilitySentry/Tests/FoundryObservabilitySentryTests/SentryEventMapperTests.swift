@@ -1,3 +1,4 @@
+import Foundation
 import Sentry
 import XCTest
 @testable import FoundryObservabilitySentry
@@ -29,14 +30,16 @@ final class SentryEventMapperTests: XCTestCase {
             event: ["shared": "event"],
             kind: "log",
             source: "combat",
-            timestampMsec: 1234
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: 4567
         )
 
         XCTAssertEqual(result["shared"] as? String, "event")
         XCTAssertEqual(result["build"] as? Int, 42)
         XCTAssertEqual(result["foundry.kind"] as? String, "log")
         XCTAssertEqual(result["foundry.source"] as? String, "combat")
-        XCTAssertEqual(result["foundry.timestamp_msec"] as? Int64, 1234)
+        XCTAssertEqual(result["foundry.timestamp_msec"] as? Int64, 1_612_325_106_123)
+        XCTAssertEqual(result["foundry.engine_ticks_msec"] as? Int64, 4567)
     }
 
     func testStructuredLogAttributesPreserveFieldsAndReservedMetadata() {
@@ -45,14 +48,39 @@ final class SentryEventMapperTests: XCTestCase {
             event: ["shared": "event", "foundry.kind": "caller"],
             kind: "log",
             source: "foundry.logging",
-            timestampMsec: 1234
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: 4567
         )
 
         XCTAssertEqual(attributes["shared"] as? String, "event")
         XCTAssertEqual(attributes["build"] as? Int, 42)
         XCTAssertEqual(attributes["foundry.kind"] as? String, "log")
         XCTAssertEqual(attributes["foundry.source"] as? String, "foundry.logging")
-        XCTAssertEqual(attributes["foundry.timestamp_msec"] as? Int64, 1234)
+        XCTAssertEqual(attributes["foundry.timestamp_msec"] as? Int64, 1_612_325_106_123)
+        XCTAssertEqual(attributes["foundry.engine_ticks_msec"] as? Int64, 4567)
+    }
+
+    func testUnavailableEngineTicksRemoveCallerControlledReservedMetadata() {
+        let callerAttributes = ["foundry.engine_ticks_msec": 999]
+        let extras = mergedExtras(
+            global: callerAttributes,
+            event: callerAttributes,
+            kind: "message",
+            source: "game",
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: -1
+        )
+        let logAttributes = mergedLogAttributes(
+            global: callerAttributes,
+            event: callerAttributes,
+            kind: "log",
+            source: "game",
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: -1
+        )
+
+        XCTAssertNil(extras["foundry.engine_ticks_msec"])
+        XCTAssertNil(logAttributes["foundry.engine_ticks_msec"])
     }
 
     func testStructuredLogAttributesOmitUnsupportedValues() {
@@ -97,6 +125,17 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(sentryTimeoutSeconds(milliseconds: 321), 0.321, accuracy: 0.0001)
     }
 
+    func testConvertsUnixMillisecondsWithoutTimezoneDependence() {
+        let timestampMsec: Int64 = 1_612_325_106_123
+        let original = NSTimeZone.default
+        NSTimeZone.default = TimeZone(secondsFromGMT: 9 * 3_600)!
+        defer { NSTimeZone.default = original }
+
+        let date = sentryDate(timestampMsec: timestampMsec)
+
+        XCTAssertEqual(date.timeIntervalSince1970, 1_612_325_106.123, accuracy: 0.000_001)
+    }
+
     func testRejectsInvalidFeedbackAssociatedEventID() {
         XCTAssertNil(sentryFeedbackAssociatedEventID(for: "not-a-sentry-id"))
         XCTAssertNil(sentryFeedbackAssociatedEventID(for: "event-123"))
@@ -111,7 +150,8 @@ final class SentryEventMapperTests: XCTestCase {
             level: 50,
             source: "combat",
             kind: "exception",
-            timestampMsec: 1234,
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: 4567,
             globalAttributes: ["release_channel": "beta"],
             eventAttributes: ["attempt": 2],
             exception: FoundryExceptionPayload(
@@ -125,8 +165,19 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(event.message?.formatted, "boom")
         XCTAssertEqual(event.level, .error)
         XCTAssertEqual(event.logger, "combat")
+        guard let eventTimestamp = event.timestamp else {
+            XCTFail("Expected mapped event timestamp")
+            return
+        }
+        XCTAssertEqual(
+            eventTimestamp.timeIntervalSince1970,
+            1_612_325_106.123,
+            accuracy: 0.000_001
+        )
         XCTAssertEqual(event.extra?["release_channel"] as? String, "beta")
         XCTAssertEqual(event.extra?["attempt"] as? Int, 2)
+        XCTAssertEqual(event.extra?["foundry.timestamp_msec"] as? Int64, 1_612_325_106_123)
+        XCTAssertEqual(event.extra?["foundry.engine_ticks_msec"] as? Int64, 4567)
         XCTAssertEqual(event.extra?["foundry.exception_type"] as? String, "InvalidState")
         XCTAssertEqual(event.extra?["foundry.stack_trace"] as? String, "at Player.attack()")
         XCTAssertEqual(event.exceptions?.first?.type, "InvalidState")

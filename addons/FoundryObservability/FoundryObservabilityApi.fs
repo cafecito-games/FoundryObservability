@@ -26,6 +26,7 @@ abstract func capture_log(
 		source: StringName = &"game",
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
+		engine_ticks_msec: int = -1,
 ) -> String
 ## Captures explicit player feedback and returns a provider ID, or an empty string on no-op/failure.
 abstract func capture_feedback(feedback: ObservabilityFeedback) -> String

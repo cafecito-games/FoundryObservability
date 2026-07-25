@@ -8,8 +8,10 @@ import static org.junit.Assert.assertTrue;
 
 import io.sentry.SentryEvent;
 import io.sentry.SentryLevel;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.TimeZone;
 import org.junit.Test;
 
 public class SentryEventMapperTest {
@@ -22,6 +24,18 @@ public class SentryEventMapperTest {
     assertEquals(SentryLevel.ERROR, SentryEventMapper.sentryLevel(50));
     assertEquals(SentryLevel.FATAL, SentryEventMapper.sentryLevel(60));
     assertEquals(SentryLevel.ERROR, SentryEventMapper.sentryLevel(999));
+  }
+
+  @Test
+  public void convertsUnixMillisecondsWithoutTimezoneDependence() {
+    TimeZone original = TimeZone.getDefault();
+    try {
+      TimeZone.setDefault(TimeZone.getTimeZone("GMT+09:00"));
+      Date result = SentryEventMapper.sentryDate(1612325106123L);
+      assertEquals(1612325106123L, result.getTime());
+    } finally {
+      TimeZone.setDefault(original);
+    }
   }
 
   @Test
@@ -38,15 +52,32 @@ public class SentryEventMapperTest {
     exception.put("stack_trace", "trace");
 
     Map<String, Object> extras = SentryEventMapper.mergedExtras(
-        global, event, "exception", "game", 1234L, exception);
+        global, event, "exception", "game", 1612325106123L, 4567L, exception);
 
     assertEquals("event", extras.get("shared"));
     assertEquals(42L, extras.get("build"));
     assertEquals("exception", extras.get("foundry.kind"));
     assertEquals("game", extras.get("foundry.source"));
-    assertEquals(1234L, extras.get("foundry.timestamp_msec"));
+    assertEquals(1612325106123L, extras.get("foundry.timestamp_msec"));
+    assertEquals(4567L, extras.get("foundry.engine_ticks_msec"));
     assertEquals("InvalidState", extras.get("foundry.exception_type"));
     assertEquals("trace", extras.get("foundry.stack_trace"));
+  }
+
+  @Test
+  public void unavailableEngineTicksRemoveCallerControlledReservedMetadata() {
+    Map<String, Object> callerAttributes = Map.of("foundry.engine_ticks_msec", 999L);
+
+    Map<String, Object> extras = SentryEventMapper.mergedExtras(
+        callerAttributes,
+        callerAttributes,
+        "message",
+        "game",
+        1612325106123L,
+        -1L,
+        null);
+
+    assertFalse(extras.containsKey("foundry.engine_ticks_msec"));
   }
 
   @Test
@@ -56,7 +87,8 @@ public class SentryEventMapperTest {
     payload.put("level", 50);
     payload.put("message", "boom");
     payload.put("source", "game");
-    payload.put("timestamp_msec", 1234L);
+    payload.put("timestamp_msec", 1612325106123L);
+    payload.put("engine_ticks_msec", 4567L);
     payload.put("attributes", Map.of("screen", "title"));
     payload.put("exception", Map.of(
         "type_name", "InvalidState",
@@ -69,7 +101,9 @@ public class SentryEventMapperTest {
     assertEquals("boom", result.getMessage().getFormatted());
     assertEquals(SentryLevel.ERROR, result.getLevel());
     assertEquals("game", result.getLogger());
+    assertEquals(1612325106123L, result.getTimestamp().getTime());
     assertEquals("title", result.getExtras().get("screen"));
+    assertEquals(4567L, result.getExtras().get("foundry.engine_ticks_msec"));
     assertEquals(1, result.getExceptions().size());
     assertEquals("InvalidState", result.getExceptions().get(0).getType());
     assertEquals("boom", result.getExceptions().get(0).getValue());

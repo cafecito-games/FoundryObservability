@@ -89,9 +89,17 @@ stores Error.ERR_UNAVAILABLE, and a provider rejection stores Error.FAILED.
 
 ### Timestamps
 
-Event timestamps are integer engine milliseconds. The convenience capture
-methods use the current engine tick count. Providers should preserve the event
-timestamp when translating it to a backend format.
+`timestamp_msec` is an integer Unix timestamp in milliseconds. The separate
+`engine_ticks_msec` value is the monotonic engine tick associated with the
+event and is used for elapsed-time behavior such as log rate limiting.
+
+The service resolves missing timestamps once at the capture boundary. An
+explicit nonnegative `timestamp_msec` is preserved. When only
+`engine_ticks_msec` is supplied, the service converts it using a contemporaneous
+wall-clock/engine-tick pair. When both are missing, the service records the
+current values as a pair. Providers should map `timestamp_msec` to their
+backend's native occurrence timestamp and preserve engine ticks as diagnostic
+metadata when useful.
 
 ### Defensive copies
 
@@ -158,7 +166,7 @@ Public fields:
 | dist | String | Optional distribution variant |
 | logs_enabled | bool | Whether structured logs are accepted; enabled by default |
 | log_minimum_level | int | Lowest structured-log severity accepted; TRACE by default |
-| log_rate_limit_per_second | int | Maximum accepted logs per timestamp second; zero means unlimited |
+| log_rate_limit_per_second | int | Maximum accepted logs per monotonic engine-tick second; zero means unlimited |
 | metrics_enabled | bool | Whether custom metrics are accepted; enabled by default |
 | metric_sample_rate | float | Deterministic accepted fraction from 0.0 through 1.0 |
 | metric_filter | Callable | Optional predicate receiving each normalized metric before sampling |
@@ -176,10 +184,10 @@ to provider implementations through the config object.
 
 Structured logs are enabled by default independently of messages and
 exceptions. The core applies log_minimum_level and log_rate_limit_per_second
-before dispatch. The rate limit uses each record's timestamp_msec in a fixed
-one-second window; a zero limit is unlimited. A disabled log configuration or a
-record below the configured level returns an empty ID without calling the
-provider.
+before dispatch. The rate limit uses each record's monotonic
+engine_ticks_msec in a fixed one-second window; a zero limit is unlimited. A
+disabled log configuration or a record below the configured level returns an
+empty ID without calling the provider.
 
 Metrics are independently enabled by default. metric_sample_rate must be finite
 and between 0.0 and 1.0 inclusive; invalid configuration returns
@@ -231,9 +239,10 @@ ObservabilityEvent.new(
 		p_level: int = ObservabilityLevel.INFO,
 		p_message: String = "",
 		p_source: StringName = &"",
-		p_timestamp_msec: int = 0,
+		p_timestamp_msec: int = -1,
 		p_attributes: Dictionary = {},
 		p_exception: ObservabilityException? = null,
+		p_engine_ticks_msec: int = -1,
 )
 ~~~
 
@@ -245,9 +254,10 @@ Fields:
 | level | ObservabilityLevel value or another provider-defined integer |
 | message | Human-readable event text |
 | source | Subsystem that produced the event |
-| timestamp_msec | Engine timestamp in milliseconds |
+| timestamp_msec | Unix epoch timestamp in milliseconds; -1 means unresolved |
 | attributes | Structured fields copied into the event |
 | exception | Optional exception payload |
+| engine_ticks_msec | Monotonic engine tick in milliseconds; -1 means unavailable |
 
 Accessors:
 
@@ -257,12 +267,15 @@ func level() -> int
 func message() -> String
 func source() -> StringName
 func timestamp_msec() -> int
+func engine_ticks_msec() -> int
 func attributes() -> Dictionary
 func exception() -> ObservabilityException?
 ~~~
 
 attributes are deep-copied on construction and access. exception is optional and
-is returned as the original payload object.
+is returned as the original payload object. Every event field is final after
+construction; timestamp resolution creates a new normalized event rather than
+mutating the caller's event.
 
 ## ObservabilityFeedback
 
@@ -402,7 +415,7 @@ abstract func provider_name() -> StringName
 abstract func last_error() -> int
 abstract func capture_event(event: ObservabilityEvent) -> String
 abstract func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String
-abstract func capture_log(message: String, level: int = ObservabilityLevel.INFO, source: StringName = &"game", timestamp_msec: int = -1, attributes: Dictionary = {}) -> String
+abstract func capture_log(message: String, level: int = ObservabilityLevel.INFO, source: StringName = &"game", timestamp_msec: int = -1, attributes: Dictionary = {}, engine_ticks_msec: int = -1) -> String
 abstract func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String
 abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
 abstract func capture_metric(metric: ObservabilityMetric) -> bool
@@ -488,7 +501,7 @@ Creates an event with:
 - the requested level
 - the supplied message
 - source game
-- the current engine timestamp
+- the current Unix timestamp and monotonic engine tick, captured together
 - the supplied attributes
 - no exception payload
 
@@ -515,15 +528,17 @@ func capture_log(
 		source: StringName = &"game",
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
+		engine_ticks_msec: int = -1,
 ) -> String
 ~~~
 
 Creates a first-class structured log record. It preserves the supplied source,
-timestamp, level, and scalar attributes. The core passes both per-record
-attributes and ObservabilityConfig global attributes to provider integrations;
-providers decide how to merge or map them. A timestamp of -1 uses the current
-engine tick count. Log records remain distinct from message and exception
-events.
+Unix timestamp, monotonic engine tick, level, and scalar attributes. The core
+passes both per-record attributes and ObservabilityConfig global attributes to
+provider integrations; providers decide how to merge or map them. A
+`timestamp_msec` of -1 is derived from `engine_ticks_msec` when one was
+supplied; otherwise both missing values resolve to the current capture-time
+pair. Log records remain distinct from message and exception events.
 
 Example:
 
@@ -655,9 +670,9 @@ func capture_exception(
 ~~~
 
 A null exception returns an empty ID and stores Error.FAILED. Otherwise it
-creates an event with kind exception, level ERROR, source game, current engine
-timestamp, exception.message() as the message, the supplied attributes, and the
-exception payload.
+creates an event with kind exception, level ERROR, source game, the current Unix
+timestamp and monotonic engine tick captured together, exception.message() as
+the message, the supplied attributes, and the exception payload.
 
 Example:
 
@@ -783,9 +798,14 @@ Eligible records are sent through FoundryObservability.capture_log() with:
 | source | foundry.logging |
 | level | Explicit LogLevel mapping below |
 | message | LogFormatter.render_message(record) |
-| timestamp | record.timestamp_msec |
+| timestamp_msec | Derived Unix epoch milliseconds |
+| engine_ticks_msec | record.timestamp_msec |
 | attributes | Deep copy of record.fields plus logger_name |
 | exception | null |
+
+FoundryLib records use monotonic engine ticks. The service retains the original
+tick and derives the wall-clock occurrence time from the wall/tick pair read
+when the record is captured.
 
 Level mapping:
 
@@ -811,8 +831,14 @@ error events. Apple uses Sentry Cocoa 9.23.0 and enables `SentrySDK.logger`;
 Android uses Sentry Android 8.50.1 and enables `Sentry.logger()` through
 `SentryLogParameters` and `SentryAttributes.fromMap`. Both bridges preserve
 the normalized level, message, source, timestamp, global attributes, and
-per-record scalar attributes. Reserved metadata is also available as
-`foundry.kind`, `foundry.source`, and `foundry.timestamp_msec` attributes.
+per-record scalar attributes. Ordinary events explicitly set Sentry's native
+occurrence timestamp from `timestamp_msec`. Reserved metadata is also available
+as `foundry.kind`, `foundry.source`, `foundry.timestamp_msec`, and
+`foundry.engine_ticks_msec` attributes.
+
+The native structured-log APIs do not accept an occurrence timestamp, so log
+timestamps are retained in the reserved metadata instead of being assigned to a
+native log timestamp field.
 
 The Sentry SDK owns batching and delivery queues; `FoundryObservability.flush()`
 forwards to the native bridge. An enabled configuration with structured logs
