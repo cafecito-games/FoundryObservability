@@ -382,6 +382,101 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertNil(frames[0].postContext)
     }
 
+    func testSanitizesAndCopiesNestedFrameVariables() {
+        let nested = NSMutableDictionary()
+        nested["kept"] = "nested value"
+        nested[NSNumber(value: 7)] = "discarded key"
+        nested["unsupported"] = NSObject()
+        nested["nan"] = Double.nan
+
+        let list = NSMutableArray()
+        list.add("list value")
+        list.add(Int64(2))
+        list.add(Double.infinity)
+        list.add(NSObject())
+
+        let cycle = NSMutableDictionary()
+        cycle["kept"] = "cycle value"
+        cycle["self"] = cycle
+
+        let repeated = NSMutableArray(array: ["repeated value"])
+        let variables = NSMutableDictionary()
+        variables["nested"] = nested
+        variables["list"] = list
+        variables["cycle"] = cycle
+        variables["first_repeat"] = repeated
+        variables["second_repeat"] = repeated
+        variables["finite_number"] = NSNumber(value: 2.5)
+        variables["positive_infinity"] = Float.infinity
+
+        let event = eventWithFrameVariables(variables, file: "res://variables.fs")
+
+        nested["kept"] = "mutated nested value"
+        list[0] = "mutated list value"
+        cycle["kept"] = "mutated cycle value"
+        repeated[0] = "mutated repeated value"
+
+        guard let sanitized = event.exceptions?.first?.stacktrace?.frames.first?.vars else {
+            XCTFail("Expected sanitized frame variables")
+            return
+        }
+        let nestedCopy = sanitized["nested"] as? [String: Any]
+        XCTAssertEqual(nestedCopy?["kept"] as? String, "nested value")
+        XCTAssertEqual(nestedCopy?.count, 1)
+
+        let listCopy = sanitized["list"] as? [Any]
+        XCTAssertEqual(listCopy?.count, 2)
+        XCTAssertEqual(listCopy?[0] as? String, "list value")
+        XCTAssertEqual(listCopy?[1] as? Int64, 2)
+
+        let cycleCopy = sanitized["cycle"] as? [String: Any]
+        XCTAssertEqual(cycleCopy?["kept"] as? String, "cycle value")
+        XCTAssertFalse(cycleCopy?.keys.contains("self") ?? true)
+
+        let repeatedCopies = ["first_repeat", "second_repeat"].compactMap {
+            sanitized[$0] as? [Any]
+        }
+        XCTAssertEqual(repeatedCopies.count, 1)
+        XCTAssertEqual(repeatedCopies.first?.first as? String, "repeated value")
+        XCTAssertEqual((sanitized["finite_number"] as? NSNumber)?.doubleValue, 2.5)
+        XCTAssertNil(sanitized["positive_infinity"])
+    }
+
+    func testBoundsFrameVariableDepthAndExaminedItemCount() {
+        var itemVariables: [String: Any] = [:]
+        for index in 0..<257 {
+            itemVariables["item\(index)"] = index
+        }
+        let itemEvent = eventWithFrameVariables(itemVariables, file: "res://items.fs")
+        XCTAssertEqual(
+            itemEvent.exceptions?.first?.stacktrace?.frames.first?.vars?.count,
+            256
+        )
+
+        let depthVariables = NSMutableDictionary()
+        var current = depthVariables
+        for _ in 0..<9 {
+            let child = NSMutableDictionary()
+            current["child"] = child
+            current = child
+        }
+        current["leaf"] = "discarded"
+
+        let depthEvent = eventWithFrameVariables(depthVariables, file: "res://depth.fs")
+        guard var sanitized = depthEvent.exceptions?.first?.stacktrace?.frames.first?.vars else {
+            XCTFail("Expected depth-bounded variables")
+            return
+        }
+        for _ in 0..<8 {
+            guard let child = sanitized["child"] as? [String: Any] else {
+                XCTFail("Expected nested container through depth 8")
+                return
+            }
+            sanitized = child
+        }
+        XCTAssertNil(sanitized["child"])
+    }
+
     func testStringOnlyExceptionHasNoStructuredStacktrace() {
         let payload = foundryExceptionPayload([
             "type_name": "InvalidState",
@@ -405,5 +500,25 @@ final class SentryEventMapperTests: XCTestCase {
 
         XCTAssertEqual(event.extra?["foundry.stack_trace"] as? String, "at Player.attack()")
         XCTAssertNil(event.exceptions?.first?.stacktrace)
+    }
+
+    private func eventWithFrameVariables(_ variables: Any, file: String) -> Event {
+        let payload = foundryExceptionPayload([
+            "type_name": "InvalidState",
+            "message": "bad state",
+            "frames": [[
+                "file": file,
+                "variables": variables,
+            ]],
+        ])
+        return makeSentryEvent(
+            message: "boom",
+            level: 50,
+            source: "combat",
+            kind: "exception",
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: 4567,
+            exception: payload
+        )
     }
 }

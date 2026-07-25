@@ -1,6 +1,9 @@
 import Foundation
 import Sentry
 
+private let foundryVariableMaxContainerDepth = 8
+private let foundryVariableMaxItemCount = 256
+
 func sentryLogLevel(for level: Int) -> SentryLog.Level {
     switch level {
     case 10:
@@ -191,7 +194,7 @@ private func foundryStackFramePayloads(_ value: Any?) -> [FoundryStackFramePaylo
         let contextLine = foundryNonEmptyString(dictionary["context_line"])
         let preContext = contextLine == nil ? nil : foundryStringArray(dictionary["pre_context"])
         let postContext = contextLine == nil ? nil : foundryStringArray(dictionary["post_context"])
-        let variables = foundryNonEmptyDictionary(dictionary["variables"])
+        let variables = foundrySanitizedVariables(dictionary["variables"])
         let frame = FoundryStackFramePayload(
             file: foundryNonEmptyString(dictionary["file"]),
             function: foundryNonEmptyString(dictionary["function"]),
@@ -222,11 +225,133 @@ private func foundryDictionary(_ value: Any?) -> [String: Any]? {
     value as? [String: Any]
 }
 
-private func foundryNonEmptyDictionary(_ value: Any?) -> [String: Any]? {
-    guard let dictionary = foundryDictionary(value), !dictionary.isEmpty else {
+private func foundrySanitizedVariables(_ value: Any?) -> [String: Any]? {
+    guard
+        let value,
+        let dictionary = foundrySanitizedVariableDictionary(
+            value,
+            depth: 0,
+            state: FoundryVariableCopyState()
+        ),
+        !dictionary.isEmpty
+    else {
         return nil
     }
     return dictionary
+}
+
+private func foundrySanitizedVariableDictionary(
+    _ value: Any,
+    depth: Int,
+    state: FoundryVariableCopyState
+) -> [String: Any]? {
+    guard
+        depth <= foundryVariableMaxContainerDepth,
+        let dictionary = value as? NSDictionary,
+        state.visit(dictionary)
+    else {
+        return nil
+    }
+
+    var result: [String: Any] = [:]
+    for (rawKey, rawValue) in dictionary {
+        guard state.consumeItem() else {
+            break
+        }
+        guard
+            let key = rawKey as? String,
+            let copied = foundrySanitizedVariableValue(
+                rawValue,
+                parentDepth: depth,
+                state: state
+            )
+        else {
+            continue
+        }
+        result[key] = copied
+    }
+    return result
+}
+
+private func foundrySanitizedVariableArray(
+    _ value: Any,
+    depth: Int,
+    state: FoundryVariableCopyState
+) -> [Any]? {
+    guard
+        depth <= foundryVariableMaxContainerDepth,
+        let array = value as? NSArray,
+        state.visit(array)
+    else {
+        return nil
+    }
+
+    var result: [Any] = []
+    for rawValue in array {
+        guard state.consumeItem() else {
+            break
+        }
+        if let copied = foundrySanitizedVariableValue(
+            rawValue,
+            parentDepth: depth,
+            state: state
+        ) {
+            result.append(copied)
+        }
+    }
+    return result
+}
+
+private func foundrySanitizedVariableValue(
+    _ value: Any,
+    parentDepth: Int,
+    state: FoundryVariableCopyState
+) -> Any? {
+    if let value = value as? String {
+        return value
+    }
+    if let number = value as? NSNumber {
+        let typeID = CFGetTypeID(number)
+        if typeID == CFBooleanGetTypeID() {
+            return number.boolValue
+        }
+        guard typeID == CFNumberGetTypeID(), number.doubleValue.isFinite else {
+            return nil
+        }
+        return number
+    }
+    if value is NSDictionary {
+        return foundrySanitizedVariableDictionary(
+            value,
+            depth: parentDepth + 1,
+            state: state
+        )
+    }
+    if value is NSArray {
+        return foundrySanitizedVariableArray(
+            value,
+            depth: parentDepth + 1,
+            state: state
+        )
+    }
+    return nil
+}
+
+private final class FoundryVariableCopyState {
+    private var visited: Set<ObjectIdentifier> = []
+    private var itemCount = 0
+
+    func visit(_ container: AnyObject) -> Bool {
+        visited.insert(ObjectIdentifier(container)).inserted
+    }
+
+    func consumeItem() -> Bool {
+        guard itemCount < foundryVariableMaxItemCount else {
+            return false
+        }
+        itemCount += 1
+        return true
+    }
 }
 
 private func foundryStringArray(_ value: Any?) -> [String]? {
