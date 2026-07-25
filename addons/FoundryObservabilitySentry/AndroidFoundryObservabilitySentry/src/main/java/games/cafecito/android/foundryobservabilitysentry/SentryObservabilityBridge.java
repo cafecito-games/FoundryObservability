@@ -238,17 +238,23 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
   static void applyAndroidAnrDiagnostics(
       SentryAndroidOptions options,
       Map<?, ?> payload) {
-    Object anrDetectionEnabled = payload.get("android_anr_detection_enabled");
-    if (anrDetectionEnabled instanceof Boolean) {
-      options.setAnrEnabled((Boolean) anrDetectionEnabled);
+    if (payload.containsKey("android_anr_detection_enabled")) {
+      Object anrDetectionEnabled = payload.get("android_anr_detection_enabled");
+      if (anrDetectionEnabled instanceof Boolean) {
+        options.setAnrEnabled((Boolean) anrDetectionEnabled);
+      }
     }
-    Long anrTimeoutMsec = exactDiagnosticLong(payload.get("android_anr_timeout_msec"));
-    if (anrTimeoutMsec != null) {
-      options.setAnrTimeoutIntervalMillis(anrTimeoutMsec);
+    if (payload.containsKey("android_anr_timeout_msec")) {
+      Long anrTimeoutMsec = exactDiagnosticLong(payload.get("android_anr_timeout_msec"));
+      if (anrTimeoutMsec != null) {
+        options.setAnrTimeoutIntervalMillis(anrTimeoutMsec);
+      }
     }
-    Object attachAnrThreadDump = payload.get("android_anr_attach_thread_dump");
-    if (attachAnrThreadDump instanceof Boolean) {
-      options.setAttachAnrThreadDump((Boolean) attachAnrThreadDump);
+    if (payload.containsKey("android_anr_attach_thread_dump")) {
+      Object attachAnrThreadDump = payload.get("android_anr_attach_thread_dump");
+      if (attachAnrThreadDump instanceof Boolean) {
+        options.setAttachAnrThreadDump((Boolean) attachAnrThreadDump);
+      }
     }
   }
 
