@@ -89,7 +89,8 @@ func capture(event: ObservabilityEvent) -> String:
 			"message": event.message(),
 			"source": String(event.source()),
 			"timestamp_msec": event.timestamp_msec(),
-				"attributes": event.attributes(),
+			"engine_ticks_msec": event.engine_ticks_msec(),
+			"attributes": event.attributes(),
 		}
 	var exception: ObservabilityException? = event.exception()
 	if exception != null:
