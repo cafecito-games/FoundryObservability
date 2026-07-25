@@ -234,17 +234,13 @@ class SentryObservabilityBridge: RefCounted {
 
         let values = foundationDictionary(from: payload)
         let timestampMsec = Int64(intValue(values["timestamp_msec"]))
-        let breadcrumb = Breadcrumb()
-        breadcrumb.message = stringValue(values["message"])
-        breadcrumb.category = stringValue(values["category"])
-        breadcrumb.level = sentryLevel(for: intValue(values["level"]))
-        breadcrumb.timestamp = Date(
-            timeIntervalSince1970: Double(timestampMsec) / 1000.0
-        )
-        breadcrumb.data = sentryBreadcrumbData(
-            global: globalAttributes,
-            breadcrumb: dictionaryValue(values["attributes"]),
-            timestampMsec: timestampMsec
+        let breadcrumb = makeSentryBreadcrumb(
+            message: stringValue(values["message"]),
+            level: intValue(values["level"]),
+            category: stringValue(values["category"]),
+            timestampMsec: timestampMsec,
+            globalAttributes: globalAttributes,
+            breadcrumbAttributes: dictionaryValue(values["attributes"])
         )
         SentrySDK.addBreadcrumb(breadcrumb)
         return true

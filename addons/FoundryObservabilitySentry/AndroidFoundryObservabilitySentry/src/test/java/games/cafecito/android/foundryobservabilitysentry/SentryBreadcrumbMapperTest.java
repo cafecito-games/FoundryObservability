@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 
 import io.sentry.Breadcrumb;
 import io.sentry.SentryLevel;
+import java.util.Date;
 import java.util.Map;
 import org.junit.Test;
 
@@ -32,7 +33,8 @@ public class SentryBreadcrumbMapperTest {
   }
 
   @Test
-  public void buildsBreadcrumbWithNormalizedFields() {
+  public void buildsBreadcrumbWithWallClockTimestampAndEngineTickData() {
+    Date wallClock = new Date(1_700_000_000_000L);
     Breadcrumb result = SentryBreadcrumbMapper.makeBreadcrumb(
         Map.of(
             "message", "warning",
@@ -40,13 +42,15 @@ public class SentryBreadcrumbMapperTest {
             "level", 40,
             "timestamp_msec", 1234L,
             "attributes", Map.of("error.file", "res://player.fs")),
-        Map.of("build", 42L));
+        Map.of("build", 42L),
+        wallClock);
 
     assertEquals("warning", result.getMessage());
     assertEquals("error", result.getCategory());
     assertEquals(SentryLevel.WARNING, result.getLevel());
-    assertEquals(1234L, result.getTimestamp().getTime());
+    assertEquals(wallClock, result.getTimestamp());
     assertEquals("res://player.fs", result.getData("error.file"));
     assertEquals(42L, result.getData("build"));
+    assertEquals(1234L, result.getData("foundry.timestamp_msec"));
   }
 }

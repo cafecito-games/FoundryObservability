@@ -1001,10 +1001,10 @@ The optional Sentry provider implements ObservabilityBreadcrumbsProvider and
 maps normalized breadcrumbs directly to native Sentry breadcrumbs. Apple uses
 Sentry Cocoa 9.23.0 `Breadcrumb` and `SentrySDK.addBreadcrumb`; Android uses
 Sentry Android 8.50.1 `Breadcrumb` and `Sentry.addBreadcrumb`. Both preserve
-message, normalized level, category, timestamp, global attributes, and
-per-breadcrumb attributes. Per-breadcrumb values override matching global
-values, and the normalized timestamp is retained as reserved
-`foundry.timestamp_msec` data.
+message, normalized level, category, global attributes, and per-breadcrumb
+attributes. Per-breadcrumb values override matching global values. The native
+SDK timestamp records wall-clock receipt time; the normalized engine uptime is
+retained as reserved `foundry.timestamp_msec` data.
 
 Breadcrumb support remains optional at both provider boundaries. A provider
 without ObservabilityBreadcrumbsProvider, or an older Sentry native bridge

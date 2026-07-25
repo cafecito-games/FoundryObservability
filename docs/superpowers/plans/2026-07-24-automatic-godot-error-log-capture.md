@@ -281,12 +281,18 @@ func _end_provider_call() -> void:
 	_provider_call_count = maxi(0, _provider_call_count - 1)
 	_pipeline_mutex.unlock()
 
-func automatic_capture_blocked() -> bool:
-	if _pipeline_mutex.try_lock() != Error.OK:
-		return true
-	var blocked: bool = _provider_call_count > 0
+func try_begin_automatic_capture() -> bool:
+	if not _pipeline_mutex.try_lock():
+		return false
+	if _provider_call_count > 0:
+		_pipeline_mutex.unlock()
+		return false
+	_provider_call_count += 1
 	_pipeline_mutex.unlock()
-	return blocked
+	return true
+
+func end_automatic_capture() -> void:
+	_end_provider_call()
 ```
 
 Wrap provider `configure`, event, breadcrumb, feedback, metric, flush, and
@@ -440,7 +446,9 @@ serialized backtrace dictionaries; render a deterministic stack string; then
 independently call `capture_exception`, `capture_breadcrumb`, and
 `capture_log` based on masks.
 
-Before work, return when `_service.automatic_capture_blocked()` is true.
+Before work, continue only when `_service.try_begin_automatic_capture()` returns
+true, and always release that reservation with
+`_service.end_automatic_capture()` after the callback.
 Never call engine logging from this class.
 
 - [ ] **Step 5: Normalize message callbacks**
@@ -813,9 +821,7 @@ func captureBreadcrumb(payload: VariantDictionary) -> Bool {
     breadcrumb.message = stringValue(values["message"])
     breadcrumb.category = stringValue(values["category"])
     breadcrumb.level = sentryLevel(for: intValue(values["level"]))
-    breadcrumb.timestamp = Date(
-        timeIntervalSince1970: Double(intValue(values["timestamp_msec"])) / 1000.0
-    )
+    breadcrumb.timestamp = Date()
     breadcrumb.data = sentryBreadcrumbData(
         global: globalAttributes,
         breadcrumb: dictionaryValue(values["attributes"]),

@@ -2,6 +2,7 @@ package games.cafecito.android.foundryobservabilitysentry;
 
 import io.sentry.Breadcrumb;
 import io.sentry.SentryLevel;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -39,9 +40,16 @@ final class SentryBreadcrumbMapper {
   static Breadcrumb makeBreadcrumb(
       Map<?, ?> payload,
       Map<String, Object> globalAttributes) {
+    return makeBreadcrumb(payload, globalAttributes, new Date());
+  }
+
+  static Breadcrumb makeBreadcrumb(
+      Map<?, ?> payload,
+      Map<String, Object> globalAttributes,
+      Date sdkTimestamp) {
     Map<?, ?> values = payload == null ? Map.of() : payload;
     long timestampMsec = longValue(values.get("timestamp_msec"), 0L);
-    Breadcrumb breadcrumb = new Breadcrumb(timestampMsec);
+    Breadcrumb breadcrumb = new Breadcrumb(sdkTimestamp);
     breadcrumb.setMessage(stringValue(values.get("message")));
     breadcrumb.setCategory(stringValue(values.get("category")));
     breadcrumb.setLevel(sentryLevel(intValue(values.get("level"), 50)));

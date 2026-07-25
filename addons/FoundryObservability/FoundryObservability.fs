@@ -475,13 +475,21 @@ func _end_provider_call() -> void:
 	_pipeline_mutex.unlock()
 
 
-## Reports whether an automatic logger callback would re-enter provider work.
-func automatic_capture_blocked() -> bool:
+## Atomically reserves the provider pipeline for one automatic logger callback.
+func try_begin_automatic_capture() -> bool:
 	if not _pipeline_mutex.try_lock():
-		return true
-	var blocked: bool = _provider_call_count > 0
+		return false
+	if _provider_call_count > 0:
+		_pipeline_mutex.unlock()
+		return false
+	_provider_call_count += 1
 	_pipeline_mutex.unlock()
-	return blocked
+	return true
+
+
+## Releases a successful automatic logger callback reservation.
+func end_automatic_capture() -> void:
+	_end_provider_call()
 
 
 func _refresh_automatic_logger() -> void:

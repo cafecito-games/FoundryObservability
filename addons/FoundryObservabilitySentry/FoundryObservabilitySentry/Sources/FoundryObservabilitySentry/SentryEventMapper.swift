@@ -73,6 +73,28 @@ func sentryBreadcrumbData(
     return data
 }
 
+func makeSentryBreadcrumb(
+    message: String,
+    level: Int,
+    category: String,
+    timestampMsec: Int64,
+    sdkTimestamp: Date = Date(),
+    globalAttributes: [String: Any] = [:],
+    breadcrumbAttributes: [String: Any] = [:]
+) -> Breadcrumb {
+    let breadcrumb = Breadcrumb()
+    breadcrumb.message = message
+    breadcrumb.category = category
+    breadcrumb.level = sentryLevel(for: level)
+    breadcrumb.timestamp = sdkTimestamp
+    breadcrumb.data = sentryBreadcrumbData(
+        global: globalAttributes,
+        breadcrumb: breadcrumbAttributes,
+        timestampMsec: timestampMsec
+    )
+    return breadcrumb
+}
+
 func sentryMetricAttributes(_ attributes: [String: Any]) -> [String: SentryAttributeValue] {
     var result: [String: SentryAttributeValue] = [:]
     for (key, value) in attributes {

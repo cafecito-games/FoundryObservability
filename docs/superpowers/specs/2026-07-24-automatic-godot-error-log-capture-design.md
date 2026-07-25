@@ -189,7 +189,8 @@ Per-frame and sliding-window limits affect events only. If an event is
 throttled, an independently enabled breadcrumb or structured log may still be
 captured. The duplicate timestamp is recorded only when at least one
 destination accepts the error, so fully masked records do not consume the
-repeated-error window.
+repeated-error window. Provider-rejected records likewise do not consume
+duplicate, per-frame, or sliding-window capacity.
 
 Configuration and provider replacement reset all automatic-capture throttle
 state.
@@ -197,10 +198,10 @@ state.
 ## Recursion and lifecycle safety
 
 All provider calls are wrapped by a non-blocking service-level pipeline guard.
-The automatic logger checks that guard before normalizing or delivering a
-record. If provider configuration, capture, flush, shutdown, or bridge code
-emits another engine error synchronously, the nested logger callback returns
-without reporting it.
+The automatic logger atomically reserves that guard before normalizing or
+delivering a record and releases it afterward. If provider configuration,
+capture, flush, shutdown, or bridge code emits another engine error
+synchronously, the nested logger callback returns without reporting it.
 
 The guard is deliberately process-wide for the service. A concurrent automatic
 diagnostic is dropped while the provider pipeline is active rather than
@@ -238,17 +239,20 @@ does not duplicate masks or throttling.
 
 ### Apple bridge
 
-The Swift bridge maps normalized breadcrumb level, message, category,
-timestamp, global attributes, and breadcrumb attributes to Sentry Cocoa's
-breadcrumb API. Per-record attributes override globals, while reserved Foundry
-metadata is written last. The bridge returns `true` once the breadcrumb is
-accepted by the SDK.
+The Swift bridge maps normalized breadcrumb level, message, category, global
+attributes, and breadcrumb attributes to Sentry Cocoa's breadcrumb API.
+The SDK timestamp uses wall-clock receipt time because the normalized timestamp
+is engine uptime rather than Unix epoch time. Engine uptime remains available
+as reserved `foundry.timestamp_msec` data. Per-record attributes override
+globals, while reserved Foundry metadata is written last. The bridge returns
+`true` once the breadcrumb is accepted by the SDK.
 
 ### Android bridge
 
 The Java bridge maps the same payload to Sentry Android's `Breadcrumb`, using
-the same attribute precedence and normalized levels. It returns `true` after
-adding the breadcrumb to the active Sentry scope.
+the same attribute precedence, normalized levels, wall-clock receipt time, and
+reserved engine-uptime metadata. It returns `true` after adding the breadcrumb
+to the active Sentry scope.
 
 The existing event, structured-log, feedback, metric, flush, and shutdown
 bridge behavior remains unchanged.

@@ -583,6 +583,35 @@ func test_automatic_logger_suppresses_duplicate_errors_deterministically() -> vo
 	service.shutdown()
 
 
+func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RejectingObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 1000,
+			p_automatic_events_per_frame = 1,
+			p_automatic_event_throttle_count = 1,
+			p_automatic_event_throttle_window_msec = 1000,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1000, func() -> int: return 1)
+
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+
+	Expect.that(provider.capture_count).to_equal(4)
+	Expect.that(provider.breadcrumb_count).to_equal(2)
+	service.shutdown()
+
+
 func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
@@ -664,6 +693,16 @@ func test_automatic_logger_bounds_identity_state_and_resets_limits() -> void:
 	service.shutdown()
 
 
+func test_automatic_capture_reservation_is_atomic() -> void:
+	var service: FoundryObservability = _service()
+
+	Expect.that(service.try_begin_automatic_capture()).to_be_true()
+	Expect.that(service.try_begin_automatic_capture()).to_be_false()
+	service.end_automatic_capture()
+	Expect.that(service.try_begin_automatic_capture()).to_be_true()
+	service.end_automatic_capture()
+
+
 func test_automatic_capture_installs_only_after_successful_enabled_configuration() -> void:
 	TestContext.current().stop_diagnostics()
 	var service: FoundryObservability = _service()
@@ -689,6 +728,12 @@ func test_automatic_capture_installs_only_after_successful_enabled_configuration
 	push_error("automatic enabled")
 	Expect.that(provider.events()).to_have_size(1)
 	Expect.that(provider.events()[0].message()).to_equal("automatic enabled")
+
+	failing.configure_result = Error.FAILED
+	Expect.that(service.configure(failing, ObservabilityConfig.new())).to_equal(Error.FAILED)
+	push_error("failed active replacement")
+	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.events()[1].message()).to_equal("failed active replacement")
 	service.shutdown()
 
 
@@ -698,12 +743,14 @@ func test_automatic_capture_reconfigures_without_duplicate_logger_registration()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
-	push_error("same diagnostic")
+	_push_test_error("same diagnostic")
 	Expect.that(provider.events()).to_have_size(1)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
-	push_error("same diagnostic")
+	_push_test_error("same diagnostic")
 	Expect.that(provider.events()).to_have_size(2)
+	_push_test_error("new diagnostic")
+	Expect.that(provider.events()).to_have_size(3)
 	service.shutdown()
 
 
@@ -738,7 +785,7 @@ func test_automatic_capture_blocks_provider_generated_diagnostic_recursion() -> 
 		)
 
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	push_error("outer diagnostic")
+	Expect.that(service.capture_message("outer diagnostic")).to_equal("reentrant:1")
 	Expect.that(provider.capture_count).to_equal(1)
 	service.shutdown()
 
@@ -997,6 +1044,10 @@ func test_shutdown_is_idempotent() -> void:
 func _service() -> FoundryObservability:
 	var tree: SceneTree = Engine.get_main_loop() as SceneTree
 	return tree.root.get_node("FoundryObservability") as FoundryObservability
+
+
+func _push_test_error(message: String) -> void:
+	push_error(message)
 
 
 func _repeated(value: String, count: int) -> String:

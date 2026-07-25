@@ -47,8 +47,31 @@ func _log_error(
 		error_type: int,
 		script_backtraces: Array[ScriptBacktrace],
 ) -> void:
-	if _service == null or _service.automatic_capture_blocked():
+	if _service == null or not _service.try_begin_automatic_capture():
 		return
+	_capture_error(
+			function_name,
+			file,
+			line,
+			code,
+			rationale,
+			editor_notify,
+			error_type,
+			script_backtraces,
+		)
+	_service.end_automatic_capture()
+
+
+func _capture_error(
+		function_name: String,
+		file: String,
+		line: int,
+		code: String,
+		rationale: String,
+		editor_notify: bool,
+		error_type: int,
+		script_backtraces: Array[ScriptBacktrace],
+) -> void:
 
 	var category_mask: int = _category_mask(error_type)
 	var level: int = _error_level(error_type)
@@ -86,11 +109,6 @@ func _log_error(
 			and _config.automatic_event_throttle_window_msec > 0 \
 			and _event_timepoints.size() >= _config.automatic_event_throttle_count:
 		as_event = false
-	if as_event:
-		_frame_event_count += 1
-		_event_timepoints.append(timestamp_msec)
-	if as_event or as_breadcrumb or as_log:
-		_error_timepoints[error_key] = timestamp_msec
 	_state_mutex.unlock()
 
 	var backtrace_payload: Dictionary = _serialize_backtraces(script_backtraces)
@@ -106,8 +124,11 @@ func _log_error(
 		"observability.origin": _ORIGIN,
 	}
 
+	var event_accepted: bool = false
+	var breadcrumb_accepted: bool = false
+	var log_accepted: bool = false
 	if as_event:
-		_service.capture_event(ObservabilityEvent.new(
+		event_accepted = not _service.capture_event(ObservabilityEvent.new(
 				p_kind = &"exception",
 				p_level = level,
 				p_message = message,
@@ -120,9 +141,9 @@ func _log_error(
 						p_stack_trace = str(backtrace_payload["stack_trace"]),
 						p_attributes = attributes,
 					),
-			))
+			)).is_empty()
 	if as_breadcrumb:
-		_service.capture_breadcrumb(ObservabilityBreadcrumb.new(
+		breadcrumb_accepted = _service.capture_breadcrumb(ObservabilityBreadcrumb.new(
 				p_message = message,
 				p_level = level,
 				p_category = &"error",
@@ -130,19 +151,33 @@ func _log_error(
 				p_attributes = attributes,
 			))
 	if as_log:
-		_service.capture_log(
+		log_accepted = not _service.capture_log(
 				message,
 				level,
 				&"foundry.engine",
 				timestamp_msec,
 				attributes,
-			)
+			).is_empty()
+
+	if not event_accepted and not breadcrumb_accepted and not log_accepted:
+		return
+	_state_mutex.lock()
+	if event_accepted:
+		_frame_event_count += 1
+		_event_timepoints.append(timestamp_msec)
+	_error_timepoints[error_key] = timestamp_msec
+	_state_mutex.unlock()
 
 
 ## Receives ordinary engine output messages.
 func _log_message(message: String, error: bool) -> void:
-	if _service == null or _service.automatic_capture_blocked():
+	if _service == null or not _service.try_begin_automatic_capture():
 		return
+	_capture_message(message, error)
+	_service.end_automatic_capture()
+
+
+func _capture_message(message: String, error: bool) -> void:
 	if (_config.automatic_breadcrumb_mask & ObservabilityCaptureMask.MESSAGE) == 0 \
 			and (_config.automatic_log_mask & ObservabilityCaptureMask.MESSAGE) == 0:
 		return

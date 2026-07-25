@@ -61,11 +61,11 @@ rg -q 'captureLog' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose structured log capture"
 rg -q 'captureBreadcrumb' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose breadcrumb capture"
-rg -q 'Breadcrumb()' "$swift_sources/FoundryObservabilitySentry.swift" \
+rg -q 'Breadcrumb()' "$swift_sources/SentryEventMapper.swift" \
 	|| fail "bridge source must construct Sentry breadcrumbs"
 rg -q 'SentrySDK\.addBreadcrumb' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must submit Sentry breadcrumbs"
-rg -q 'sentryLevel' "$swift_sources/FoundryObservabilitySentry.swift" \
+rg -q 'sentryLevel' "$swift_sources/SentryEventMapper.swift" \
 	|| fail "bridge source must map breadcrumb levels"
 rg -q 'foundry\.timestamp_msec' "$swift_sources/SentryEventMapper.swift" \
 	|| fail "breadcrumb data must preserve its normalized timestamp"
