@@ -16,7 +16,7 @@ var dist: String = ""
 var logs_enabled: bool = true
 ## Filters structured logs below this normalized severity.
 var log_minimum_level: int = ObservabilityLevel.TRACE
-## Limits accepted logs per one-second timestamp window; zero delegates to the provider.
+## Limits accepted logs per one-second monotonic engine-tick window; zero delegates to the provider.
 var log_rate_limit_per_second: int = 0
 ## Enables custom metric capture independently from events and logs.
 var metrics_enabled: bool = true

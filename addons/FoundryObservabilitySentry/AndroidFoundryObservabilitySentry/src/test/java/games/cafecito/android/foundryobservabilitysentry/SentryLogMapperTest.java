@@ -24,13 +24,29 @@ public class SentryLogMapperTest {
     Map<String, Object> global = Map.of("shared", "global", "build", 42L);
     Map<String, Object> event = Map.of("shared", "event", "foundry.kind", "caller");
     Map<String, Object> result = SentryLogMapper.mergedAttributes(
-        global, event, "log", "foundry.logging", 1234L);
+        global, event, "log", "foundry.logging", 1612325106123L, 4567L);
 
     assertEquals("event", result.get("shared"));
     assertEquals(42L, result.get("build"));
     assertEquals("log", result.get("foundry.kind"));
     assertEquals("foundry.logging", result.get("foundry.source"));
-    assertEquals(1234L, result.get("foundry.timestamp_msec"));
+    assertEquals(1612325106123L, result.get("foundry.timestamp_msec"));
+    assertEquals(4567L, result.get("foundry.engine_ticks_msec"));
+  }
+
+  @Test
+  public void unavailableEngineTicksRemoveCallerControlledReservedMetadata() {
+    Map<String, Object> callerAttributes = Map.of("foundry.engine_ticks_msec", 999L);
+
+    Map<String, Object> result = SentryLogMapper.mergedAttributes(
+        callerAttributes,
+        callerAttributes,
+        "log",
+        "game",
+        1612325106123L,
+        -1L);
+
+    assertFalse(result.containsKey("foundry.engine_ticks_msec"));
   }
 
   @Test

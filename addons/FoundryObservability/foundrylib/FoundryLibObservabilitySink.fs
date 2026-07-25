@@ -30,8 +30,9 @@ func emit(record: LogRecord) -> void:
 			LogFormatter.render_message(record),
 			event_level,
 			&"foundry.logging",
-			record.timestamp_msec,
+			-1,
 			attributes,
+			record.timestamp_msec,
 		)
 
 

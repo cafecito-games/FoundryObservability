@@ -26,6 +26,7 @@ abstract func capture_log(
 		source: StringName = &"game",
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
+		engine_ticks_msec: int = -1,
 ) -> String
 ## Captures a normalized breadcrumb through an optional provider capability.
 abstract func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool

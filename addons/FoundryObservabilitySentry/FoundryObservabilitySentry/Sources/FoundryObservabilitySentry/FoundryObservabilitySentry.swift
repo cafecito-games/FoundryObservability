@@ -183,6 +183,7 @@ class SentryObservabilityBridge: RefCounted {
             source: stringValue(values["source"]),
             kind: stringValue(values["kind"]),
             timestampMsec: Int64(intValue(values["timestamp_msec"])),
+            engineTicksMsec: Int64(intValue(values["engine_ticks_msec"])),
             globalAttributes: globalAttributes,
             eventAttributes: dictionaryValue(values["attributes"]),
             exception: exception
@@ -204,7 +205,8 @@ class SentryObservabilityBridge: RefCounted {
             event: dictionaryValue(values["attributes"]),
             kind: stringValue(values["kind"]),
             source: stringValue(values["source"]),
-            timestampMsec: Int64(intValue(values["timestamp_msec"]))
+            timestampMsec: Int64(intValue(values["timestamp_msec"])),
+            engineTicksMsec: Int64(intValue(values["engine_ticks_msec"]))
         ))
         let message = stringValue(values["message"])
         switch sentryLogLevel(for: intValue(values["level"])) {

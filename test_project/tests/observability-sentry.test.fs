@@ -73,9 +73,10 @@ func test_forwards_config_event_and_flush_to_native_bridge() -> void:
 			p_level = ObservabilityLevel.ERROR,
 			p_message = "boom",
 			p_source = &"game",
-			p_timestamp_msec = 1234,
+			p_timestamp_msec = 1721865600123,
 			p_attributes = {"screen": "title"},
 			p_exception = exception,
+			p_engine_ticks_msec = 4567,
 		)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
@@ -84,7 +85,8 @@ func test_forwards_config_event_and_flush_to_native_bridge() -> void:
 	Expect.that(bridge.configured_payload["environment"]).to_equal("production")
 	Expect.that(bridge.configured_payload["global_attributes"]).to_equal({"build": 42})
 	Expect.that(bridge.captured_payloads[0]["kind"]).to_equal("exception")
-	Expect.that(bridge.captured_payloads[0]["timestamp_msec"]).to_equal(1234)
+	Expect.that(bridge.captured_payloads[0]["timestamp_msec"]).to_equal(1721865600123)
+	Expect.that(bridge.captured_payloads[0]["engine_ticks_msec"]).to_equal(4567)
 	Expect.that(bridge.captured_payloads[0]["exception"]["type_name"]).to_equal("InvalidState")
 	Expect.that(provider.flush(321)).to_equal(Error.OK)
 	Expect.that(bridge.flush_timeouts).to_equal([321])
@@ -104,14 +106,17 @@ func test_routes_log_events_to_native_structured_log_method() -> void:
 			p_level = ObservabilityLevel.WARN,
 			p_message = "missed",
 			p_source = &"foundry.logging",
-			p_timestamp_msec = 1234,
+			p_timestamp_msec = 1721865600123,
 			p_attributes = {"logger_name": "combat", "id": 7},
+			p_exception = null,
+			p_engine_ticks_msec = 4567,
 		)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.capture(event)).to_equal("sentry-log:1")
 	Expect.that(bridge.captured_log_payloads[0]["kind"]).to_equal("log")
-	Expect.that(bridge.captured_log_payloads[0]["timestamp_msec"]).to_equal(1234)
+	Expect.that(bridge.captured_log_payloads[0]["timestamp_msec"]).to_equal(1721865600123)
+	Expect.that(bridge.captured_log_payloads[0]["engine_ticks_msec"]).to_equal(4567)
 	Expect.that(bridge.configured_payload["logs_enabled"]).to_be_true()
 	provider.shutdown()
 

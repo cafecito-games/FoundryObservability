@@ -49,6 +49,54 @@ func test_exception_and_event_copy_attributes() -> void:
 	Expect.that(event.attributes()).to_equal({"scene": "battle"})
 
 
+func test_event_separates_wall_clock_timestamp_and_engine_ticks() -> void:
+	var event := ObservabilityEvent.new(
+			p_timestamp_msec = 1721865600123,
+			p_attributes = {},
+			p_exception = null,
+			p_engine_ticks_msec = 4567,
+		)
+	var epoch := ObservabilityEvent.new(p_timestamp_msec = 0)
+	var missing := ObservabilityEvent.new()
+
+	Expect.that(event.timestamp_msec()).to_equal(1721865600123)
+	Expect.that(event.engine_ticks_msec()).to_equal(4567)
+	Expect.that(epoch.timestamp_msec()).to_equal(0)
+	Expect.that(ObservabilityEvent.UNASSIGNED_TIMESTAMP).to_equal(-1)
+	Expect.that(missing.timestamp_msec()).to_equal(ObservabilityEvent.UNASSIGNED_TIMESTAMP)
+	Expect.that(missing.engine_ticks_msec()).to_equal(-1)
+
+
+func test_converts_engine_ticks_to_unix_epoch_milliseconds() -> void:
+	Expect.that(FoundryObservability._unix_msec_from_engine_ticks(
+			4000, 5000, 1721865600000,
+		)).to_equal(1721865599000)
+	Expect.that(FoundryObservability._unix_msec_from_engine_ticks(
+			6000, 5000, 1721865600000,
+		)).to_equal(1721865601000)
+
+
+func test_capture_preserves_custom_wall_time_and_resolves_missing_time() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+
+	var explicit := ObservabilityEvent.new(p_message = "explicit", p_timestamp_msec = 0)
+	Expect.that(service.capture_event(explicit)).to_equal("memory:1")
+	var before_unix_msec: int = floori(Time.get_unix_time_from_system() * 1000.0)
+	Expect.that(service.capture_event(ObservabilityEvent.new(
+			p_message = "fallback",
+		))).to_equal("memory:2")
+	var after_unix_msec: int = floori(Time.get_unix_time_from_system() * 1000.0)
+
+	Expect.that(provider.events()[0].timestamp_msec()).to_equal(0)
+	var fallback: ObservabilityEvent = provider.events()[1]
+	Expect.that(fallback.timestamp_msec()).not_().to_be_less_than(before_unix_msec)
+	Expect.that(fallback.timestamp_msec()).not_().to_be_greater_than(after_unix_msec)
+	Expect.that(fallback.engine_ticks_msec()).not_().to_be_less_than(0)
+	service.shutdown()
+
+
 func test_config_copies_attributes_and_options() -> void:
 	var attributes := {"build": 42}
 	var options := {"provider_key": "value"}
@@ -385,9 +433,13 @@ func test_memory_provider_captures_messages_and_exceptions() -> void:
 	Expect.that(provider.events()[0].level()).to_equal(ObservabilityLevel.WARN)
 	Expect.that(provider.events()[0].source()).to_equal(&"game")
 	Expect.that(provider.events()[0].attributes()).to_equal({"screen": "title"})
+	Expect.that(provider.events()[0].timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(provider.events()[0].engine_ticks_msec()).not_().to_be_less_than(0)
 	Expect.that(provider.events()[1].kind()).to_equal(&"exception")
 	Expect.that(provider.events()[1].message()).to_equal("boom")
 	Expect.that(provider.events()[1].exception()).to_not_be_null()
+	Expect.that(provider.events()[1].timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(provider.events()[1].engine_ticks_msec()).not_().to_be_less_than(0)
 	service.shutdown()
 
 
@@ -953,9 +1005,15 @@ func test_structured_logs_apply_deterministic_per_second_rate_limit() -> void:
 			p_provider_options = {},
 			p_log_rate_limit_per_second = 1,
 		))).to_equal(Error.OK)
-	Expect.that(service.capture_log("first", ObservabilityLevel.INFO, &"game", 1000)).to_equal("memory:1")
-	Expect.that(service.capture_log("dropped", ObservabilityLevel.INFO, &"game", 1500)).to_equal("")
-	Expect.that(service.capture_log("next window", ObservabilityLevel.INFO, &"game", 2000)).to_equal("memory:2")
+	Expect.that(service.capture_log(
+			"first", ObservabilityLevel.INFO, &"game", -1, {}, 1000,
+		)).to_equal("memory:1")
+	Expect.that(service.capture_log(
+			"dropped", ObservabilityLevel.INFO, &"game", -1, {}, 1500,
+		)).to_equal("")
+	Expect.that(service.capture_log(
+			"next window", ObservabilityLevel.INFO, &"game", -1, {}, 2000,
+		)).to_equal("memory:2")
 	Expect.that(provider.events()).to_have_size(2)
 	service.shutdown()
 
@@ -972,9 +1030,13 @@ func test_disabled_structured_logs_do_not_consume_rate_limit() -> void:
 
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	config.enabled = false
-	Expect.that(service.capture_log("suppressed", ObservabilityLevel.INFO, &"game", 1000)).to_equal("")
+	Expect.that(service.capture_log(
+			"suppressed", ObservabilityLevel.INFO, &"game", -1, {}, 1000,
+		)).to_equal("")
 	config.enabled = true
-	Expect.that(service.capture_log("accepted", ObservabilityLevel.INFO, &"game", 1000)).to_equal("memory:1")
+	Expect.that(service.capture_log(
+			"accepted", ObservabilityLevel.INFO, &"game", -1, {}, 1000,
+		)).to_equal("memory:1")
 	service.shutdown()
 
 
@@ -992,7 +1054,10 @@ func test_direct_structured_log_events_apply_enabled_gate_before_rate_limit() ->
 			p_level = ObservabilityLevel.INFO,
 			p_message = "direct",
 			p_source = &"game",
-			p_timestamp_msec = 1000,
+			p_timestamp_msec = 1721865600123,
+			p_attributes = {},
+			p_exception = null,
+			p_engine_ticks_msec = 1000,
 		)
 
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)

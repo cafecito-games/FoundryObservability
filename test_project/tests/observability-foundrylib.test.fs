@@ -36,7 +36,8 @@ func test_maps_structured_logs_to_observability_events() -> void:
 	Expect.that(event.level()).to_equal(ObservabilityLevel.WARN)
 	Expect.that(event.message()).to_equal("player 7 missed")
 	Expect.that(event.source()).to_equal(&"foundry.logging")
-	Expect.that(event.timestamp_msec()).to_equal(99)
+	Expect.that(event.timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(event.engine_ticks_msec()).to_equal(99)
 	Expect.that(event.attributes()).to_equal({
 			"logger_name": "combat", "id": 7, "weapon": "axe"
 		})
@@ -115,8 +116,9 @@ func test_sink_calls_first_class_log_method() -> void:
 			"message": "player 7 missed",
 			"level": ObservabilityLevel.WARN,
 			"source": &"foundry.logging",
-			"timestamp_msec": 99,
+			"timestamp_msec": -1,
 			"attributes": {"logger_name": "combat", "id": 7},
+			"engine_ticks_msec": 99,
 		})
 
 

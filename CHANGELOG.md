@@ -2,6 +2,9 @@
 
 ## [Unreleased] - 2026-07-24
 
+- Corrected event timestamps to Unix epoch milliseconds across the core and
+  Apple/Android Sentry bridges, preserved monotonic engine ticks separately,
+  and made missing timestamps resolve once to capture time.
 - Bootstrapped the FoundryScript addon, consumer test project, local validation,
   pull-request CI, and semver release packaging.
 - Added the provider-neutral core API with typed events, exceptions,

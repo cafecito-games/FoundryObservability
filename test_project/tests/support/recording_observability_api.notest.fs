@@ -58,6 +58,7 @@ func capture_log(
 		source: StringName = &"game",
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
+		engine_ticks_msec: int = -1,
 ) -> String:
 	captured_logs.append({
 			"message": message,
@@ -65,6 +66,7 @@ func capture_log(
 			"source": source,
 			"timestamp_msec": timestamp_msec,
 			"attributes": attributes.duplicate(true),
+			"engine_ticks_msec": engine_ticks_msec,
 		})
 	return "log:1"
 

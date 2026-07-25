@@ -31,12 +31,18 @@ final class SentryLogMapper {
       Map<?, ?> event,
       String kind,
       String source,
-      long timestampMsec) {
+      long timestampMsec,
+      long engineTicksMsec) {
     Map<String, Object> result = scalarAttributes(global);
     result.putAll(scalarAttributes(event));
     result.put("foundry.kind", safeString(kind));
     result.put("foundry.source", safeString(source));
     result.put("foundry.timestamp_msec", timestampMsec);
+    if (engineTicksMsec >= 0L) {
+      result.put("foundry.engine_ticks_msec", engineTicksMsec);
+    } else {
+      result.remove("foundry.engine_ticks_msec");
+    }
     return result;
   }
 

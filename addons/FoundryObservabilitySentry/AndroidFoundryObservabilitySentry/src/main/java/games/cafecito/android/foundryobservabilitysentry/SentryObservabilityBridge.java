@@ -117,7 +117,8 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
         eventAttributes,
         stringValue(values.get("kind")),
         stringValue(values.get("source")),
-        longValue(values.get("timestamp_msec"), 0L));
+        longValue(values.get("timestamp_msec"), 0L),
+        longValue(values.get("engine_ticks_msec"), -1L));
     SentryLogParameters parameters = SentryLogParameters.create(
         SentryAttributes.fromMap(attributes));
     Sentry.logger().log(
