@@ -13,8 +13,8 @@ The implementation will follow Sentry Godot's split between initialization
 context and capture-time context while preserving the existing
 provider-neutral Foundry Observability API. Collection will happen in
 FoundryScript, where the same Godot APIs and field semantics are available on
-all target platforms. The Swift and Java bridges will only sanitize, merge,
-and attach the resulting dictionaries to their native Sentry objects.
+all target platforms. The Swift and Java bridges will only sanitize and attach
+the resulting dictionaries to native Sentry scopes.
 
 Reference:
 [Sentry Godot context collection](https://github.com/getsentry/sentry-godot/blob/main/src/sentry/contexts.cpp).
@@ -142,9 +142,14 @@ finite numbers, arrays, and nested dictionaries. Unsupported values and empty
 context dictionaries are omitted.
 
 During native startup, each lifecycle driver installs `stable_contexts` on the
-Sentry scope after successful SDK initialization. During ordinary event
-mapping, each mapper attaches the event `contexts` snapshot. Context attachment
-must not change the current `extra`/attribute merge order.
+global Sentry scope after successful SDK initialization. During ordinary event
+capture, each bridge applies the complete event `contexts` snapshot to the
+SDK's capture-local scope callback. Cocoa and Android enrich an event from
+scope after mapping the raw event, so attaching the snapshot directly to the
+event would allow stale global scope values to overwrite refreshed volatile
+values. The capture-local scope keeps the global crash scope stable, preserves
+fresh per-event values, and does not leak one capture's snapshot into another.
+Context attachment must not change the current `extra`/attribute merge order.
 
 Stable contexts are part of native lifecycle configuration equality. An
 equivalent configuration transfers ownership without restarting the SDK;
@@ -330,7 +335,7 @@ avoiding stale memory, storage, or orientation data.
 - Verify recursive context conversion preserves supported values and omits
   unsupported values.
 - Verify empty contexts are not attached.
-- Verify event context mapping does not change event extras.
+- Verify capture-local context application does not change event extras.
 - Verify lifecycle equality includes stable context.
 - Verify stable scope context is applied after successful Sentry startup.
 
@@ -338,8 +343,8 @@ avoiding stale memory, storage, or orientation data.
 
 - Verify recursive context conversion preserves supported values and omits
   unsupported values.
-- Verify event context mapping and stable scope context use separate Sentry
-  context storage from event extras.
+- Verify capture-local context and stable global scope context use separate
+  Sentry context storage from event extras.
 - Verify lifecycle equality includes stable context.
 - Verify invalid or empty context does not fail initialization or capture.
 
