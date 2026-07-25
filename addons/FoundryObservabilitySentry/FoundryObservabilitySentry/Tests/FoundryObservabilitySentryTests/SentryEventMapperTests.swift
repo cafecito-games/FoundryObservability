@@ -216,4 +216,153 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(event.exceptions?.first?.type, "InvalidState")
         XCTAssertEqual(event.exceptions?.first?.value, "bad state")
     }
+
+    func testMapsStructuredExceptionFramesToSentryStacktrace() {
+        let payload = foundryExceptionPayload([
+            "type_name": "InvalidState",
+            "message": "bad state",
+            "stack_trace": "legacy formatted stack",
+            "attributes": ["entity": "player"],
+            "frames": [
+                [
+                    "file": "res://Player.fs",
+                    "function": "Player.attack",
+                    "line": Int64(24),
+                    "language": "fsharp",
+                    "in_app": true,
+                    "context_line": "let damage = 10",
+                    "pre_context": ["let weapon = sword", "let target = goblin"],
+                    "post_context": ["applyDamage target damage"],
+                    "variables": ["damage": 10, "critical": false],
+                ],
+                [
+                    "file": "res://Combat.fs",
+                    "function": "Combat.resolve",
+                    "line": Int64(8),
+                    "language": "fsharp",
+                    "in_app": NSNumber(value: false),
+                ],
+            ],
+        ])
+
+        guard let payload else {
+            XCTFail("Expected exception payload")
+            return
+        }
+        let event = makeSentryEvent(
+            message: "boom",
+            level: 50,
+            source: "combat",
+            kind: "exception",
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: 4567,
+            exception: payload
+        )
+
+        XCTAssertEqual(event.extra?["foundry.stack_trace"] as? String, "legacy formatted stack")
+        guard let frames = event.exceptions?.first?.stacktrace?.frames else {
+            XCTFail("Expected structured Sentry stacktrace")
+            return
+        }
+        XCTAssertEqual(frames.count, 2)
+
+        XCTAssertEqual(frames[0].fileName, "res://Player.fs")
+        XCTAssertEqual(frames[0].function, "Player.attack")
+        XCTAssertEqual(frames[0].lineNumber?.intValue, 24)
+        XCTAssertEqual(frames[0].platform, "fsharp")
+        XCTAssertEqual(frames[0].inApp?.boolValue, true)
+        XCTAssertEqual(frames[0].contextLine, "let damage = 10")
+        XCTAssertEqual(frames[0].preContext, ["let weapon = sword", "let target = goblin"])
+        XCTAssertEqual(frames[0].postContext, ["applyDamage target damage"])
+        XCTAssertEqual(frames[0].vars?["damage"] as? Int, 10)
+        XCTAssertEqual(frames[0].vars?["critical"] as? Bool, false)
+
+        XCTAssertEqual(frames[1].fileName, "res://Combat.fs")
+        XCTAssertEqual(frames[1].function, "Combat.resolve")
+        XCTAssertEqual(frames[1].lineNumber?.intValue, 8)
+        XCTAssertEqual(frames[1].platform, "fsharp")
+        XCTAssertEqual(frames[1].inApp?.boolValue, false)
+    }
+
+    func testSkipsMalformedFramesAndRetainsPartialFrames() {
+        let payload = foundryExceptionPayload([
+            "type_name": "InvalidState",
+            "message": "bad state",
+            "stack_trace": "legacy formatted stack",
+            "frames": [
+                "not a frame",
+                [
+                    "file": 42,
+                    "function": false,
+                    "line": -1,
+                    "language": 99,
+                    "in_app": "yes",
+                    "context_line": 3,
+                    "pre_context": ["valid", 2, false],
+                    "post_context": [true, 4],
+                    "variables": ["not", "a dictionary"],
+                ],
+                ["file": "res://partial.fs"],
+                ["line": 0],
+            ],
+        ])
+
+        guard let payload else {
+            XCTFail("Expected exception payload")
+            return
+        }
+        let event = makeSentryEvent(
+            message: "boom",
+            level: 50,
+            source: "combat",
+            kind: "exception",
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: 4567,
+            exception: payload
+        )
+
+        XCTAssertEqual(event.extra?["foundry.stack_trace"] as? String, "legacy formatted stack")
+        guard let frames = event.exceptions?.first?.stacktrace?.frames else {
+            XCTFail("Expected partial frame stacktrace")
+            return
+        }
+        XCTAssertEqual(frames.count, 2)
+        XCTAssertNil(frames[0].fileName)
+        XCTAssertNil(frames[0].function)
+        XCTAssertNil(frames[0].lineNumber)
+        XCTAssertNil(frames[0].platform)
+        XCTAssertEqual(frames[0].inApp?.boolValue, false)
+        XCTAssertNil(frames[0].contextLine)
+        XCTAssertEqual(frames[0].preContext, ["valid"])
+        XCTAssertNil(frames[0].postContext)
+        XCTAssertNil(frames[0].vars)
+        XCTAssertEqual(frames[1].fileName, "res://partial.fs")
+        XCTAssertNil(frames[1].function)
+        XCTAssertNil(frames[1].lineNumber)
+    }
+
+    func testStringOnlyExceptionHasNoStructuredStacktrace() {
+        let payload = foundryExceptionPayload([
+            "type_name": "InvalidState",
+            "message": "bad state",
+            "stack_trace": "at Player.attack()",
+        ])
+
+        guard let payload else {
+            XCTFail("Expected exception payload")
+            return
+        }
+        let event = makeSentryEvent(
+            message: "boom",
+            level: 50,
+            source: "combat",
+            kind: "exception",
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: 4567,
+            exception: payload
+        )
+
+        XCTAssertEqual(event.extra?["foundry.stack_trace"] as? String, "at Player.attack()")
+        XCTAssertNil(event.exceptions?.first?.stacktrace)
+    }
 }

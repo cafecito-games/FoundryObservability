@@ -94,19 +94,6 @@ private func dictionaryValue(_ value: Any?) -> [String: Any] {
     value as? [String: Any] ?? [:]
 }
 
-private func exceptionPayload(_ value: Any?) -> FoundryExceptionPayload? {
-    let dictionary = dictionaryValue(value)
-    guard !dictionary.isEmpty else {
-        return nil
-    }
-    return FoundryExceptionPayload(
-        typeName: stringValue(dictionary["type_name"]),
-        message: stringValue(dictionary["message"]),
-        stackTrace: stringValue(dictionary["stack_trace"]),
-        attributes: dictionaryValue(dictionary["attributes"])
-    )
-}
-
 @Foundry
 class SentryObservabilityBridge: RefCounted {
     private var globalAttributes: [String: Any] = [:]
@@ -176,7 +163,7 @@ class SentryObservabilityBridge: RefCounted {
         }
 
         let values = foundationDictionary(from: payload)
-        let exception = exceptionPayload(values["exception"])
+        let exception = foundryExceptionPayload(values["exception"])
         let event = makeSentryEvent(
             message: stringValue(values["message"]),
             level: intValue(values["level"]),

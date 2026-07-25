@@ -133,6 +133,142 @@ struct FoundryExceptionPayload {
     let message: String
     let stackTrace: String
     let attributes: [String: Any]
+    let frames: [FoundryStackFramePayload]
+
+    init(
+        typeName: String,
+        message: String,
+        stackTrace: String,
+        attributes: [String: Any],
+        frames: [FoundryStackFramePayload] = []
+    ) {
+        self.typeName = typeName
+        self.message = message
+        self.stackTrace = stackTrace
+        self.attributes = attributes
+        self.frames = frames
+    }
+}
+
+struct FoundryStackFramePayload {
+    let file: String?
+    let function: String?
+    let line: Int?
+    let language: String?
+    let inApp: Bool
+    let contextLine: String?
+    let preContext: [String]?
+    let postContext: [String]?
+    let variables: [String: Any]?
+
+    var isEmpty: Bool {
+        file == nil
+            && function == nil
+            && line == nil
+            && language == nil
+            && !inApp
+            && contextLine == nil
+            && preContext == nil
+            && postContext == nil
+            && variables == nil
+    }
+}
+
+func foundryExceptionPayload(_ value: Any?) -> FoundryExceptionPayload? {
+    guard let dictionary = value as? [String: Any], !dictionary.isEmpty else {
+        return nil
+    }
+    let frames = foundryStackFramePayloads(dictionary["frames"])
+    return FoundryExceptionPayload(
+        typeName: foundryString(dictionary["type_name"]) ?? "",
+        message: foundryString(dictionary["message"]) ?? "",
+        stackTrace: foundryString(dictionary["stack_trace"]) ?? "",
+        attributes: foundryDictionary(dictionary["attributes"]) ?? [:],
+        frames: frames
+    )
+}
+
+private func foundryStackFramePayloads(_ value: Any?) -> [FoundryStackFramePayload] {
+    guard let values = value as? [Any] else {
+        return []
+    }
+    return values.compactMap { value in
+        guard let dictionary = foundryDictionary(value) else {
+            return nil
+        }
+        let preContext = foundryStringArray(dictionary["pre_context"])
+        let postContext = foundryStringArray(dictionary["post_context"])
+        let variables = foundryNonEmptyDictionary(dictionary["variables"])
+        let frame = FoundryStackFramePayload(
+            file: foundryString(dictionary["file"]),
+            function: foundryString(dictionary["function"]),
+            line: foundryPositiveInteger(dictionary["line"]),
+            language: foundryString(dictionary["language"]),
+            inApp: foundryBool(dictionary["in_app"]),
+            contextLine: foundryString(dictionary["context_line"]),
+            preContext: preContext,
+            postContext: postContext,
+            variables: variables
+        )
+        return frame.isEmpty ? nil : frame
+    }
+}
+
+private func foundryString(_ value: Any?) -> String? {
+    value as? String
+}
+
+private func foundryDictionary(_ value: Any?) -> [String: Any]? {
+    value as? [String: Any]
+}
+
+private func foundryNonEmptyDictionary(_ value: Any?) -> [String: Any]? {
+    guard let dictionary = foundryDictionary(value), !dictionary.isEmpty else {
+        return nil
+    }
+    return dictionary
+}
+
+private func foundryStringArray(_ value: Any?) -> [String]? {
+    guard let values = value as? [Any] else {
+        return nil
+    }
+    let strings = values.compactMap { $0 as? String }
+    return strings.isEmpty ? nil : strings
+}
+
+private func foundryPositiveInteger(_ value: Any?) -> Int? {
+    switch value {
+    case let value as Int:
+        return value > 0 ? value : nil
+    case let value as Int64:
+        guard value > 0, let integer = Int(exactly: value) else {
+            return nil
+        }
+        return integer
+    case let value as Double:
+        guard
+            value.isFinite,
+            value > 0,
+            value.rounded(.towardZero) == value,
+            let integer = Int(exactly: value)
+        else {
+            return nil
+        }
+        return integer
+    default:
+        return nil
+    }
+}
+
+private func foundryBool(_ value: Any?) -> Bool {
+    if let value = value as? Bool {
+        return value
+    }
+    if let value = value as? NSNumber {
+        return value.boolValue
+    }
+    return false
 }
 
 func sentryLevel(for level: Int) -> SentryLevel {
@@ -230,7 +366,24 @@ func makeSentryEvent(
     )
 
     if let exception {
-        event.exceptions = [Exception(value: exception.message, type: exception.typeName)]
+        let sentryException = Exception(value: exception.message, type: exception.typeName)
+        if !exception.frames.isEmpty {
+            let frames = exception.frames.map { payload in
+                let frame = Frame()
+                frame.fileName = payload.file
+                frame.function = payload.function
+                frame.lineNumber = payload.line.map { NSNumber(value: $0) }
+                frame.platform = payload.language
+                frame.inApp = NSNumber(value: payload.inApp)
+                frame.contextLine = payload.contextLine
+                frame.preContext = payload.preContext
+                frame.postContext = payload.postContext
+                frame.vars = payload.variables
+                return frame
+            }
+            sentryException.stacktrace = SentryStacktrace(frames: frames, registers: [:])
+        }
+        event.exceptions = [sentryException]
     }
     return event
 }
