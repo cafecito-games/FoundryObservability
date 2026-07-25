@@ -143,13 +143,15 @@ func _capture_error(
 					),
 			)).is_empty()
 	if as_breadcrumb:
-		breadcrumb_accepted = _service.capture_breadcrumb(ObservabilityBreadcrumb.new(
-				p_message = message,
-				p_level = level,
-				p_category = &"error",
-				p_timestamp_msec = timestamp_msec,
-				p_attributes = attributes,
-			))
+		breadcrumb_accepted = _service._capture_automatic_breadcrumb(
+				ObservabilityBreadcrumb.new(
+						p_message = message,
+						p_level = level,
+						p_category = &"error",
+						p_timestamp_msec = timestamp_msec,
+						p_attributes = attributes,
+					),
+			)
 	if as_log:
 		log_accepted = not _service.capture_log(
 				message,
@@ -193,7 +195,7 @@ func _capture_message(message: String, error: bool) -> void:
 		"observability.origin": _ORIGIN,
 	}
 	if (_config.automatic_breadcrumb_mask & ObservabilityCaptureMask.MESSAGE) != 0:
-		_service.capture_breadcrumb(ObservabilityBreadcrumb.new(
+		_service._capture_automatic_breadcrumb(ObservabilityBreadcrumb.new(
 				p_message = processed_message,
 				p_level = level,
 				p_category = &"log",

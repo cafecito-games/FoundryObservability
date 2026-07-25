@@ -108,6 +108,9 @@ contract for third-party providers. The memory and Sentry providers implement
 the capability. When an active provider does not implement it,
 `capture_breadcrumb` returns `false`, stores `Error.ERR_UNAVAILABLE`, and
 leaves event, log, feedback, and metric capture operational.
+The automatic logger silently skips an absent breadcrumb capability so default
+automatic masks do not overwrite the status of a successfully accepted event;
+explicit breadcrumb calls retain the observable unavailable result.
 
 ## Error normalization
 

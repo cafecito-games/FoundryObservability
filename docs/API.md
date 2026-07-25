@@ -709,9 +709,10 @@ Disabled capture returns false without calling the provider. A provider without
 the optional capability returns false and stores Error.ERR_UNAVAILABLE; a
 non-boolean or false provider result stores Error.FAILED.
 
-Automatic capture uses this same method. Event-only providers therefore keep
-working while automatically selected breadcrumb records are observably
-unsupported.
+Automatic capture silently skips this optional destination when the provider
+does not implement it, so a successfully accepted exception event does not
+leave `last_error()` in an unrelated unavailable state. Explicit
+`capture_breadcrumb()` calls retain the observable `ERR_UNAVAILABLE` behavior.
 
 ### capture_feedback
 

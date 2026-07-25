@@ -703,6 +703,18 @@ func test_automatic_capture_reservation_is_atomic() -> void:
 	service.end_automatic_capture()
 
 
+func test_automatic_capture_skips_missing_optional_breadcrumb_capability() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service()
+	var provider := BreadcrumblessObservabilityProvider.new()
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	push_error("event-only automatic capture")
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.capture_message("next event")).to_equal("event:2")
+	service.shutdown()
+
+
 func test_automatic_capture_installs_only_after_successful_enabled_configuration() -> void:
 	TestContext.current().stop_diagnostics()
 	var service: FoundryObservability = _service()

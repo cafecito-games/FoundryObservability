@@ -182,13 +182,26 @@ func capture_log(
 
 ## Captures a breadcrumb when the active provider supports the optional capability.
 func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
+	return _capture_breadcrumb(breadcrumb, true)
+
+
+## Captures an automatic breadcrumb without treating an absent optional capability as an error.
+func _capture_automatic_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
+	return _capture_breadcrumb(breadcrumb, false)
+
+
+func _capture_breadcrumb(
+		breadcrumb: ObservabilityBreadcrumb,
+		report_unsupported: bool,
+) -> bool:
 	if breadcrumb == null:
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return false
 	if not is_enabled() or _provider == null:
 		return false
 	if not _provider.has_method("capture_breadcrumb"):
-		_last_error = Error.ERR_UNAVAILABLE
+		if report_unsupported:
+			_last_error = Error.ERR_UNAVAILABLE
 		return false
 
 	_begin_provider_call()
