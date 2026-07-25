@@ -4,6 +4,9 @@ namespace foundry.observability
 class_name ObservabilityEvent
 extends RefCounted
 
+## Marks a wall-clock timestamp that the service must resolve at capture time.
+const UNASSIGNED_TIMESTAMP: int = -1
+
 final var _kind: StringName
 final var _level: int
 final var _message: String
@@ -20,7 +23,7 @@ func _init(
 		p_level: int = ObservabilityLevel.INFO,
 		p_message: String = "",
 		p_source: StringName = &"",
-		p_timestamp_msec: int = -1,
+		p_timestamp_msec: int = UNASSIGNED_TIMESTAMP,
 		p_attributes: Dictionary = {},
 		p_exception: ObservabilityException? = null,
 		p_engine_ticks_msec: int = -1,

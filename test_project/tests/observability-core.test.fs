@@ -62,7 +62,8 @@ func test_event_separates_wall_clock_timestamp_and_engine_ticks() -> void:
 	Expect.that(event.timestamp_msec()).to_equal(1721865600123)
 	Expect.that(event.engine_ticks_msec()).to_equal(4567)
 	Expect.that(epoch.timestamp_msec()).to_equal(0)
-	Expect.that(missing.timestamp_msec()).to_equal(-1)
+	Expect.that(ObservabilityEvent.UNASSIGNED_TIMESTAMP).to_equal(-1)
+	Expect.that(missing.timestamp_msec()).to_equal(ObservabilityEvent.UNASSIGNED_TIMESTAMP)
 	Expect.that(missing.engine_ticks_msec()).to_equal(-1)
 
 
