@@ -30,13 +30,20 @@ func test_enabled_configuration_requires_compatible_native_bridge_and_dsn() -> v
 		))).to_equal(Error.ERR_UNAVAILABLE)
 
 
-func test_enabled_configuration_reports_missing_bridge_as_unavailable() -> void:
+func test_enabled_configuration_reports_native_bridge_availability() -> void:
 	var provider := SentryObservabilityProvider.new()
 
-	Expect.that(provider.configure(ObservabilityConfig.new(
+	var result: int = provider.configure(ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.ERR_UNAVAILABLE)
+		))
+	if ClassDB.class_exists("SentryObservabilityBridge") \
+			and ClassDB.can_instantiate("SentryObservabilityBridge"):
+		Expect.that(result).to_equal(Error.OK)
+		Expect.that(provider.is_available()).to_be_true()
+		provider.shutdown()
+	else:
+		Expect.that(result).to_equal(Error.ERR_UNAVAILABLE)
 
 
 func test_disabled_configuration_is_safe_without_native_bridge() -> void:

@@ -96,24 +96,35 @@ private func dictionaryValue(_ value: Any?) -> [String: Any] {
 
 @Foundry
 class SentryObservabilityBridge: RefCounted {
+    private static let lifecycleCoordinator = SentryLifecycleCoordinator(
+        driver: AppleSentrySDKDriver()
+    )
+
     private var globalAttributes: [String: Any] = [:]
-    private var configured = false
+    private var lifecycleOwner = ""
     private var logsEnabled = false
     private var metricsEnabled = false
-    private var didShutdown = false
+
+    @Callable
+    func lifecycleVersion() -> Int {
+        sentryLifecycleVersion
+    }
 
     @Callable
     func configure(payload: VariantDictionary) -> Int {
         let values = foundationDictionary(from: payload)
         let enabled = boolValue(values["enabled"])
+        let candidateOwner = stringValue(values["lifecycle_owner"])
+        guard !candidateOwner.isEmpty else {
+            return bridgeErrorFailed
+        }
 
-        closeActiveClient()
-        didShutdown = false
-        globalAttributes = dictionaryValue(values["global_attributes"])
-        logsEnabled = boolValue(values["logs_enabled"])
-        metricsEnabled = boolValue(values["metrics_enabled"])
-
-        guard enabled else {
+        if !enabled {
+            Self.lifecycleCoordinator.shutdown(owner: candidateOwner)
+            lifecycleOwner = ""
+            globalAttributes = [:]
+            logsEnabled = false
+            metricsEnabled = false
             return bridgeErrorOK
         }
 
@@ -122,44 +133,42 @@ class SentryObservabilityBridge: RefCounted {
             return bridgeErrorFailed
         }
 
-        let options = Options()
-        options.dsn = dsn
-        guard options.dsn != nil else {
+        let candidateConfiguration = SentryLifecycleConfiguration(
+            dsn: dsn,
+            environment: stringValue(values["environment"]),
+            release: stringValue(values["release"]),
+            dist: stringValue(values["dist"]),
+            globalAttributes: dictionaryValue(values["global_attributes"]),
+            providerOptions: dictionaryValue(values["provider_options"]),
+            logsEnabled: boolValue(values["logs_enabled"]),
+            metricsEnabled: boolValue(values["metrics_enabled"]),
+            applicationHangDetectionEnabled:
+                boolValue(values["application_hang_detection_enabled"]),
+            applicationHangTimeoutMsec:
+                intValue(values["application_hang_timeout_msec"])
+        )
+        guard Self.lifecycleCoordinator.configure(
+            owner: candidateOwner,
+            configuration: candidateConfiguration
+        ) else {
             return bridgeErrorFailed
         }
 
-        let environment = stringValue(values["environment"])
-        let release = stringValue(values["release"])
-        let dist = stringValue(values["dist"])
-        if !environment.isEmpty {
-            options.environment = environment
-        }
-        if !release.isEmpty {
-            options.releaseName = release
-        }
-        if !dist.isEmpty {
-            options.dist = dist
-        }
-        applyAppleHangDiagnostics(from: values, to: options)
-        options.debug = boolValue(dictionaryValue(values["provider_options"])["debug"])
-        options.sendDefaultPii = boolValue(dictionaryValue(values["provider_options"])["send_default_pii"])
-        options.enableLogs = logsEnabled
-        options.enableMetrics = metricsEnabled
-        options.enabled = true
-
-        SentrySDK.start(options: options)
-        configured = true
+        lifecycleOwner = candidateOwner
+        globalAttributes = candidateConfiguration.globalAttributes
+        logsEnabled = candidateConfiguration.logsEnabled
+        metricsEnabled = candidateConfiguration.metricsEnabled
         return bridgeErrorOK
     }
 
     @Callable
-    func isAvailable() -> Bool {
-        configured && !didShutdown && SentrySDK.isEnabled
+    func isAvailable(_ owner: String) -> Bool {
+        Self.lifecycleCoordinator.isAvailable(owner: owner)
     }
 
     @Callable
     func capture(payload: VariantDictionary) -> String {
-        guard isAvailable() else {
+        guard isAvailable(lifecycleOwner) else {
             return ""
         }
 
@@ -183,7 +192,7 @@ class SentryObservabilityBridge: RefCounted {
 
     @Callable
     func captureLog(payload: VariantDictionary) -> String {
-        guard isAvailable(), logsEnabled else {
+        guard isAvailable(lifecycleOwner), logsEnabled else {
             return ""
         }
 
@@ -218,7 +227,7 @@ class SentryObservabilityBridge: RefCounted {
 
     @Callable
     func captureBreadcrumb(payload: VariantDictionary) -> Bool {
-        guard isAvailable() else {
+        guard isAvailable(lifecycleOwner) else {
             return false
         }
 
@@ -238,7 +247,7 @@ class SentryObservabilityBridge: RefCounted {
 
     @Callable
     func captureMetric(payload: VariantDictionary) -> Bool {
-        guard isAvailable(), metricsEnabled else {
+        guard isAvailable(lifecycleOwner), metricsEnabled else {
             return false
         }
 
@@ -289,7 +298,7 @@ class SentryObservabilityBridge: RefCounted {
 
     @Callable
     func captureFeedback(payload: VariantDictionary) -> String {
-        guard isAvailable() else {
+        guard isAvailable(lifecycleOwner) else {
             return ""
         }
 
@@ -320,30 +329,23 @@ class SentryObservabilityBridge: RefCounted {
     }
 
     @Callable
-    func flush(_ timeoutMsec: Int) -> Int {
-        guard isAvailable() else {
-            return bridgeErrorFailed
-        }
-        SentrySDK.flush(timeout: sentryTimeoutSeconds(milliseconds: timeoutMsec))
+    func flush(_ owner: String, _ timeoutMsec: Int) -> Int {
+        Self.lifecycleCoordinator.flush(
+            owner: owner,
+            timeout: sentryTimeoutSeconds(milliseconds: timeoutMsec)
+        )
         return bridgeErrorOK
     }
 
     @Callable
-    func shutdown() {
-        guard !didShutdown else {
-            return
+    func shutdown(_ owner: String) {
+        Self.lifecycleCoordinator.shutdown(owner: owner)
+        if owner == lifecycleOwner {
+            lifecycleOwner = ""
+            globalAttributes = [:]
+            logsEnabled = false
+            metricsEnabled = false
         }
-        didShutdown = true
-        closeActiveClient()
-    }
-
-    private func closeActiveClient() {
-        if configured {
-            SentrySDK.close()
-        }
-        configured = false
-        logsEnabled = false
-        metricsEnabled = false
     }
 }
 

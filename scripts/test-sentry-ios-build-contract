@@ -14,6 +14,8 @@ project_yml="$native_root/project.yml"
 pbxproj="$native_root/FoundryObservabilitySentry.xcodeproj/project.pbxproj"
 swift_sources="$native_root/Sources/FoundryObservabilitySentry"
 tests="$native_root/Tests/FoundryObservabilitySentryTests"
+bridge_source="$swift_sources/FoundryObservabilitySentry.swift"
+lifecycle_coordinator="$swift_sources/SentryLifecycleCoordinator.swift"
 descriptor="$repo_root/addons/FoundryObservabilitySentry/FoundryObservabilitySentry.foundryextension"
 export_plugin="$repo_root/addons/FoundryObservabilitySentry/export_plugin.fs"
 package_swift="$native_root/Package.swift"
@@ -34,7 +36,11 @@ project_test="$repo_root/scripts/test-project"
 [[ -x "$project_test" ]] || fail "project runtime test is missing or not executable"
 [[ -f "$swift_sources/FoundryObservabilitySentry.swift" ]] || fail "Sentry bridge source is missing"
 [[ -f "$swift_sources/SentryEventMapper.swift" ]] || fail "Sentry mapper source is missing"
+[[ -f "$swift_sources/SentryLifecycleCoordinator.swift" ]] \
+	|| fail "Sentry lifecycle coordinator source is missing"
 [[ -f "$tests/SentryEventMapperTests.swift" ]] || fail "Sentry mapper tests are missing"
+[[ -f "$tests/SentryLifecycleCoordinatorTests.swift" ]] \
+	|| fail "Sentry lifecycle coordinator tests are missing"
 
 rg -q 'platform=iOS' "$taskfile" || fail "Taskfile must build an iOS device framework"
 rg -q 'platform=iOS Simulator' "$taskfile" || fail "Taskfile must build an iOS simulator framework"
@@ -144,6 +150,18 @@ rg -q '@Foundry' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose a Foundry class"
 rg -q '@Callable' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose callable bridge methods"
+rg -q 'func lifecycleVersion\(\) -> Int' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge source must expose its lifecycle contract version"
+rg -q 'func isAvailable\(_ owner: String\) -> Bool' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge availability must require a lifecycle owner"
+rg -q 'func flush\(_ owner: String, _ timeoutMsec: Int\) -> Int' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge flush must require a lifecycle owner"
+rg -q 'func shutdown\(_ owner: String\)' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge shutdown must require a lifecycle owner"
+rg -q 'static let lifecycleCoordinator' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge instances must share a process-global lifecycle coordinator"
+rg -q 'lifecycle_owner' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "bridge configuration must consume the lifecycle owner"
 rg -q 'captureLog' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose structured log capture"
 rg -q 'captureBreadcrumb' "$swift_sources/FoundryObservabilitySentry.swift" \
@@ -156,14 +174,14 @@ rg -q 'sentryLevel' "$swift_sources/SentryEventMapper.swift" \
 	|| fail "bridge source must map breadcrumb levels"
 rg -q 'foundry\.timestamp_msec' "$swift_sources/SentryEventMapper.swift" \
 	|| fail "breadcrumb data must preserve its normalized timestamp"
-rg -q 'enableLogs' "$swift_sources/FoundryObservabilitySentry.swift" \
-	|| fail "bridge source must configure Sentry Logs"
+rg -q 'options\.enableLogs = configuration\.logsEnabled' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle must configure Sentry Logs"
 rg -q 'SentrySDK\.logger' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must use the Sentry structured logger"
 rg -q 'captureMetric' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose custom metric capture"
-rg -q 'enableMetrics' "$swift_sources/FoundryObservabilitySentry.swift" \
-	|| fail "bridge source must configure Sentry Metrics"
+rg -q 'options\.enableMetrics = configuration\.metricsEnabled' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle must configure Sentry Metrics"
 diagnostics_configurator="$swift_sources/SentryDiagnosticsConfigurator.swift"
 [[ -f "$diagnostics_configurator" ]] \
 	|| fail "Apple diagnostics configurator is missing"
@@ -171,15 +189,21 @@ rg -q '^[[:space:]]*options\.enableAppHangTracking[[:space:]]*=[[:space:]]*enabl
 	|| fail "Apple diagnostics must actively assign native app-hang tracking"
 rg -q '^[[:space:]]*options\.appHangTimeoutInterval[[:space:]]*=[[:space:]]*Double\(timeoutMsec\)[[:space:]]*/[[:space:]]*1000\.0[[:space:]]*$' "$diagnostics_configurator" \
 	|| fail "Apple diagnostics must actively assign the native app-hang timeout"
-bridge_source="$swift_sources/FoundryObservabilitySentry.swift"
-apply_line=$(awk '/^[[:space:]]*applyAppleHangDiagnostics\(from: values, to: options\)[[:space:]]*$/ { print NR; exit }' "$bridge_source")
-start_line=$(awk '/^[[:space:]]*SentrySDK\.start\(options: options\)[[:space:]]*$/ { print NR; exit }' "$bridge_source")
-[[ -n "$apply_line" ]] \
-	|| fail "Apple bridge must actively apply mobile diagnostics"
-[[ -n "$start_line" ]] \
-	|| fail "Apple bridge must actively start Sentry"
-(( apply_line < start_line )) \
-	|| fail "Apple bridge must apply mobile diagnostics before Sentry startup"
+rg -q 'applyAppleHangDiagnostics\(' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle must actively apply mobile diagnostics"
+rg -q 'let options = makeAppleSentryOptions\(configuration\)' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle driver must build validated startup options"
+rg -q 'SentrySDK\.start\(options: options\)' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle must actively start Sentry"
+if rg -q 'SentrySDK\.start\(options:' "$bridge_source"; then
+	fail "Apple bridge must delegate Sentry startup to the lifecycle coordinator"
+fi
+rg -q 'options\.enableCrashHandler = true' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle must explicitly enable the crash handler"
+rg -q 'options\.shutdownTimeInterval = sentryShutdownTimeoutSeconds' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle must use a bounded native shutdown"
+rg -q 'options\.initialScope' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle must install crash-persistent initial scope data"
 for metric in count gauge distribution; do
 	rg -q "SentrySDK\\.metrics\\.${metric}" "$swift_sources/FoundryObservabilitySentry.swift" \
 		|| fail "bridge source is missing the ${metric} mapping"
