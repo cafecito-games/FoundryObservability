@@ -233,6 +233,21 @@ public class SentryEventMapperTest {
   }
 
   @Test
+  public void keepsFramesOnlyExceptionData() {
+    SentryEvent result = eventWithException(Map.of(
+        "stack_trace", "legacy formatted stack",
+        "frames", List.of(Map.of("file", "res://frames-only.fs"))));
+
+    assertEquals("legacy formatted stack", result.getExtras().get("foundry.stack_trace"));
+    assertNotNull(result.getExceptions());
+    assertEquals(1, result.getExceptions().size());
+    SentryException exception = result.getExceptions().get(0);
+    assertNotNull(exception.getStacktrace());
+    assertEquals(1, exception.getStacktrace().getFrames().size());
+    assertEquals("res://frames-only.fs", exception.getStacktrace().getFrames().get(0).getFilename());
+  }
+
+  @Test
   public void skipsMalformedFramesAndKeepsUsefulPartialFrames() {
     List<Object> frames = new ArrayList<>();
     frames.add("not a frame");
@@ -359,6 +374,61 @@ public class SentryEventMapperTest {
     assertEquals(Arrays.asList("list value", 2L), sanitized.get("list"));
     assertEquals(Arrays.asList("array value", 3), sanitized.get("array"));
     assertEquals(Map.of("kept", "cycle value"), sanitized.get("cycle"));
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void copiesRepeatedAcyclicVariableContainersIndependently() {
+    Map<String, Object> sharedMap = new HashMap<>();
+    sharedMap.put("value", "map value");
+    List<Object> sharedList = new ArrayList<>(List.of("list value"));
+    Object[] sharedArray = new Object[] {"array value"};
+    Map<String, Object> variables = new HashMap<>();
+    variables.put("map_one", sharedMap);
+    variables.put("map_two", sharedMap);
+    variables.put("list_one", sharedList);
+    variables.put("list_two", sharedList);
+    variables.put("array_one", sharedArray);
+    variables.put("array_two", sharedArray);
+
+    SentryEvent result = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "frames", List.of(Map.of("file", "res://shared.fs", "variables", variables))));
+
+    Map<String, Object> sanitized = result.getExceptions().get(0).getStacktrace().getFrames().get(0).getVars();
+    Map<String, Object> firstMap = (Map<String, Object>) sanitized.get("map_one");
+    Map<String, Object> secondMap = (Map<String, Object>) sanitized.get("map_two");
+    List<Object> firstList = (List<Object>) sanitized.get("list_one");
+    List<Object> secondList = (List<Object>) sanitized.get("list_two");
+    List<Object> firstArray = (List<Object>) sanitized.get("array_one");
+    List<Object> secondArray = (List<Object>) sanitized.get("array_two");
+    assertEquals(Map.of("value", "map value"), firstMap);
+    assertEquals(Map.of("value", "map value"), secondMap);
+    assertEquals(List.of("list value"), firstList);
+    assertEquals(List.of("list value"), secondList);
+    assertEquals(List.of("array value"), firstArray);
+    assertEquals(List.of("array value"), secondArray);
+    assertFalse(firstMap == secondMap);
+    assertFalse(firstList == secondList);
+    assertFalse(firstArray == secondArray);
+
+    sharedMap.put("value", "mutated source map");
+    sharedList.set(0, "mutated source list");
+    sharedArray[0] = "mutated source array";
+    assertEquals(Map.of("value", "map value"), firstMap);
+    assertEquals(Map.of("value", "map value"), secondMap);
+    assertEquals(List.of("list value"), firstList);
+    assertEquals(List.of("list value"), secondList);
+    assertEquals(List.of("array value"), firstArray);
+    assertEquals(List.of("array value"), secondArray);
+
+    firstMap.put("value", "mutated first map");
+    firstList.set(0, "mutated first list");
+    firstArray.set(0, "mutated first array copy");
+    assertEquals(Map.of("value", "map value"), secondMap);
+    assertEquals(List.of("list value"), secondList);
+    assertEquals(List.of("array value"), secondArray);
   }
 
   @Test

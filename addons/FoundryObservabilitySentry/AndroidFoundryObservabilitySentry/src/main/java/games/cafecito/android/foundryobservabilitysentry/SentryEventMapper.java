@@ -148,11 +148,11 @@ final class SentryEventMapper {
     if (exception != null) {
       String exceptionType = stringValue(exception.get("type_name"));
       String exceptionMessage = stringValue(exception.get("message"));
-      if (!exceptionType.isEmpty() || !exceptionMessage.isEmpty()) {
+      SentryStackTrace stacktrace = structuredStacktrace(exception.get("frames"));
+      if (!exceptionType.isEmpty() || !exceptionMessage.isEmpty() || stacktrace != null) {
         SentryException sentryException = new SentryException();
         sentryException.setType(exceptionType);
         sentryException.setValue(exceptionMessage);
-        SentryStackTrace stacktrace = structuredStacktrace(exception.get("frames"));
         if (stacktrace != null) {
           sentryException.setStacktrace(stacktrace);
         }
@@ -310,55 +310,63 @@ final class SentryEventMapper {
       Map<?, ?> value,
       int depth,
       VariableCopyState state) {
-    if (depth > MAX_VARIABLE_CONTAINER_DEPTH || !state.visit(value)) {
+    if (depth > MAX_VARIABLE_CONTAINER_DEPTH || !state.enter(value)) {
       return null;
     }
-    Map<String, Object> result = new HashMap<>();
-    for (Map.Entry<?, ?> entry : value.entrySet()) {
-      if (!state.consumeItem()) {
-        break;
+    try {
+      Map<String, Object> result = new HashMap<>();
+      for (Map.Entry<?, ?> entry : value.entrySet()) {
+        if (!state.consumeItem()) {
+          break;
+        }
+        if (!(entry.getKey() instanceof String)) {
+          continue;
+        }
+        Object copied = sanitizeVariableValue(entry.getValue(), depth, state);
+        if (copied != null) {
+          result.put((String) entry.getKey(), copied);
+        }
       }
-      if (!(entry.getKey() instanceof String)) {
-        continue;
-      }
-      Object copied = sanitizeVariableValue(entry.getValue(), depth, state);
-      if (copied != null) {
-        result.put((String) entry.getKey(), copied);
-      }
+      return result;
+    } finally {
+      state.leave(value);
     }
-    return result;
   }
 
   private static List<Object> sanitizeVariableCollection(
       Object value,
       int depth,
       VariableCopyState state) {
-    if (depth > MAX_VARIABLE_CONTAINER_DEPTH || !state.visit(value)) {
+    if (depth > MAX_VARIABLE_CONTAINER_DEPTH || !state.enter(value)) {
       return null;
     }
-    List<Object> result = new ArrayList<>();
-    if (value instanceof Iterable) {
-      for (Object element : (Iterable<?>) value) {
-        if (!state.consumeItem()) {
-          break;
+    try {
+      List<Object> result = new ArrayList<>();
+      if (value instanceof Iterable) {
+        for (Object element : (Iterable<?>) value) {
+          if (!state.consumeItem()) {
+            break;
+          }
+          Object copied = sanitizeVariableValue(element, depth, state);
+          if (copied != null) {
+            result.add(copied);
+          }
         }
-        Object copied = sanitizeVariableValue(element, depth, state);
-        if (copied != null) {
-          result.add(copied);
+      } else {
+        for (int index = 0; index < Array.getLength(value); index++) {
+          if (!state.consumeItem()) {
+            break;
+          }
+          Object copied = sanitizeVariableValue(Array.get(value, index), depth, state);
+          if (copied != null) {
+            result.add(copied);
+          }
         }
       }
-    } else {
-      for (int index = 0; index < Array.getLength(value); index++) {
-        if (!state.consumeItem()) {
-          break;
-        }
-        Object copied = sanitizeVariableValue(Array.get(value, index), depth, state);
-        if (copied != null) {
-          result.add(copied);
-        }
-      }
+      return result;
+    } finally {
+      state.leave(value);
     }
-    return result;
   }
 
   private static Object sanitizeVariableValue(
@@ -391,11 +399,15 @@ final class SentryEventMapper {
   }
 
   private static final class VariableCopyState {
-    private final Map<Object, Boolean> visited = new IdentityHashMap<>();
+    private final Map<Object, Boolean> activeContainers = new IdentityHashMap<>();
     private int itemCount;
 
-    boolean visit(Object container) {
-      return visited.put(container, Boolean.TRUE) == null;
+    boolean enter(Object container) {
+      return activeContainers.put(container, Boolean.TRUE) == null;
+    }
+
+    void leave(Object container) {
+      activeContainers.remove(container);
     }
 
     boolean consumeItem() {
