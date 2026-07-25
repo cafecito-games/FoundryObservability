@@ -49,6 +49,56 @@ func test_exception_and_event_copy_attributes() -> void:
 	Expect.that(event.attributes()).to_equal({"scene": "battle"})
 
 
+func test_stack_frame_and_exception_defensively_copy_structured_data() -> void:
+	var source_pre_context := PackedStringArray(["if target.is_alive():"])
+	var source_post_context := PackedStringArray(["return damage"])
+	var source_variables := {"combat": {"damage": 10}}
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://player.fs",
+			p_function = "attack",
+			p_line = 42,
+			p_language = "foundryscript",
+			p_in_app = true,
+			p_context_line = "deal_damage()",
+			p_pre_context = source_pre_context,
+			p_post_context = source_post_context,
+			p_variables = source_variables,
+		)
+	var source_frames: Array[ObservabilityStackFrame] = [frame]
+	var exception := ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = source_frames,
+		)
+
+	source_pre_context.append("changed before")
+	source_post_context.append("changed after")
+	source_variables["combat"]["damage"] = 99
+	source_frames.clear()
+	var exposed_pre_context := frame.pre_context()
+	var exposed_post_context := frame.post_context()
+	var exposed_variables := frame.variables()
+	var exposed_frames := exception.frames()
+	exposed_pre_context.append("changed accessor")
+	exposed_post_context.append("changed accessor")
+	exposed_variables["combat"]["damage"] = 100
+	exposed_frames.clear()
+
+	Expect.that(frame.file()).to_equal("res://player.fs")
+	Expect.that(frame.function()).to_equal("attack")
+	Expect.that(frame.line()).to_equal(42)
+	Expect.that(frame.language()).to_equal("foundryscript")
+	Expect.that(frame.in_app()).to_be_true()
+	Expect.that(frame.context_line()).to_equal("deal_damage()")
+	Expect.that(frame.pre_context()).to_equal(PackedStringArray(["if target.is_alive():"]))
+	Expect.that(frame.post_context()).to_equal(PackedStringArray(["return damage"]))
+	Expect.that(frame.variables()).to_equal({"combat": {"damage": 10}})
+	Expect.that(exception.stack_trace()).to_equal("formatted fallback")
+	Expect.that(exception.frames()).to_equal([frame])
+
+
 func test_event_separates_wall_clock_timestamp_and_engine_ticks() -> void:
 	var event := ObservabilityEvent.new(
 			p_timestamp_msec = 1721865600123,

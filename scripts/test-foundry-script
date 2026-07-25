@@ -40,6 +40,7 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/ObservabilityBreadcrumbsProvider.fs" ]] \
 	|| fail "ObservabilityBreadcrumbsProvider.fs is missing"
 [[ -f "$addon/ObservabilityMetric.fs" ]] || fail "ObservabilityMetric.fs is missing"
+[[ -f "$addon/ObservabilityStackFrame.fs" ]] || fail "ObservabilityStackFrame.fs is missing"
 [[ -f "$addon/ObservabilityMetricType.fs" ]] || fail "ObservabilityMetricType.fs is missing"
 [[ -f "$addon/ObservabilityMetricsProvider.fs" ]] || fail "ObservabilityMetricsProvider.fs is missing"
 [[ -f "$addon/foundrylib/FoundryLibObservabilitySink.fs" ]] || fail "FoundryLib observability sink is missing"
@@ -76,6 +77,8 @@ rg -q '^trait_name ObservabilityBreadcrumbsProvider$' \
 	|| fail "optional breadcrumb provider contract is missing"
 rg -q '^class_name ObservabilityMetric$' "$addon/ObservabilityMetric.fs" \
 	|| fail "metric value type declaration is missing"
+rg -q '^class_name ObservabilityStackFrame$' "$addon/ObservabilityStackFrame.fs" \
+	|| fail "stack frame value type declaration is missing"
 rg -q '^class_name ObservabilityMetricType$' "$addon/ObservabilityMetricType.fs" \
 	|| fail "metric type declaration is missing"
 rg -q '^trait_name ObservabilityMetricsProvider$' "$addon/ObservabilityMetricsProvider.fs" \
