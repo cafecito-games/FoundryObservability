@@ -19,6 +19,10 @@ The first core slice is available now:
   optional association to a returned event ID.
 - First-class counters, gauges, and distributions with validation, filtering,
   deterministic sampling, units, and scalar attributes.
+- Provider-neutral structured exception frames and bounded source context for
+  macOS, iOS, and Android Sentry delivery, while retaining formatted-stack
+  fallback compatibility. Frame data is caller-supplied; the addon does not
+  automatically acquire engine locals.
 - A FoundryLib `LogSink` adapter included in the core addon.
 - An optional `FoundryObservabilitySentry` provider addon backed by
   Foundry-Swift/Sentry Cocoa on Apple platforms and Sentry Android on Android.
