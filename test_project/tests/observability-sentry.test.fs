@@ -244,6 +244,99 @@ func test_runtime_context_collector_omits_invalid_and_unsupported_values() -> vo
 	Expect.that(device.has("unique_identifier")).to_be_false()
 
 
+func test_provider_forwards_stable_and_capture_time_runtime_context() -> void:
+	var bridge := FakeSentryBridge.new()
+	var probe := FakeRuntimeContextProbe.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = probe,
+		)
+	var config := ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(
+			bridge.configured_payload["stable_contexts"]["foundry_app"]["name"],
+		).to_equal("Oakhaven")
+
+	probe.volatile_free_memory = 777
+	var event := ObservabilityEvent.new(
+			p_message = "context capture",
+			p_attributes = {"explicit": "preserved"},
+		)
+	Expect.that(provider.capture(event)).to_equal("sentry:1")
+	Expect.that(
+			bridge.captured_payloads[0]["contexts"]["foundry_device"]["free_memory"],
+		).to_equal(777)
+	Expect.that(bridge.captured_payloads[0]["attributes"]).to_equal(
+			{"explicit": "preserved"},
+		)
+	provider.shutdown()
+
+
+func test_provider_failed_reconfigure_preserves_last_stable_runtime_context() -> void:
+	var bridge := FakeSentryBridge.new()
+	var probe := FakeRuntimeContextProbe.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = probe,
+		)
+	var initial_config := ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	probe.app_name = "Replacement"
+	bridge.configure_result = Error.FAILED
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "staging",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+		))).to_equal(Error.FAILED)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "restored context",
+		))).to_equal("sentry:1")
+	Expect.that(
+			bridge.captured_payloads[0]["contexts"]["foundry_app"]["name"],
+		).to_equal("Oakhaven")
+	provider.shutdown()
+
+
+func test_provider_disabled_configuration_and_shutdown_do_not_capture_stale_context() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
+	var enabled_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(enabled_config)).to_equal(Error.OK)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_enabled = false,
+		))).to_equal(Error.OK)
+	Expect.that(bridge.configured_payload.has("stable_contexts")).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "disabled",
+		))).to_equal("")
+	Expect.that(bridge.captured_payloads).to_equal([])
+
+	Expect.that(provider.configure(enabled_config)).to_equal(Error.OK)
+	provider.shutdown()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "shutdown",
+		))).to_equal("")
+	Expect.that(bridge.captured_payloads).to_equal([])
+
+
 func test_provider_name_is_sentry() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = FakeSentryBridge.new())
 	Expect.that(provider.provider_name()).to_equal(&"sentry")
