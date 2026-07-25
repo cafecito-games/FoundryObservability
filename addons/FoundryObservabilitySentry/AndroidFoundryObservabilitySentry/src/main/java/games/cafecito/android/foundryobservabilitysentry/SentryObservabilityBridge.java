@@ -7,7 +7,6 @@ import games.cafecito.foundry.plugin.UsedByFoundry;
 import io.sentry.Sentry;
 import io.sentry.SentryAttributes;
 import io.sentry.SentryEvent;
-import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
 import io.sentry.logger.SentryLogParameters;
 import io.sentry.metrics.SentryMetricsParameters;
@@ -22,10 +21,12 @@ import java.util.UUID;
 public final class SentryObservabilityBridge extends FoundryPlugin {
   static final int BRIDGE_ERROR_OK = 0;
   static final int BRIDGE_ERROR_FAILED = 1;
+  static final int LIFECYCLE_VERSION = 1;
+  private static final SentryLifecycleCoordinator LIFECYCLE_COORDINATOR =
+      new SentryLifecycleCoordinator(new AndroidSentrySdkDriver());
 
   private Map<String, Object> globalAttributes = Collections.emptyMap();
-  private boolean configured;
-  private boolean didShutdown;
+  private String lifecycleOwner = "";
   private boolean logsEnabled;
   private boolean metricsEnabled;
 
@@ -39,23 +40,27 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
   }
 
   @UsedByFoundry
-  public int configure(Dictionary payload) {
-    closeActiveClient();
-    configured = false;
-    didShutdown = false;
-    logsEnabled = false;
-    metricsEnabled = false;
+  public int lifecycleVersion() {
+    return LIFECYCLE_VERSION;
+  }
 
+  @UsedByFoundry
+  public int configure(Dictionary payload) {
     if (payload == null) {
       return BRIDGE_ERROR_FAILED;
     }
 
-    Object globalAttributesValue = payload.get("global_attributes");
-    globalAttributes = globalAttributesValue instanceof Map
-        ? SentryEventMapper.copyDictionary((Map<?, ?>) globalAttributesValue)
-        : Collections.emptyMap();
+    String candidateOwner = stringValue(payload.get("lifecycle_owner"));
+    if (candidateOwner.isEmpty()) {
+      return BRIDGE_ERROR_FAILED;
+    }
 
     if (!booleanValue(payload.get("enabled"))) {
+      LIFECYCLE_COORDINATOR.shutdown(candidateOwner);
+      lifecycleOwner = "";
+      globalAttributes = Collections.emptyMap();
+      logsEnabled = false;
+      metricsEnabled = false;
       return BRIDGE_ERROR_OK;
     }
 
@@ -64,41 +69,49 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       return BRIDGE_ERROR_FAILED;
     }
 
-    try {
-      logsEnabled = booleanValue(payload.get("logs_enabled"));
-      metricsEnabled = booleanValue(payload.get("metrics_enabled"));
-      Map<?, ?> providerOptions = payload.get("provider_options") instanceof Map
-          ? (Map<?, ?>) payload.get("provider_options")
-          : Collections.emptyMap();
-      SentryAndroid.init(
-          getContext().getApplicationContext(),
-          (SentryAndroidOptions options) -> {
-            options.setDsn(dsn);
-            options.setSendDefaultPii(booleanValue(providerOptions.get("send_default_pii")));
-            options.getLogs().setEnabled(logsEnabled);
-            options.getMetrics().setEnabled(metricsEnabled);
-            applyAndroidAnrDiagnostics(options, payload);
-            options.setDebug(booleanValue(providerOptions.get("debug")));
-            setIfNotEmpty(options::setEnvironment, payload.get("environment"));
-            setIfNotEmpty(options::setRelease, payload.get("release"));
-            setIfNotEmpty(options::setDist, payload.get("dist"));
-          });
-      configured = Sentry.isEnabled();
-      return configured ? BRIDGE_ERROR_OK : BRIDGE_ERROR_FAILED;
-    } catch (RuntimeException exception) {
-      configured = false;
+    Object globalAttributesValue = payload.get("global_attributes");
+    Map<String, Object> candidateGlobalAttributes = globalAttributesValue instanceof Map
+        ? SentryEventMapper.copyDictionary((Map<?, ?>) globalAttributesValue)
+        : Collections.emptyMap();
+    Map<String, Object> providerOptions = payload.get("provider_options") instanceof Map
+        ? SentryEventMapper.copyDictionary((Map<?, ?>) payload.get("provider_options"))
+        : Collections.emptyMap();
+    SentryAndroidOptions diagnosticOptions = new SentryAndroidOptions();
+    applyAndroidAnrDiagnostics(diagnosticOptions, payload);
+    SentryLifecycleConfiguration candidateConfiguration =
+        new SentryLifecycleConfiguration(
+            getContext().getApplicationContext(),
+            dsn,
+            stringValue(payload.get("environment")),
+            stringValue(payload.get("release")),
+            stringValue(payload.get("dist")),
+            candidateGlobalAttributes,
+            providerOptions,
+            booleanValue(payload.get("logs_enabled")),
+            booleanValue(payload.get("metrics_enabled")),
+            diagnosticOptions.isAnrEnabled(),
+            diagnosticOptions.getAnrTimeoutIntervalMillis(),
+            diagnosticOptions.isAttachAnrThreadDump());
+
+    if (!LIFECYCLE_COORDINATOR.configure(candidateOwner, candidateConfiguration)) {
       return BRIDGE_ERROR_FAILED;
     }
+
+    lifecycleOwner = candidateOwner;
+    globalAttributes = candidateConfiguration.globalAttributes;
+    logsEnabled = candidateConfiguration.logsEnabled;
+    metricsEnabled = candidateConfiguration.metricsEnabled;
+    return BRIDGE_ERROR_OK;
   }
 
   @UsedByFoundry
-  public boolean isAvailable() {
-    return configured && !didShutdown && Sentry.isEnabled();
+  public boolean isAvailable(String owner) {
+    return LIFECYCLE_COORDINATOR.isAvailable(owner);
   }
 
   @UsedByFoundry
   public String capture(Dictionary payload) {
-    if (!isAvailable()) {
+    if (!isAvailable(lifecycleOwner)) {
       return "";
     }
     SentryEvent event = SentryEventMapper.makeEvent(payload, globalAttributes);
@@ -107,7 +120,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   @UsedByFoundry
   public String captureLog(Dictionary payload) {
-    if (!isAvailable() || !logsEnabled || payload == null) {
+    if (!isAvailable(lifecycleOwner) || !logsEnabled || payload == null) {
       return "";
     }
 
@@ -133,7 +146,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   @UsedByFoundry
   public boolean captureBreadcrumb(Dictionary payload) {
-    if (!isAvailable() || payload == null) {
+    if (!isAvailable(lifecycleOwner) || payload == null) {
       return false;
     }
 
@@ -147,7 +160,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   @UsedByFoundry
   public boolean captureMetric(Dictionary payload) {
-    if (!isAvailable() || !metricsEnabled) {
+    if (!isAvailable(lifecycleOwner) || !metricsEnabled) {
       return false;
     }
 
@@ -180,7 +193,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   @UsedByFoundry
   public String captureFeedback(Dictionary payload) {
-    if (!isAvailable() || payload == null) {
+    if (!isAvailable(lifecycleOwner) || payload == null) {
       return "";
     }
 
@@ -209,30 +222,20 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
   }
 
   @UsedByFoundry
-  public int flush(int timeoutMsec) {
-    if (!isAvailable()) {
-      return BRIDGE_ERROR_FAILED;
-    }
-    Sentry.flush(Math.max(0, timeoutMsec));
+  public int flush(String owner, int timeoutMsec) {
+    LIFECYCLE_COORDINATOR.flush(owner, timeoutMsec);
     return BRIDGE_ERROR_OK;
   }
 
   @UsedByFoundry
-  public void shutdown() {
-    if (didShutdown) {
-      return;
+  public void shutdown(String owner) {
+    LIFECYCLE_COORDINATOR.shutdown(owner);
+    if (owner != null && owner.equals(lifecycleOwner)) {
+      lifecycleOwner = "";
+      globalAttributes = Collections.emptyMap();
+      logsEnabled = false;
+      metricsEnabled = false;
     }
-    didShutdown = true;
-    closeActiveClient();
-  }
-
-  private void closeActiveClient() {
-    if (configured) {
-      Sentry.close();
-    }
-    configured = false;
-    logsEnabled = false;
-    metricsEnabled = false;
   }
 
   static void applyAndroidAnrDiagnostics(

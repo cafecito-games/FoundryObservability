@@ -48,6 +48,12 @@ tasks:
     cmds:
       - scripts/test-sentry-android-build-contract
 
+  test:sentry-java:
+    desc: Run deterministic Sentry Android JUnit cases
+    dir: addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry
+    cmds:
+      - ./gradlew test
+
   test:core:
     desc: Run provider-neutral repository and Foundry validation
     deps:
@@ -65,8 +71,9 @@ tasks:
       - test:sentry-contract
 
   test:sentry-android:
-    desc: Run Android Sentry build contract tests
+    desc: Run Android Sentry unit and build contract tests
     deps:
+      - test:sentry-java
       - test:sentry-android-contract
 
   test:
