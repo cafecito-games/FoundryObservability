@@ -69,6 +69,57 @@ func test_config_copies_attributes_and_options() -> void:
 	Expect.that(config.provider_options()).to_equal({"provider_key": "value"})
 
 
+func test_automatic_capture_masks_and_config_defaults() -> void:
+	var config := ObservabilityConfig.new()
+
+	Expect.that(config.automatic_capture_enabled).to_be_true()
+	Expect.that(config.automatic_event_mask).to_equal(
+			ObservabilityCaptureMask.ERROR
+			| ObservabilityCaptureMask.SCRIPT
+			| ObservabilityCaptureMask.SHADER)
+	Expect.that(config.automatic_breadcrumb_mask).to_equal(ObservabilityCaptureMask.ALL)
+	Expect.that(config.automatic_log_mask).to_equal(ObservabilityCaptureMask.NONE)
+	Expect.that(config.automatic_events_per_frame).to_equal(5)
+	Expect.that(config.automatic_repeated_error_window_msec).to_equal(1000)
+	Expect.that(config.automatic_event_throttle_count).to_equal(20)
+	Expect.that(config.automatic_event_throttle_window_msec).to_equal(10000)
+
+
+func test_automatic_capture_config_and_breadcrumb_copy_inputs() -> void:
+	var prefixes := PackedStringArray(["Internal: "])
+	var attributes := {"file": "res://player.fs"}
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_events_per_frame = -1,
+			p_automatic_repeated_error_window_msec = -1,
+			p_automatic_event_throttle_count = -1,
+			p_automatic_event_throttle_window_msec = -1,
+			p_automatic_message_filter_prefixes = prefixes,
+		)
+	var breadcrumb := ObservabilityBreadcrumb.new(
+			p_message = "warning",
+			p_level = ObservabilityLevel.WARN,
+			p_category = &"error",
+			p_timestamp_msec = 1234,
+			p_attributes = attributes,
+		)
+	prefixes[0] = "changed"
+	attributes["file"] = "changed"
+
+	Expect.that(config.automatic_events_per_frame).to_equal(0)
+	Expect.that(config.automatic_repeated_error_window_msec).to_equal(0)
+	Expect.that(config.automatic_event_throttle_count).to_equal(0)
+	Expect.that(config.automatic_event_throttle_window_msec).to_equal(0)
+	Expect.that(config.automatic_message_filter_prefixes()).to_equal(
+			PackedStringArray(["Internal: "]))
+	Expect.that(breadcrumb.message()).to_equal("warning")
+	Expect.that(breadcrumb.level()).to_equal(ObservabilityLevel.WARN)
+	Expect.that(breadcrumb.category()).to_equal(&"error")
+	Expect.that(breadcrumb.timestamp_msec()).to_equal(1234)
+	Expect.that(breadcrumb.attributes()).to_equal({"file": "res://player.fs"})
+
+
 func test_metric_types_and_value_copy_attributes() -> void:
 	var source := {"region": "iad", "nested": {"attempt": 1}}
 	var metric := ObservabilityMetric.new(

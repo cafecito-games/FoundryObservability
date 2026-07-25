@@ -33,6 +33,10 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/FoundryObservability.fs" ]] || fail "FoundryObservability.fs is missing"
 [[ -f "$addon/FoundryObservabilityApi.fs" ]] || fail "FoundryObservabilityApi.fs is missing"
 [[ -f "$addon/ObservabilityFeedback.fs" ]] || fail "ObservabilityFeedback.fs is missing"
+[[ -f "$addon/ObservabilityBreadcrumb.fs" ]] || fail "ObservabilityBreadcrumb.fs is missing"
+[[ -f "$addon/ObservabilityCaptureMask.fs" ]] || fail "ObservabilityCaptureMask.fs is missing"
+[[ -f "$addon/ObservabilityBreadcrumbsProvider.fs" ]] \
+	|| fail "ObservabilityBreadcrumbsProvider.fs is missing"
 [[ -f "$addon/ObservabilityMetric.fs" ]] || fail "ObservabilityMetric.fs is missing"
 [[ -f "$addon/ObservabilityMetricType.fs" ]] || fail "ObservabilityMetricType.fs is missing"
 [[ -f "$addon/ObservabilityMetricsProvider.fs" ]] || fail "ObservabilityMetricsProvider.fs is missing"
@@ -51,6 +55,13 @@ rg -q '^trait_name FoundryObservabilityApi$' "$addon/FoundryObservabilityApi.fs"
 	|| fail "public contract marker is missing"
 rg -q '^class_name ObservabilityFeedback$' "$addon/ObservabilityFeedback.fs" \
 	|| fail "feedback value type declaration is missing"
+rg -q '^class_name ObservabilityBreadcrumb$' "$addon/ObservabilityBreadcrumb.fs" \
+	|| fail "breadcrumb value type declaration is missing"
+rg -q '^class_name ObservabilityCaptureMask$' "$addon/ObservabilityCaptureMask.fs" \
+	|| fail "automatic capture mask declaration is missing"
+rg -q '^trait_name ObservabilityBreadcrumbsProvider$' \
+	"$addon/ObservabilityBreadcrumbsProvider.fs" \
+	|| fail "optional breadcrumb provider contract is missing"
 rg -q '^class_name ObservabilityMetric$' "$addon/ObservabilityMetric.fs" \
 	|| fail "metric value type declaration is missing"
 rg -q '^class_name ObservabilityMetricType$' "$addon/ObservabilityMetricType.fs" \
