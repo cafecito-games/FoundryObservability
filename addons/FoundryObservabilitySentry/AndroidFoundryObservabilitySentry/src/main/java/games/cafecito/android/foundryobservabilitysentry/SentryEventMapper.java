@@ -96,6 +96,8 @@ final class SentryEventMapper {
     extras.put("foundry.timestamp_msec", timestampMsec);
     if (engineTicksMsec >= 0L) {
       extras.put("foundry.engine_ticks_msec", engineTicksMsec);
+    } else {
+      extras.remove("foundry.engine_ticks_msec");
     }
     return extras;
   }

@@ -65,6 +65,22 @@ public class SentryEventMapperTest {
   }
 
   @Test
+  public void unavailableEngineTicksRemoveCallerControlledReservedMetadata() {
+    Map<String, Object> callerAttributes = Map.of("foundry.engine_ticks_msec", 999L);
+
+    Map<String, Object> extras = SentryEventMapper.mergedExtras(
+        callerAttributes,
+        callerAttributes,
+        "message",
+        "game",
+        1612325106123L,
+        -1L,
+        null);
+
+    assertFalse(extras.containsKey("foundry.engine_ticks_msec"));
+  }
+
+  @Test
   public void buildsMessageAndExceptionEvent() {
     Map<String, Object> payload = new HashMap<>();
     payload.put("kind", "exception");

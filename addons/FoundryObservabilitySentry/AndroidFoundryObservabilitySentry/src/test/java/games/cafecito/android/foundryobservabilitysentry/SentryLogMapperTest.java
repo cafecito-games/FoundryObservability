@@ -35,6 +35,21 @@ public class SentryLogMapperTest {
   }
 
   @Test
+  public void unavailableEngineTicksRemoveCallerControlledReservedMetadata() {
+    Map<String, Object> callerAttributes = Map.of("foundry.engine_ticks_msec", 999L);
+
+    Map<String, Object> result = SentryLogMapper.mergedAttributes(
+        callerAttributes,
+        callerAttributes,
+        "log",
+        "game",
+        1612325106123L,
+        -1L);
+
+    assertFalse(result.containsKey("foundry.engine_ticks_msec"));
+  }
+
+  @Test
   public void omitsNestedAndUnsupportedValues() {
     Map<String, Object> input = Map.of(
         "supported", "yes",

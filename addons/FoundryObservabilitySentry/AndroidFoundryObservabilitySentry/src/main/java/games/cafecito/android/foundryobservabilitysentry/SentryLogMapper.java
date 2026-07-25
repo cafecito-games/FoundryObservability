@@ -40,6 +40,8 @@ final class SentryLogMapper {
     result.put("foundry.timestamp_msec", timestampMsec);
     if (engineTicksMsec >= 0L) {
       result.put("foundry.engine_ticks_msec", engineTicksMsec);
+    } else {
+      result.remove("foundry.engine_ticks_msec");
     }
     return result;
   }

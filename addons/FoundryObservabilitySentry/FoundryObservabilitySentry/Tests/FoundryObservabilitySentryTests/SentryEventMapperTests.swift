@@ -60,6 +60,29 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(attributes["foundry.engine_ticks_msec"] as? Int64, 4567)
     }
 
+    func testUnavailableEngineTicksRemoveCallerControlledReservedMetadata() {
+        let callerAttributes = ["foundry.engine_ticks_msec": 999]
+        let extras = mergedExtras(
+            global: callerAttributes,
+            event: callerAttributes,
+            kind: "message",
+            source: "game",
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: -1
+        )
+        let logAttributes = mergedLogAttributes(
+            global: callerAttributes,
+            event: callerAttributes,
+            kind: "log",
+            source: "game",
+            timestampMsec: 1_612_325_106_123,
+            engineTicksMsec: -1
+        )
+
+        XCTAssertNil(extras["foundry.engine_ticks_msec"])
+        XCTAssertNil(logAttributes["foundry.engine_ticks_msec"])
+    }
+
     func testStructuredLogAttributesOmitUnsupportedValues() {
         let attributes = scalarLogAttributes([
             "supported": "yes",

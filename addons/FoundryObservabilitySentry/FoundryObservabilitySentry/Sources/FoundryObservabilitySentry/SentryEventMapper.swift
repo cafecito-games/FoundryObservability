@@ -37,6 +37,8 @@ func mergedLogAttributes(
     attributes["foundry.timestamp_msec"] = timestampMsec
     if engineTicksMsec >= 0 {
         attributes["foundry.engine_ticks_msec"] = engineTicksMsec
+    } else {
+        attributes.removeValue(forKey: "foundry.engine_ticks_msec")
     }
     return attributes
 }
@@ -160,6 +162,8 @@ func mergedExtras(
     extras["foundry.timestamp_msec"] = timestampMsec
     if engineTicksMsec >= 0 {
         extras["foundry.engine_ticks_msec"] = engineTicksMsec
+    } else {
+        extras.removeValue(forKey: "foundry.engine_ticks_msec")
     }
     return extras
 }
