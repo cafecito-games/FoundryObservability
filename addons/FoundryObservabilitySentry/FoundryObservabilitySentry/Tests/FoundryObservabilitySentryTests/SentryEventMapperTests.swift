@@ -238,7 +238,7 @@ final class SentryEventMapperTests: XCTestCase {
                 [
                     "file": "res://Combat.fs",
                     "function": "Combat.resolve",
-                    "line": Int64(8),
+                    "line": NSNumber(value: 8),
                     "language": "fsharp",
                     "in_app": NSNumber(value: false),
                 ],
@@ -304,6 +304,8 @@ final class SentryEventMapperTests: XCTestCase {
                 ],
                 ["file": "res://partial.fs"],
                 ["line": 0],
+                ["line": true],
+                ["line": NSNumber(value: true)],
             ],
         ])
 

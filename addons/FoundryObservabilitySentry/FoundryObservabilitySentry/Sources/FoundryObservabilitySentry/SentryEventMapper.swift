@@ -238,6 +238,12 @@ private func foundryStringArray(_ value: Any?) -> [String]? {
 }
 
 private func foundryPositiveInteger(_ value: Any?) -> Int? {
+    if value is Bool {
+        return nil
+    }
+    if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() {
+        return nil
+    }
     switch value {
     case let value as Int:
         return value > 0 ? value : nil
