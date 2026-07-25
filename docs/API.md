@@ -172,11 +172,11 @@ ObservabilityConfig.new(
 		p_automatic_repeated_error_window_msec: int = 1000,
 		p_automatic_event_throttle_count: int = 20,
 		p_automatic_event_throttle_window_msec: int = 10000,
+		p_stack_trace_source_context_enabled: bool = true,
+		p_stack_trace_variables_enabled: bool = false,
 		p_automatic_message_filter_prefixes: PackedStringArray = PackedStringArray(
 				["FoundryObservability: "],
 		),
-		p_stack_trace_source_context_enabled: bool = true,
-		p_stack_trace_variables_enabled: bool = false,
 )
 ~~~
 
