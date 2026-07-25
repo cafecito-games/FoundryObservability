@@ -5,7 +5,7 @@
 - Added default-enabled provider-neutral Apple app-hang and Android ANR
   diagnostics with configurable timeouts, optional Android thread-dump
   attachment, native severity and metadata preservation, and documented device
-  validation.
+  validation, including Android historical-trace availability.
 - Added provider-neutral structured exception frames and bounded source context,
   with source context enabled and local variables disabled unless explicitly
   opted in. Variable forwarding uses bounded, type-filtered copies.

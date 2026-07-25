@@ -23,9 +23,10 @@ The first core slice is available now:
   macOS, iOS, and Android Sentry delivery, while retaining formatted-stack
   fallback compatibility. Frame data is caller-supplied; the addon does not
   automatically acquire engine locals or redact supplied source text or values.
-- Default-enabled native main-thread hang diagnostics on macOS and iOS and ANR
-  diagnostics on Android, with provider-neutral enable, timeout, and Android
-  thread-dump controls.
+- Provider-neutral controls for default-enabled native main-thread hang and ANR
+  diagnostics when a supporting provider is configured; the included Sentry
+  provider implements them on macOS, iOS, and Android, with enable, timeout,
+  and Android thread-dump controls.
 - A FoundryLib `LogSink` adapter included in the core addon.
 - An optional `FoundryObservabilitySentry` provider addon backed by
   Foundry-Swift/Sentry Cocoa on Apple platforms and Sentry Android on Android.

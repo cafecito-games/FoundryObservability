@@ -1150,6 +1150,13 @@ process-exit information, so the operating system determines the ANR threshold
 and delivery may occur on the next launch. Thread-dump attachment applies only
 when the native Android implementation provides a dump.
 
+Android 11 and later historical ANR reporting requires usable operating-system
+`ApplicationExitInfo` and trace data. If the operating system provides no
+actionable, readable trace, no diagnostic event may be produced. Parsed thread
+data is present only when trace parsing succeeds. A raw thread-dump attachment
+is present only when requested and readable and available from the native
+implementation.
+
 FoundryObservability does not synthesize these events. The native SDK therefore
 retains severity, mechanism, blocked-thread state, attachments, lifecycle
 handling, and platform diagnostic metadata. Native lifecycle integrations own
@@ -1164,12 +1171,22 @@ failure and `is_available()` behavior.
 
 Manual release validation:
 
-| Target | Enabled check | Disabled check | Inspect in the diagnostic event |
-| --- | --- | --- | --- |
-| macOS | Block the main thread for longer than 5 seconds in a controlled test build. | Repeat with application hang detection disabled. | One event only when enabled; severity, mechanism, blocked thread, stack, release, environment, device, and OS data. |
-| iOS | Block the main thread for longer than 5 seconds on a physical test device. | Repeat with application hang detection disabled. | One event only when enabled; severity, mechanism, blocked thread, stack, release, environment, device, and OS data. |
-| Android 10 or earlier | Block the main thread beyond the configured watchdog timeout. | Repeat with ANR detection disabled. | One event only when enabled; mechanism, threads, release, environment, device, and OS data. |
-| Android 11 or later | Trigger a controlled system ANR and relaunch the app. | Repeat with ANR detection disabled. | One event only when enabled; mechanism, threads, release, environment, device, OS data, and the thread dump when requested and available. |
+Use a test-only controlled trigger in a non-production build. Launch detached
+from the debugger: Apple app-hang tracking and pre-Android-11 ANR reporting may
+be disabled or ignored while a debugger is attached. Block the main thread with
+a deliberate margin beyond the configured threshold, rather than only barely
+exceeding it. After a recovered Apple hang, allow time for capture to finalize
+and for transport to flush. On Android 10 or earlier, the configured timeout is
+the SDK watchdog threshold, but reporting also requires ActivityManager to
+consider the process actually not responding. On Android 11 or later, relaunch
+the app and wait for historical processing and transport.
+
+| Target | Trigger | Expected |
+| --- | --- | --- |
+| macOS | Block the main thread for longer than 5 seconds in a controlled test build. | Enabled: one native event after recovery; disabled: no event. Inspect severity, mechanism, blocked thread, stack, release, environment, device, and OS data. |
+| iOS | Block the main thread for longer than 5 seconds on a physical test device. | Enabled: one native event after recovery; disabled: no event. Inspect severity, mechanism, blocked thread, stack, release, environment, device, and OS data. |
+| Android 10 or earlier | Block the main thread beyond the configured watchdog timeout. | Enabled: one watchdog ANR event only when ActivityManager considers the process not responding; native severity is ERROR. Disabled: no event. Inspect mechanism, threads, release, environment, device, and OS data. |
+| Android 11 or later | Trigger a controlled system ANR, then relaunch the app. | Enabled: when usable `ApplicationExitInfo` and readable trace data produce a diagnostic, native severity is FATAL; parsed threads appear only after successful trace parsing, and a raw thread dump only when requested and readable and available. If no actionable trace is available, no event may be produced. Disabled: no event. Inspect mechanism, threads when parsed, release, environment, device, and OS data. |
 
 ## Sentry structured-log delivery
 
