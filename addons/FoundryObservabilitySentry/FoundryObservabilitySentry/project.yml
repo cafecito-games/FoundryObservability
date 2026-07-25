@@ -29,7 +29,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: "0.1.0"
-        LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../FoundrySwift/bin/macos_arm64"
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../../../FoundrySwift/bin/macos_arm64"
         OTHER_SWIFT_FLAGS: "-load-plugin-executable $(SRCROOT)/../../../.build/sentry-xcodebuild/SourcePackages/checkouts/Foundry-Swift-Binary/Binaries/FoundrySwiftMacros.artifactbundle/FoundrySwiftMacroLibrary-macos/bin/FoundrySwiftMacroLibrary#FoundrySwiftMacroLibrary"
     dependencies:
       - package: FoundrySwiftBinary

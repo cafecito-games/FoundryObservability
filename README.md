@@ -19,13 +19,18 @@ The first core slice is available now:
   optional association to a returned event ID.
 - First-class counters, gauges, and distributions with validation, filtering,
   deterministic sampling, units, and scalar attributes.
+- Provider-neutral structured exception frames and bounded source context for
+  macOS, iOS, and Android Sentry delivery, while retaining formatted-stack
+  fallback compatibility. Frame data is caller-supplied; the addon does not
+  automatically acquire engine locals or redact supplied source text or values.
 - A FoundryLib `LogSink` adapter included in the core addon.
 - An optional `FoundryObservabilitySentry` provider addon backed by
   Foundry-Swift/Sentry Cocoa on Apple platforms and Sentry Android on Android.
 
-The Sentry addon is independently installable and keeps the core addon safe to
-use on platforms without the native Sentry bridge. Its native artifacts support
-iOS device/simulator, macOS arm64, and Android exports.
+The Sentry addon is optional and keeps the core addon safe to use on platforms
+without the native Sentry bridge. Its native artifacts support iOS
+device/simulator, macOS arm64, and Android exports. On Apple, it requires the
+compatible FoundrySwift companion addon described below.
 
 ## Installation
 
@@ -38,9 +43,29 @@ FoundryLib is a required dependency of the addon because the included
 Install the FoundryLib package before importing or enabling the addon.
 
 For Sentry reporting, also install the `FoundryObservabilitySentry` sibling
-addon. The addon supplies the Apple framework or Android AAR for the selected
-export platform; the Apple build uses the shared `Foundry-Swift` dependency.
-Configure `SentryObservabilityProvider` as shown in [docs/API.md](docs/API.md).
+addon. Apple projects must install the exact compatible FoundrySwift
+`0.1.0-alpha.2` companion release with Anvil:
+
+```toml
+[packages.FoundrySwift]
+source = "github-release"
+repo = "cafecito-games/Foundry-Swift"
+version = "0.1.0-alpha.2"
+asset = "FoundrySwift-0.1.0-alpha.2.zip"
+checksum = "51fedac51e9157430df2e3802dbb0c827c5d35500af418bb1fcb04114d040ffb"
+source_path = "addons/FoundrySwift"
+```
+
+```sh
+anvil pkg install
+```
+
+The companion's `FoundrySwiftEmbed` extension owns the single shared
+FoundrySwift runtime embedded in Apple exports. The Sentry extension links that
+runtime but intentionally keeps its own dependency maps empty, preventing
+duplicate framework embedding. Android uses the Sentry Android AAR and does not
+require the FoundrySwift companion addon. Configure
+`SentryObservabilityProvider` as shown in [docs/API.md](docs/API.md).
 
 The public namespace is `foundry.observability`.
 

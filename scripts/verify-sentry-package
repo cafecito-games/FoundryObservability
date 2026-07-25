@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+sentry_source="$repo_root/addons/FoundryObservabilitySentry"
+source_version=$(awk -F'"' '/^version=/{print $2; exit}' "$sentry_source/plugin.cfg")
+version="${VERSION:-${1:-$source_version}}"
+dist_dir="${DIST_DIR:-$repo_root/dist}"
+archive="${SENTRY_ARCHIVE:-$dist_dir/FoundryObservabilitySentry-${version}.zip}"
+
+fail() {
+	echo "FAIL: $*" >&2
+	exit 1
+}
+
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+	|| fail "version must be numeric semver: $version"
+[[ -s "$archive" ]] || fail "Sentry archive is missing or empty: $archive"
+command -v unzip >/dev/null 2>&1 || fail "unzip is required"
+unzip -tq "$archive" >/dev/null || fail "Sentry archive is not a valid zip: $archive"
+
+required_archive_files=(
+	"addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework/Info.plist"
+	"addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework/ios-arm64/FoundryObservabilitySentry.framework/FoundryObservabilitySentry"
+	"addons/FoundryObservabilitySentry/bin/ios/FoundryObservabilitySentry.xcframework/ios-arm64-simulator/FoundryObservabilitySentry.framework/FoundryObservabilitySentry"
+	"addons/FoundryObservabilitySentry/bin/macos_arm64/FoundryObservabilitySentry.framework/Versions/A/FoundryObservabilitySentry"
+	"addons/FoundryObservabilitySentry/bin/android/debug/FoundryObservabilitySentry-debug.aar"
+	"addons/FoundryObservabilitySentry/bin/android/release/FoundryObservabilitySentry-release.aar"
+)
+
+listing=$(unzip -Z1 "$archive")
+while IFS= read -r archive_path; do
+	case "$archive_path" in
+		/* | ../* | */../* | */..)
+			fail "Sentry archive contains an unsafe path: $archive_path"
+			;;
+	esac
+done <<<"$listing"
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/foundryobservability-sentry-verify.XXXXXX")
+trap 'rm -rf "$tmp_dir"' EXIT
+unzip -q "$archive" -d "$tmp_dir"
+
+for archive_path in "${required_archive_files[@]}"; do
+	grep -Fqx "$archive_path" <<<"$listing" \
+		|| fail "Sentry archive is missing native artifact: $archive_path"
+	extracted_path="$tmp_dir/$archive_path"
+	[[ -s "$extracted_path" ]] \
+		|| fail "Sentry archive contains an empty native artifact: $archive_path"
+done
+
+framework="$tmp_dir/addons/FoundryObservabilitySentry/bin/macos_arm64/FoundryObservabilitySentry.framework"
+check_symlink() {
+	local relative_path=$1
+	local expected_target=$2
+	local symlink_path="$framework/$relative_path"
+
+	[[ -L "$symlink_path" ]] \
+		|| fail "Sentry archive framework path is not a symlink: $relative_path"
+	[[ "$(readlink "$symlink_path")" == "$expected_target" ]] \
+		|| fail "Sentry archive framework symlink has an unexpected target: $relative_path"
+}
+
+check_symlink "Versions/Current" "A"
+check_symlink "FoundryObservabilitySentry" \
+	"Versions/Current/FoundryObservabilitySentry"
+for framework_directory in Headers Modules Resources; do
+	check_symlink "$framework_directory" "Versions/Current/$framework_directory"
+done
+
+[[ -s "$framework/Versions/A/FoundryObservabilitySentry" ]] \
+	|| fail "Sentry archive contains an empty macOS framework binary"
+
+for variant in debug release; do
+	aar_path="$tmp_dir/addons/FoundryObservabilitySentry/bin/android/$variant/FoundryObservabilitySentry-${variant}.aar"
+	[[ -s "$aar_path" ]] \
+		|| fail "Sentry archive contains an empty Android $variant AAR"
+	unzip -tq "$aar_path" >/dev/null \
+		|| fail "Sentry archive contains an invalid Android $variant AAR"
+done
+
+echo "Sentry native artifact package checks passed: $archive"

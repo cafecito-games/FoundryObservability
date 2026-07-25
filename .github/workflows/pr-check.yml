@@ -19,15 +19,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
-      - name: Set up Python
-        uses: actions/setup-python@v7.0.0
-        with:
-          python-version: '3.12'
-
       - name: Install repository tooling
-        run: |
-          pip install -r requirements.txt
-          brew install prek ripgrep
+        run: brew install prek ripgrep
 
       - name: Install Task
         uses: go-task/setup-task@v2.1.0
@@ -41,7 +34,7 @@ jobs:
 
       - name: Install Anvil
         run: |
-          go install github.com/cafecito-games/foundry-tools/cmd/anvil@latest
+          go install github.com/cafecito-games/foundry-tools/cmd/anvil@176f5f7c5909c07c785fe6e1fd21051e0c13c5bf
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Install Foundry editor

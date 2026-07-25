@@ -7,6 +7,26 @@ class_name ObservabilityCoreTests
 extends RefCounted
 uses Test
 
+class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/ObservabilityStackFrame.fs":
+	var public_variables_calls: int = 0
+
+	func _init(p_file: String, p_variables: Dictionary) -> void:
+		super(
+				p_file,
+				"",
+				-1,
+				"",
+				true,
+				"",
+				PackedStringArray(),
+				PackedStringArray(),
+				p_variables,
+		)
+
+	func variables() -> Dictionary:
+		public_variables_calls += 1
+		return {"public accessor": true}
+
 
 func test_levels_are_ordered_and_named() -> void:
 	Expect.that(ObservabilityLevel.TRACE).to_be_less_than(ObservabilityLevel.DEBUG)
@@ -47,6 +67,630 @@ func test_exception_and_event_copy_attributes() -> void:
 	Expect.that(event.exception()).to_equal(exception)
 	Expect.that(event.timestamp_msec()).to_equal(1234)
 	Expect.that(event.attributes()).to_equal({"scene": "battle"})
+
+
+func test_stack_frame_and_exception_defensively_copy_structured_data() -> void:
+	var source_pre_context := PackedStringArray(["if target.is_alive():"])
+	var source_post_context := PackedStringArray(["return damage"])
+	var source_variables := {"combat": {"damage": 10}}
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://player.fs",
+			p_function = "attack",
+			p_line = 42,
+			p_language = "foundryscript",
+			p_in_app = true,
+			p_context_line = "deal_damage()",
+			p_pre_context = source_pre_context,
+			p_post_context = source_post_context,
+			p_variables = source_variables,
+		)
+	var source_frames: Array[ObservabilityStackFrame] = [frame]
+	var exception := ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = source_frames,
+		)
+
+	source_pre_context.append("changed before")
+	source_post_context.append("changed after")
+	source_variables["combat"]["damage"] = 99
+	source_frames.clear()
+	var exposed_pre_context := frame.pre_context()
+	var exposed_post_context := frame.post_context()
+	var exposed_variables := frame.variables()
+	var exposed_frames := exception.frames()
+	exposed_pre_context.append("changed accessor")
+	exposed_post_context.append("changed accessor")
+	exposed_variables["combat"]["damage"] = 100
+	exposed_frames.clear()
+
+	Expect.that(frame.file()).to_equal("res://player.fs")
+	Expect.that(frame.function()).to_equal("attack")
+	Expect.that(frame.line()).to_equal(42)
+	Expect.that(frame.language()).to_equal("foundryscript")
+	Expect.that(frame.in_app()).to_be_true()
+	Expect.that(frame.context_line()).to_equal("deal_damage()")
+	Expect.that(frame.pre_context()).to_equal(PackedStringArray(["if target.is_alive():"]))
+	Expect.that(frame.post_context()).to_equal(PackedStringArray(["return damage"]))
+	Expect.that(frame.variables()).to_equal({"combat": {"damage": 10}})
+	Expect.that(exception.stack_trace()).to_equal("formatted fallback")
+	Expect.that(exception.frames()).to_equal([frame])
+
+
+func test_stack_frame_defaults_and_legacy_exception_positional_arguments() -> void:
+	var frame := ObservabilityStackFrame.new()
+	var exception := ObservabilityException.new("Legacy", "message", "stack", {})
+
+	Expect.that(frame.file()).to_equal("")
+	Expect.that(frame.function()).to_equal("")
+	Expect.that(frame.line()).to_equal(-1)
+	Expect.that(frame.language()).to_equal("")
+	Expect.that(frame.in_app()).to_be_true()
+	Expect.that(frame.context_line()).to_equal("")
+	Expect.that(frame.pre_context()).to_equal(PackedStringArray())
+	Expect.that(frame.post_context()).to_equal(PackedStringArray())
+	Expect.that(frame.variables()).to_equal({})
+	Expect.that(exception.type_name()).to_equal("Legacy")
+	Expect.that(exception.message()).to_equal("message")
+	Expect.that(exception.stack_trace()).to_equal("stack")
+	Expect.that(exception.attributes()).to_equal({})
+	Expect.that(exception.frames()).to_equal([])
+
+
+func test_stack_frame_capture_defaults_keep_context_and_remove_variables() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new()
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://player.fs",
+			p_function = "attack",
+			p_line = 42,
+			p_language = "foundryscript",
+			p_context_line = "deal_damage()",
+			p_pre_context = PackedStringArray([
+				"discard", "keep 1", "keep 2", "keep 3", "keep 4", "keep 5",
+			]),
+			p_post_context = PackedStringArray([
+				"keep 1", "keep 2", "keep 3", "keep 4", "keep 5", "discard",
+			]),
+			p_variables = {"secret": "do not capture"},
+		)
+
+	Expect.that(config.stack_trace_source_context_enabled).to_be_true()
+	Expect.that(config.stack_trace_variables_enabled).to_be_false()
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	Expect.that(service.capture_event(ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_level = ObservabilityLevel.ERROR,
+			p_message = "attack failed",
+			p_timestamp_msec = 1234,
+			p_attributes = {},
+			p_exception = ObservabilityException.new(
+					p_type_name = "CombatError",
+					p_message = "attack failed",
+					p_stack_trace = "formatted fallback",
+					p_attributes = {},
+					p_frames = [frame],
+			),
+	))).to_equal("memory:1")
+
+	var captured_frame: ObservabilityStackFrame = provider.events()[0].exception().frames()[0]
+	Expect.that(captured_frame.context_line()).to_equal("deal_damage()")
+	Expect.that(captured_frame.pre_context()).to_equal(PackedStringArray([
+			"keep 1", "keep 2", "keep 3", "keep 4", "keep 5",
+	]))
+	Expect.that(captured_frame.post_context()).to_equal(PackedStringArray([
+			"keep 1", "keep 2", "keep 3", "keep 4", "keep 5",
+	]))
+	Expect.that(captured_frame.variables()).to_equal({})
+	service.shutdown()
+
+
+func test_stack_frame_capture_can_disable_context_and_enable_variables() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_source_context_enabled = false,
+			p_stack_trace_variables_enabled = true,
+	)
+	var frame := ObservabilityStackFrame.new(
+			p_function = "attack",
+			p_line = 0,
+			p_context_line = "deal_damage()",
+			p_pre_context = PackedStringArray(["before"]),
+			p_post_context = PackedStringArray(["after"]),
+			p_variables = {
+				"flag": true,
+				"count": 5,
+				"ratio": 2.5,
+				"label": &"sword",
+				"nested": {
+					"name": &"Knight",
+					"values": [false, 9, "safe", NAN, Vector2(1.0, 2.0)],
+					"bad vector": Vector2(3.0, 4.0),
+					7: "bad key",
+				},
+			},
+		)
+
+	Expect.that(config.stack_trace_source_context_enabled).to_be_false()
+	Expect.that(config.stack_trace_variables_enabled).to_be_true()
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	var captured_frame: ObservabilityStackFrame = provider.events()[0].exception().frames()[0]
+	Expect.that(captured_frame.line()).to_equal(-1)
+	Expect.that(captured_frame.context_line()).to_equal("")
+	Expect.that(captured_frame.pre_context()).to_equal(PackedStringArray())
+	Expect.that(captured_frame.post_context()).to_equal(PackedStringArray())
+	Expect.that(captured_frame.variables()).to_equal({
+			"flag": true,
+			"count": 5,
+			"ratio": 2.5,
+			"label": "sword",
+			"nested": {"name": "Knight", "values": [false, 9, "safe"]},
+	})
+	service.shutdown()
+
+
+func test_stack_frame_capture_drops_empty_frames_and_preserves_partial_fallback() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var frames: Array[ObservabilityStackFrame] = [
+		null,
+		ObservabilityStackFrame.new(),
+		ObservabilityStackFrame.new(p_language = "foundryscript"),
+	]
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = frames,
+	))).to_equal("memory:1")
+
+	var captured_exception: ObservabilityException = provider.events()[0].exception()
+	Expect.that(captured_exception.stack_trace()).to_equal("formatted fallback")
+	Expect.that(captured_exception.frames()).to_have_size(1)
+	Expect.that(captured_exception.frames()[0].language()).to_equal("foundryscript")
+	service.shutdown()
+
+
+func test_stack_frame_capture_drops_non_identity_frames_and_keeps_partial_identity() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var exception := ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [
+				ObservabilityStackFrame.new(),
+				ObservabilityStackFrame.new(p_in_app = true),
+				ObservabilityStackFrame.new(
+						p_in_app = false,
+						p_context_line = "context only",
+				),
+				ObservabilityStackFrame.new(
+						p_in_app = false,
+						p_pre_context = PackedStringArray(["pre-context only"]),
+				),
+				ObservabilityStackFrame.new(
+						p_in_app = false,
+						p_pre_context = PackedStringArray(),
+						p_post_context = PackedStringArray(["post-context only"]),
+				),
+				ObservabilityStackFrame.new(
+						p_in_app = false,
+						p_pre_context = PackedStringArray(),
+						p_post_context = PackedStringArray(),
+						p_variables = {"variables only": 1},
+				),
+				ObservabilityStackFrame.new(
+						p_line = 0,
+						p_in_app = false,
+				),
+				ObservabilityStackFrame.new(
+						p_line = -42,
+						p_in_app = false,
+				),
+				ObservabilityStackFrame.new(
+						p_file = "res://identity_only.fs",
+						p_in_app = false,
+				),
+				ObservabilityStackFrame.new(
+						p_language = "foundryscript",
+						p_in_app = false,
+				),
+				ObservabilityStackFrame.new(
+						p_function = "attack",
+						p_in_app = false,
+				),
+				ObservabilityStackFrame.new(
+						p_line = 42,
+						p_in_app = false,
+				),
+			],
+	)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_source_context_enabled = true,
+			p_stack_trace_variables_enabled = true,
+	)
+
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	Expect.that(service.capture_exception(exception)).to_equal("memory:1")
+	var captured_frames: Array[ObservabilityStackFrame] = provider.events()[0].exception().frames()
+	Expect.that(captured_frames).to_have_size(4)
+	Expect.that(captured_frames[0].file()).to_equal("res://identity_only.fs")
+	Expect.that(captured_frames[1].language()).to_equal("foundryscript")
+	Expect.that(captured_frames[2].function()).to_equal("attack")
+	Expect.that(captured_frames[3].line()).to_equal(42)
+	service.shutdown()
+
+
+func test_stack_frame_capture_uses_bounded_internal_variables_and_skips_dropped_frames() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var useful_frame := VariableCaptureProbeFrame.new("res://capture.fs", {"stored": true})
+	var dropped_frame := VariableCaptureProbeFrame.new("", {"stored": true})
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [useful_frame, dropped_frame],
+	))).to_equal("memory:1")
+
+	Expect.that(useful_frame.public_variables_calls).to_equal(0)
+	Expect.that(dropped_frame.public_variables_calls).to_equal(0)
+	var captured_frames: Array[ObservabilityStackFrame] = provider.events()[0].exception().frames()
+	Expect.that(captured_frames).to_have_size(1)
+	Expect.that(captured_frames[0].variables()).to_equal({"stored": true})
+	service.shutdown()
+
+
+func test_stack_frame_capture_clears_nearby_context_without_a_current_line() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var frame := ObservabilityStackFrame.new(
+			p_function = "attack",
+			p_in_app = false,
+			p_pre_context = PackedStringArray([
+				"discard", "keep 1", "keep 2", "keep 3", "keep 4", "keep 5",
+			]),
+			p_post_context = PackedStringArray([
+				"keep 1", "keep 2", "keep 3", "keep 4", "keep 5", "discard",
+			]),
+		)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	var captured_frame: ObservabilityStackFrame = provider.events()[0].exception().frames()[0]
+	Expect.that(captured_frame.context_line()).to_equal("")
+	Expect.that(captured_frame.pre_context()).to_equal(PackedStringArray())
+	Expect.that(captured_frame.post_context()).to_equal(PackedStringArray())
+	service.shutdown()
+
+
+func test_stack_frame_capture_normalizes_string_name_variable_keys() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://variables.fs",
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = {
+				&"top": &"value",
+				"nested": {&"child": &"nested value"},
+			},
+		)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	Expect.that(provider.events()[0].exception().frames()[0].variables()).to_equal({
+			"top": "value",
+			"nested": {"child": "nested value"},
+	})
+	service.shutdown()
+
+
+func test_stack_frame_capture_bounds_variable_container_depth() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var at_limit: Array = ["leaf"]
+	for _index: int in range(7):
+		at_limit = [at_limit]
+	var beyond_limit: Array = ["leaf"]
+	for _index: int in range(8):
+		beyond_limit = [beyond_limit]
+	var expected_beyond_limit: Array = []
+	for _index: int in range(7):
+		expected_beyond_limit = [expected_beyond_limit]
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://depth.fs",
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = {
+				"at limit": at_limit,
+				"beyond limit": beyond_limit,
+			},
+		)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	var variables: Dictionary = provider.events()[0].exception().frames()[0].variables()
+	Expect.that(variables["at limit"]).to_equal(at_limit)
+	Expect.that(variables["beyond limit"]).to_equal(expected_beyond_limit)
+	service.shutdown()
+
+
+func test_stack_frame_capture_bounds_total_variable_items() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var first_branch: Array = []
+	var second_branch: Array = []
+	var expected_second_branch: Array = []
+	for index: int in range(200):
+		first_branch.append(index)
+		second_branch.append(index)
+		if index < 53:
+			expected_second_branch.append(index)
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://budget.fs",
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = {"branches": [first_branch, second_branch]},
+		)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	Expect.that(provider.events()[0].exception().frames()[0].variables()).to_equal({
+			"branches": [first_branch, expected_second_branch],
+	})
+	service.shutdown()
+
+
+func test_stack_frame_construction_omits_cyclic_array_references() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var cyclic: Array = []
+	cyclic.append(cyclic)
+	var source_variables: Dictionary = {"cycle": cyclic, "finite": 7}
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://cycle.fs",
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = source_variables,
+		)
+	cyclic.append("mutated")
+	source_variables["finite"] = 99
+
+	Expect.that(frame.variables()).to_equal({"cycle": [], "finite": 7})
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	var variables: Dictionary = provider.events()[0].exception().frames()[0].variables()
+	Expect.that(variables).to_equal({"cycle": [], "finite": 7})
+	service.shutdown()
+
+
+func test_stack_frame_construction_omits_cyclic_dictionary_references() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var cyclic: Dictionary = {"kept": "cycle value"}
+	cyclic["self"] = cyclic
+	var source_variables: Dictionary = {"cycle": cyclic, "finite": 7}
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://dictionary-cycle.fs",
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = source_variables,
+	)
+	cyclic["kept"] = "mutated"
+	source_variables["finite"] = 99
+
+	Expect.that(frame.variables()).to_equal({
+			"cycle": {"kept": "cycle value"},
+			"finite": 7,
+	})
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	Expect.that(provider.events()[0].exception().frames()[0].variables()).to_equal({
+			"cycle": {"kept": "cycle value"},
+			"finite": 7,
+	})
+	service.shutdown()
+
+
+func test_stack_frame_construction_preserves_repeated_containers_as_isolated_copies() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var shared: Array = ["shared value"]
+	var source_variables: Dictionary = {
+		"first": shared,
+		"second": shared,
+		"finite": 7,
+	}
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://repeated.fs",
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = source_variables,
+	)
+	shared[0] = "mutated"
+	source_variables["finite"] = 99
+
+	var exposed_variables: Dictionary = frame.variables()
+	var exposed_first: Array = exposed_variables["first"]
+	var exposed_second: Array = exposed_variables.get("second", [])
+	exposed_first[0] = "mutated first copy"
+	Expect.that(exposed_second).to_equal(["shared value"])
+	Expect.that(frame.variables()).to_equal({
+			"first": ["shared value"],
+			"second": ["shared value"],
+			"finite": 7,
+	})
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	Expect.that(provider.events()[0].exception().frames()[0].variables()).to_equal({
+			"first": ["shared value"],
+			"second": ["shared value"],
+			"finite": 7,
+	})
+	service.shutdown()
+
+
+func test_stack_frame_capture_preserves_valid_repeat_after_unsupported_key() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var shared: Array = ["shared value"]
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://invalid-repeat.fs",
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = {7: shared, "valid": shared},
+	)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	Expect.that(provider.events()[0].exception().frames()[0].variables()).to_equal({
+			"valid": ["shared value"],
+	})
+	service.shutdown()
+
+
+func test_stack_frame_internal_sanitizer_omits_mutual_cycle_back_edge() -> void:
+	var cyclic_array: Array = []
+	var cyclic_dictionary: Dictionary = {"kept": "cycle value"}
+	cyclic_dictionary["array"] = cyclic_array
+	cyclic_array.append(cyclic_dictionary)
+	var frame := ObservabilityStackFrame.new()
+
+	var sanitized: Dictionary = frame._bounded_sanitized_variable_source(
+			{"cycle": cyclic_array, "finite": 7},
+			ObservabilityStackFrame.MAX_VARIABLE_CONTAINER_DEPTH,
+			ObservabilityStackFrame.MAX_VARIABLE_ITEMS,
+	)
+
+	Expect.that(sanitized).to_equal({
+			"cycle": [{"kept": "cycle value"}],
+			"finite": 7,
+	})
+	sanitized["cycle"][0]["kept"] = "mutated sanitized copy"
+	Expect.that(cyclic_dictionary["kept"]).to_equal("cycle value")
 
 
 func test_event_separates_wall_clock_timestamp_and_engine_ticks() -> void:

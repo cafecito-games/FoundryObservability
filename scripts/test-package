@@ -2,11 +2,81 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+sentry_package_script="$repo_root/scripts/package-sentry-addon"
+sentry_package_verifier="$repo_root/scripts/verify-sentry-package"
+taskfile="$repo_root/Taskfile.yml"
 
 fail() {
 	echo "FAIL: $*" >&2
 	exit 1
 }
+
+rg -q 'REQUIRE_NATIVE_ARTIFACTS' "$sentry_package_script" \
+	|| fail "Sentry packaging must support required native artifacts"
+[[ -x "$sentry_package_verifier" ]] \
+	|| fail "Sentry package verifier is missing or not executable"
+rg -q '^  verify:sentry-package:' "$taskfile" \
+	|| fail "Taskfile.yml must expose Sentry package verification"
+for dist_aware_script in \
+	"$repo_root/scripts/package-addon" \
+	"$sentry_package_script" \
+	"$sentry_package_verifier"; do
+	rg -q 'DIST_DIR' "$dist_aware_script" \
+		|| fail "$(basename "$dist_aware_script") must support an isolated DIST_DIR"
+done
+rg -q 'zip -qry' "$sentry_package_script" \
+	|| fail "Sentry packaging must preserve framework symlinks with Info-ZIP -y"
+rg -q 'readlink' "$sentry_package_verifier" \
+	|| fail "Sentry package verification must validate framework symlink targets"
+rg -q 'unzip -tq.*aar' "$sentry_package_verifier" \
+	|| fail "Sentry package verification must validate nested AAR zip files"
+
+required_native_paths=(
+	"bin/ios/FoundryObservabilitySentry.xcframework/Info.plist"
+	"bin/ios/FoundryObservabilitySentry.xcframework/ios-arm64/FoundryObservabilitySentry.framework/FoundryObservabilitySentry"
+	"bin/ios/FoundryObservabilitySentry.xcframework/ios-arm64-simulator/FoundryObservabilitySentry.framework/FoundryObservabilitySentry"
+	"bin/macos_arm64/FoundryObservabilitySentry.framework/Versions/A/FoundryObservabilitySentry"
+	"bin/android/debug/FoundryObservabilitySentry-debug.aar"
+	"bin/android/release/FoundryObservabilitySentry-release.aar"
+)
+for native_path in "${required_native_paths[@]}"; do
+	rg -Fq "$native_path" "$sentry_package_script" \
+		|| fail "Sentry packaging does not require $native_path"
+	rg -Fq "addons/FoundryObservabilitySentry/$native_path" "$sentry_package_verifier" \
+		|| fail "Sentry package verification does not inspect $native_path"
+done
+
+probe_root=$(mktemp -d "${TMPDIR:-/tmp}/foundryobservability-package-contract.XXXXXX")
+probe_artifact="$repo_root/addons/FoundryObservabilitySentry/bin/android/debug/FoundryObservabilitySentry-debug.aar"
+native_requirement_probe_version="9.8.6"
+native_requirement_dist="$probe_root/native-requirement"
+probe_backup_dir=""
+restore_probe_artifact() {
+	if [[ -n "$probe_backup_dir" && -e "$probe_backup_dir/FoundryObservabilitySentry-debug.aar" ]]; then
+		mv "$probe_backup_dir/FoundryObservabilitySentry-debug.aar" "$probe_artifact"
+	fi
+}
+cleanup_probes() {
+	restore_probe_artifact
+	rm -rf "$probe_root"
+}
+trap cleanup_probes EXIT
+if [[ -e "$probe_artifact" ]]; then
+	probe_backup_dir="$probe_root/artifact-backup"
+	mkdir -p "$probe_backup_dir"
+	mv "$probe_artifact" "$probe_backup_dir/FoundryObservabilitySentry-debug.aar"
+fi
+if native_failure=$(
+	cd "$repo_root"
+	DIST_DIR="$native_requirement_dist" \
+		REQUIRE_NATIVE_ARTIFACTS=1 \
+		task package VERSION="$native_requirement_probe_version" 2>&1
+); then
+	fail "required-native Sentry packaging succeeded with a missing artifact"
+fi
+rg -q 'required native artifact is missing or empty' <<<"$native_failure" \
+	|| fail "required-native Sentry packaging failed for an unexpected reason"
+restore_probe_artifact
 
 rg -q 'capture_log' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing capture_log"
@@ -28,8 +98,9 @@ rg -q 'Apple.*Android|Android.*Apple' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing Apple and Android provider behavior"
 
 command -v unzip >/dev/null 2>&1 || fail "unzip is required"
-archive=$("$repo_root/scripts/package-addon")
-sentry_archive=$("$repo_root/scripts/package-sentry-addon")
+default_dist="$probe_root/default"
+archive=$(DIST_DIR="$default_dist" "$repo_root/scripts/package-addon")
+sentry_archive=$(DIST_DIR="$default_dist" "$repo_root/scripts/package-sentry-addon")
 listing=$(unzip -Z1 "$archive")
 sentry_listing=$(unzip -Z1 "$sentry_archive")
 
@@ -97,5 +168,50 @@ while IFS= read -r resource; do
 done < <(
 	find "$repo_root/addons/FoundryObservabilitySentry" -maxdepth 1 -type f -name '*.fs' | sort
 )
+
+probe_version="9.8.7"
+sentry_only_probe_version="9.8.8"
+version_dist="$probe_root/version"
+probe_core_archive="$version_dist/FoundryObservability-${probe_version}.zip"
+probe_sentry_archive="$version_dist/FoundryObservabilitySentry-${probe_version}.zip"
+probe_sentry_only_archive="$version_dist/FoundryObservabilitySentry-${sentry_only_probe_version}.zip"
+(
+	cd "$repo_root"
+	DIST_DIR="$version_dist" task package VERSION="$probe_version" >/dev/null
+)
+[[ -s "$probe_core_archive" ]] \
+	|| fail "task package did not create the requested core archive version"
+[[ -s "$probe_sentry_archive" ]] \
+	|| fail "task package did not create the requested Sentry archive version"
+unzip -p "$probe_core_archive" addons/FoundryObservability/plugin.cfg \
+	| grep -qx "version=\"$probe_version\"" \
+	|| fail "task package did not rewrite the core plugin version"
+unzip -p "$probe_sentry_archive" addons/FoundryObservabilitySentry/plugin.cfg \
+	| grep -qx "version=\"$probe_version\"" \
+	|| fail "task package did not rewrite the Sentry plugin version"
+(
+	cd "$repo_root"
+	DIST_DIR="$version_dist" task package:sentry VERSION="$sentry_only_probe_version" >/dev/null
+)
+[[ -s "$probe_sentry_only_archive" ]] \
+	|| fail "task package:sentry did not create the requested archive version"
+unzip -p "$probe_sentry_only_archive" addons/FoundryObservabilitySentry/plugin.cfg \
+	| grep -qx "version=\"$sentry_only_probe_version\"" \
+	|| fail "task package:sentry did not rewrite the Sentry plugin version"
+
+source_framework="$repo_root/addons/FoundryObservabilitySentry/bin/macos_arm64/FoundryObservabilitySentry.framework"
+if [[ -L "$source_framework/Versions/Current" ]]; then
+	symlink_extract="$probe_root/symlink-extract"
+	unzip -q "$sentry_archive" -d "$symlink_extract"
+	archive_framework="$symlink_extract/addons/FoundryObservabilitySentry/bin/macos_arm64/FoundryObservabilitySentry.framework"
+	[[ -L "$archive_framework/Versions/Current" ]] \
+		|| fail "Sentry package did not preserve Versions/Current as a symlink"
+	[[ "$(readlink "$archive_framework/Versions/Current")" == "A" ]] \
+		|| fail "Sentry package preserved an incorrect Versions/Current target"
+	for framework_link in FoundryObservabilitySentry Headers Modules Resources; do
+		[[ -L "$archive_framework/$framework_link" ]] \
+			|| fail "Sentry package did not preserve $framework_link as a symlink"
+	done
+fi
 
 echo "Package contract checks passed: $archive and $sentry_archive"

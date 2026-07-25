@@ -274,7 +274,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../FoundrySwift/bin/macos_arm64";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../../../FoundrySwift/bin/macos_arm64";
 				MARKETING_VERSION = 0.1.0;
 				OTHER_SWIFT_FLAGS = "-load-plugin-executable $(SRCROOT)/../../../.build/sentry-xcodebuild/SourcePackages/checkouts/Foundry-Swift-Binary/Binaries/FoundrySwiftMacros.artifactbundle/FoundrySwiftMacroLibrary-macos/bin/FoundrySwiftMacroLibrary#FoundrySwiftMacroLibrary";
 				PRODUCT_BUNDLE_IDENTIFIER = "com.cafecitogames.FoundryObservabilitySentry-iOS";
@@ -373,7 +373,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../FoundrySwift/bin/macos_arm64";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../../../FoundrySwift/bin/macos_arm64";
 				MARKETING_VERSION = 0.1.0;
 				OTHER_SWIFT_FLAGS = "-load-plugin-executable $(SRCROOT)/../../../.build/sentry-xcodebuild/SourcePackages/checkouts/Foundry-Swift-Binary/Binaries/FoundrySwiftMacros.artifactbundle/FoundrySwiftMacroLibrary-macos/bin/FoundrySwiftMacroLibrary#FoundrySwiftMacroLibrary";
 				PRODUCT_BUNDLE_IDENTIFIER = "com.cafecitogames.FoundryObservabilitySentry-iOS";
@@ -416,7 +416,7 @@
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
 				GENERATE_INFOPLIST_FILE = YES;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
-				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../FoundrySwift/bin/macos_arm64";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../../../FoundrySwift/bin/macos_arm64";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 0.1.0;
 				OTHER_SWIFT_FLAGS = "-load-plugin-executable $(SRCROOT)/../../../.build/sentry-xcodebuild/SourcePackages/checkouts/Foundry-Swift-Binary/Binaries/FoundrySwiftMacros.artifactbundle/FoundrySwiftMacroLibrary-macos/bin/FoundrySwiftMacroLibrary#FoundrySwiftMacroLibrary";
@@ -442,7 +442,7 @@
 				DYLIB_INSTALL_NAME_BASE = "@rpath";
 				GENERATE_INFOPLIST_FILE = YES;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
-				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../FoundrySwift/bin/macos_arm64";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks @loader_path/../ @loader_path/../../../ @loader_path/../../../../../../FoundrySwift/bin/macos_arm64";
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 0.1.0;
 				OTHER_SWIFT_FLAGS = "-load-plugin-executable $(SRCROOT)/../../../.build/sentry-xcodebuild/SourcePackages/checkouts/Foundry-Swift-Binary/Binaries/FoundrySwiftMacros.artifactbundle/FoundrySwiftMacroLibrary-macos/bin/FoundrySwiftMacroLibrary#FoundrySwiftMacroLibrary";

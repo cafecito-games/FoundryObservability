@@ -14,16 +14,26 @@ on:
         default: patch
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.workflow }}
+  cancel-in-progress: false
 
 env:
   FOUNDRY_VERSION: "v0.1.0-alpha.7"
 
 jobs:
-  release:
-    name: Package and publish release
+  build:
+    name: Build and verify release
     runs-on: macos-26
-    timeout-minutes: 25
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -59,20 +69,30 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Python
-        uses: actions/setup-python@v7.0.0
-        with:
-          python-version: '3.12'
-
       - name: Install repository tooling
-        run: |
-          pip install -r requirements.txt
-          brew install prek ripgrep
+        run: brew install prek ripgrep
 
       - name: Install Task
         uses: go-task/setup-task@v2.1.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5.6.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4.0.1
+
+      - name: Install Android SDK platform 36
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platforms;android-36"
+
+      - name: Make gradlew executable
+        run: chmod +x addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/gradlew
 
       - name: Set up Go
         uses: actions/setup-go@v7.0.0
@@ -81,7 +101,7 @@ jobs:
 
       - name: Install Anvil
         run: |
-          go install github.com/cafecito-games/foundry-tools/cmd/anvil@latest
+          go install github.com/cafecito-games/foundry-tools/cmd/anvil@176f5f7c5909c07c785fe6e1fd21051e0c13c5bf
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Install Foundry editor
@@ -106,15 +126,57 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: task test
 
+      - name: Build Apple Sentry artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: task ios:sentry
+
+      - name: Verify Apple Sentry runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME: "1"
+        run: scripts/test-project
+
+      - name: Build Android Sentry artifacts
+        run: task android:sentry
+
       - name: Build versioned addon archive
-        run: task package VERSION="${{ steps.version.outputs.version }}"
+        run: REQUIRE_NATIVE_ARTIFACTS=1 task package VERSION="${{ steps.version.outputs.version }}"
+
+      - name: Verify Sentry native artifact archive
+        run: task verify:sentry-package VERSION="${{ steps.version.outputs.version }}"
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: release-archives
+          path: |
+            dist/FoundryObservability-${{ steps.version.outputs.version }}.zip
+            dist/FoundryObservabilitySentry-${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: release-archives
+          path: dist
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create \
-            "${{ steps.version.outputs.tag }}" \
-            "dist/FoundryObservability-${{ steps.version.outputs.version }}.zip" \
-            --title "FoundryObservability ${{ steps.version.outputs.tag }}" \
+            "${{ needs.build.outputs.tag }}" \
+            "dist/FoundryObservability-${{ needs.build.outputs.version }}.zip" \
+            "dist/FoundryObservabilitySentry-${{ needs.build.outputs.version }}.zip" \
+            --target "${{ needs.build.outputs.commit }}" \
+            --title "FoundryObservability ${{ needs.build.outputs.tag }}" \
             --generate-notes

@@ -4,14 +4,22 @@ import io.sentry.SentryEvent;
 import io.sentry.SentryLevel;
 import io.sentry.protocol.Message;
 import io.sentry.protocol.SentryException;
+import io.sentry.protocol.SentryStackFrame;
+import io.sentry.protocol.SentryStackTrace;
 import java.lang.reflect.Array;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 
 final class SentryEventMapper {
+  private static final int MAX_VARIABLE_CONTAINER_DEPTH = 8;
+  private static final int MAX_VARIABLE_ITEMS = 256;
+
   private SentryEventMapper() {}
 
   static final class MetricPayload {
@@ -140,10 +148,14 @@ final class SentryEventMapper {
     if (exception != null) {
       String exceptionType = stringValue(exception.get("type_name"));
       String exceptionMessage = stringValue(exception.get("message"));
-      if (!exceptionType.isEmpty() || !exceptionMessage.isEmpty()) {
+      SentryStackTrace stacktrace = structuredStacktrace(exception.get("frames"));
+      if (!exceptionType.isEmpty() || !exceptionMessage.isEmpty() || stacktrace != null) {
         SentryException sentryException = new SentryException();
         sentryException.setType(exceptionType);
         sentryException.setValue(exceptionMessage);
+        if (stacktrace != null) {
+          sentryException.setStacktrace(stacktrace);
+        }
         List<SentryException> exceptions = new ArrayList<>();
         exceptions.add(sentryException);
         event.setExceptions(exceptions);
@@ -205,6 +217,249 @@ final class SentryEventMapper {
       }
     }
     return result;
+  }
+
+  private static SentryStackTrace structuredStacktrace(Object value) {
+    List<SentryStackFrame> frames = new ArrayList<>();
+    for (Object frameValue : collectionValues(value)) {
+      if (!(frameValue instanceof Map)) {
+        continue;
+      }
+      SentryStackFrame frame = structuredStackFrame((Map<?, ?>) frameValue);
+      if (frame != null) {
+        frames.add(frame);
+      }
+    }
+    return frames.isEmpty() ? null : new SentryStackTrace(frames);
+  }
+
+  private static SentryStackFrame structuredStackFrame(Map<?, ?> value) {
+    String file = nonEmptyString(value.get("file"));
+    String function = nonEmptyString(value.get("function"));
+    Integer line = positiveLineNumber(value.get("line"));
+    String language = nonEmptyString(value.get("language"));
+    if (file == null && function == null && line == null && language == null) {
+      return null;
+    }
+
+    SentryStackFrame frame = new SentryStackFrame();
+    frame.setFilename(file);
+    frame.setFunction(function);
+    frame.setLineno(line);
+    frame.setPlatform(language);
+    frame.setInApp(value.get("in_app") instanceof Boolean
+        ? (Boolean) value.get("in_app")
+        : true);
+
+    String contextLine = nonEmptyString(value.get("context_line"));
+    if (contextLine != null) {
+      frame.setContextLine(contextLine);
+      List<String> preContext = stringCollection(value.get("pre_context"));
+      if (preContext != null) {
+        frame.setPreContext(preContext);
+      }
+      List<String> postContext = stringCollection(value.get("post_context"));
+      if (postContext != null) {
+        frame.setPostContext(postContext);
+      }
+    }
+
+    Map<String, Object> variables = stringKeyedMap(value.get("variables"));
+    if (variables != null) {
+      frame.setVars(variables);
+    }
+    return frame;
+  }
+
+  private static List<Object> collectionValues(Object value) {
+    List<Object> values = new ArrayList<>();
+    if (value instanceof Iterable) {
+      for (Object element : (Iterable<?>) value) {
+        values.add(element);
+      }
+    } else if (value != null && value.getClass().isArray()) {
+      for (int index = 0; index < Array.getLength(value); index++) {
+        values.add(Array.get(value, index));
+      }
+    }
+    return values;
+  }
+
+  private static List<String> stringCollection(Object value) {
+    List<String> values = new ArrayList<>();
+    for (Object element : collectionValues(value)) {
+      if (element instanceof String) {
+        values.add((String) element);
+      }
+    }
+    return values.isEmpty() ? null : values;
+  }
+
+  private static Map<String, Object> stringKeyedMap(Object value) {
+    if (!(value instanceof Map)) {
+      return null;
+    }
+    Map<String, Object> result = sanitizeVariableMap(
+        (Map<?, ?>) value,
+        0,
+        new VariableCopyState());
+    return result == null || result.isEmpty() ? null : result;
+  }
+
+  private static Map<String, Object> sanitizeVariableMap(
+      Map<?, ?> value,
+      int depth,
+      VariableCopyState state) {
+    if (depth > MAX_VARIABLE_CONTAINER_DEPTH || !state.enter(value)) {
+      return null;
+    }
+    try {
+      Map<String, Object> result = new HashMap<>();
+      for (Map.Entry<?, ?> entry : value.entrySet()) {
+        if (!state.consumeItem()) {
+          break;
+        }
+        if (!(entry.getKey() instanceof String)) {
+          continue;
+        }
+        Object copied = sanitizeVariableValue(entry.getValue(), depth, state);
+        if (copied != null) {
+          result.put((String) entry.getKey(), copied);
+        }
+      }
+      return result;
+    } finally {
+      state.leave(value);
+    }
+  }
+
+  private static List<Object> sanitizeVariableCollection(
+      Object value,
+      int depth,
+      VariableCopyState state) {
+    if (depth > MAX_VARIABLE_CONTAINER_DEPTH || !state.enter(value)) {
+      return null;
+    }
+    try {
+      List<Object> result = new ArrayList<>();
+      if (value instanceof Iterable) {
+        for (Object element : (Iterable<?>) value) {
+          if (!state.consumeItem()) {
+            break;
+          }
+          Object copied = sanitizeVariableValue(element, depth, state);
+          if (copied != null) {
+            result.add(copied);
+          }
+        }
+      } else {
+        for (int index = 0; index < Array.getLength(value); index++) {
+          if (!state.consumeItem()) {
+            break;
+          }
+          Object copied = sanitizeVariableValue(Array.get(value, index), depth, state);
+          if (copied != null) {
+            result.add(copied);
+          }
+        }
+      }
+      return result;
+    } finally {
+      state.leave(value);
+    }
+  }
+
+  private static Object sanitizeVariableValue(
+      Object value,
+      int parentDepth,
+      VariableCopyState state) {
+    if (value instanceof Boolean
+        || value instanceof String
+        || value instanceof Byte
+        || value instanceof Short
+        || value instanceof Integer
+        || value instanceof Long
+        || value instanceof BigInteger
+        || value instanceof BigDecimal) {
+      return value;
+    }
+    if (value instanceof Float) {
+      return Float.isFinite((Float) value) ? value : null;
+    }
+    if (value instanceof Double) {
+      return Double.isFinite((Double) value) ? value : null;
+    }
+    if (value instanceof Map) {
+      return sanitizeVariableMap((Map<?, ?>) value, parentDepth + 1, state);
+    }
+    if (value instanceof Iterable || (value != null && value.getClass().isArray())) {
+      return sanitizeVariableCollection(value, parentDepth + 1, state);
+    }
+    return null;
+  }
+
+  private static final class VariableCopyState {
+    private final Map<Object, Boolean> activeContainers = new IdentityHashMap<>();
+    private int itemCount;
+
+    boolean enter(Object container) {
+      return activeContainers.put(container, Boolean.TRUE) == null;
+    }
+
+    void leave(Object container) {
+      activeContainers.remove(container);
+    }
+
+    boolean consumeItem() {
+      if (itemCount >= MAX_VARIABLE_ITEMS) {
+        return false;
+      }
+      itemCount++;
+      return true;
+    }
+  }
+
+  private static String nonEmptyString(Object value) {
+    if (!(value instanceof String) || ((String) value).isEmpty()) {
+      return null;
+    }
+    return (String) value;
+  }
+
+  private static Integer positiveLineNumber(Object value) {
+    if (value instanceof Byte
+        || value instanceof Short
+        || value instanceof Integer
+        || value instanceof Long) {
+      long number = ((Number) value).longValue();
+      return number > 0L && number <= Integer.MAX_VALUE ? (int) number : null;
+    }
+    if (value instanceof BigInteger) {
+      BigInteger number = (BigInteger) value;
+      return number.signum() > 0
+              && number.compareTo(BigInteger.valueOf(Integer.MAX_VALUE)) <= 0
+          ? number.intValue()
+          : null;
+    }
+    if (value instanceof BigDecimal) {
+      try {
+        int number = ((BigDecimal) value).intValueExact();
+        return number > 0 ? number : null;
+      } catch (ArithmeticException ignored) {
+        return null;
+      }
+    }
+    if (!(value instanceof Float) && !(value instanceof Double)) {
+      return null;
+    }
+    double number = ((Number) value).doubleValue();
+    if (!Double.isFinite(number)
+        || number <= 0.0D
+        || number != Math.rint(number)
+        || number > Integer.MAX_VALUE) {
+      return null;
+    }
+    return (int) number;
   }
 
   private static Object copyValue(Object value) {

@@ -1,6 +1,9 @@
 import Foundation
 import Sentry
 
+private let foundryVariableMaxContainerDepth = 8
+private let foundryVariableMaxItemCount = 256
+
 func sentryLogLevel(for level: Int) -> SentryLog.Level {
     switch level {
     case 10:
@@ -133,6 +136,273 @@ struct FoundryExceptionPayload {
     let message: String
     let stackTrace: String
     let attributes: [String: Any]
+    let frames: [FoundryStackFramePayload]
+
+    init(
+        typeName: String,
+        message: String,
+        stackTrace: String,
+        attributes: [String: Any],
+        frames: [FoundryStackFramePayload] = []
+    ) {
+        self.typeName = typeName
+        self.message = message
+        self.stackTrace = stackTrace
+        self.attributes = attributes
+        self.frames = frames
+    }
+}
+
+struct FoundryStackFramePayload {
+    let file: String?
+    let function: String?
+    let line: Int?
+    let language: String?
+    let inApp: Bool
+    let contextLine: String?
+    let preContext: [String]?
+    let postContext: [String]?
+    let variables: [String: Any]?
+
+    var isUseful: Bool {
+        file != nil || function != nil || line != nil || language != nil
+    }
+}
+
+func foundryExceptionPayload(_ value: Any?) -> FoundryExceptionPayload? {
+    guard let dictionary = value as? [String: Any], !dictionary.isEmpty else {
+        return nil
+    }
+    let frames = foundryStackFramePayloads(dictionary["frames"])
+    return FoundryExceptionPayload(
+        typeName: foundryString(dictionary["type_name"]) ?? "",
+        message: foundryString(dictionary["message"]) ?? "",
+        stackTrace: foundryString(dictionary["stack_trace"]) ?? "",
+        attributes: foundryDictionary(dictionary["attributes"]) ?? [:],
+        frames: frames
+    )
+}
+
+private func foundryStackFramePayloads(_ value: Any?) -> [FoundryStackFramePayload] {
+    guard let values = value as? [Any] else {
+        return []
+    }
+    return values.compactMap { value in
+        guard let dictionary = foundryDictionary(value) else {
+            return nil
+        }
+        let contextLine = foundryNonEmptyString(dictionary["context_line"])
+        let preContext = contextLine == nil ? nil : foundryStringArray(dictionary["pre_context"])
+        let postContext = contextLine == nil ? nil : foundryStringArray(dictionary["post_context"])
+        let variables = foundrySanitizedVariables(dictionary["variables"])
+        let frame = FoundryStackFramePayload(
+            file: foundryNonEmptyString(dictionary["file"]),
+            function: foundryNonEmptyString(dictionary["function"]),
+            line: foundryPositiveInteger(dictionary["line"]),
+            language: foundryNonEmptyString(dictionary["language"]),
+            inApp: foundryBool(dictionary["in_app"]),
+            contextLine: contextLine,
+            preContext: preContext,
+            postContext: postContext,
+            variables: variables
+        )
+        return frame.isUseful ? frame : nil
+    }
+}
+
+private func foundryString(_ value: Any?) -> String? {
+    value as? String
+}
+
+private func foundryNonEmptyString(_ value: Any?) -> String? {
+    guard let value = foundryString(value), !value.isEmpty else {
+        return nil
+    }
+    return value
+}
+
+private func foundryDictionary(_ value: Any?) -> [String: Any]? {
+    value as? [String: Any]
+}
+
+private func foundrySanitizedVariables(_ value: Any?) -> [String: Any]? {
+    guard
+        let value,
+        let dictionary = foundrySanitizedVariableDictionary(
+            value,
+            depth: 0,
+            state: FoundryVariableCopyState()
+        ),
+        !dictionary.isEmpty
+    else {
+        return nil
+    }
+    return dictionary
+}
+
+private func foundrySanitizedVariableDictionary(
+    _ value: Any,
+    depth: Int,
+    state: FoundryVariableCopyState
+) -> [String: Any]? {
+    guard
+        depth <= foundryVariableMaxContainerDepth,
+        let dictionary = value as? NSDictionary,
+        state.enter(dictionary)
+    else {
+        return nil
+    }
+    defer { state.leave(dictionary) }
+
+    var result: [String: Any] = [:]
+    for (rawKey, rawValue) in dictionary {
+        guard state.consumeItem() else {
+            break
+        }
+        guard
+            let key = rawKey as? String,
+            let copied = foundrySanitizedVariableValue(
+                rawValue,
+                parentDepth: depth,
+                state: state
+            )
+        else {
+            continue
+        }
+        result[key] = copied
+    }
+    return result
+}
+
+private func foundrySanitizedVariableArray(
+    _ value: Any,
+    depth: Int,
+    state: FoundryVariableCopyState
+) -> [Any]? {
+    guard
+        depth <= foundryVariableMaxContainerDepth,
+        let array = value as? NSArray,
+        state.enter(array)
+    else {
+        return nil
+    }
+    defer { state.leave(array) }
+
+    var result: [Any] = []
+    for rawValue in array {
+        guard state.consumeItem() else {
+            break
+        }
+        if let copied = foundrySanitizedVariableValue(
+            rawValue,
+            parentDepth: depth,
+            state: state
+        ) {
+            result.append(copied)
+        }
+    }
+    return result
+}
+
+private func foundrySanitizedVariableValue(
+    _ value: Any,
+    parentDepth: Int,
+    state: FoundryVariableCopyState
+) -> Any? {
+    if let value = value as? String {
+        return value
+    }
+    if let number = value as? NSNumber {
+        let typeID = CFGetTypeID(number)
+        if typeID == CFBooleanGetTypeID() {
+            return number.boolValue
+        }
+        guard typeID == CFNumberGetTypeID(), number.doubleValue.isFinite else {
+            return nil
+        }
+        return number
+    }
+    if value is NSDictionary {
+        return foundrySanitizedVariableDictionary(
+            value,
+            depth: parentDepth + 1,
+            state: state
+        )
+    }
+    if value is NSArray {
+        return foundrySanitizedVariableArray(
+            value,
+            depth: parentDepth + 1,
+            state: state
+        )
+    }
+    return nil
+}
+
+private final class FoundryVariableCopyState {
+    private var activeContainers: Set<ObjectIdentifier> = []
+    private var itemCount = 0
+
+    func enter(_ container: AnyObject) -> Bool {
+        activeContainers.insert(ObjectIdentifier(container)).inserted
+    }
+
+    func leave(_ container: AnyObject) {
+        activeContainers.remove(ObjectIdentifier(container))
+    }
+
+    func consumeItem() -> Bool {
+        guard itemCount < foundryVariableMaxItemCount else {
+            return false
+        }
+        itemCount += 1
+        return true
+    }
+}
+
+private func foundryStringArray(_ value: Any?) -> [String]? {
+    guard let values = value as? [Any] else {
+        return nil
+    }
+    let strings = values.compactMap { $0 as? String }
+    return strings.isEmpty ? nil : strings
+}
+
+private func foundryPositiveInteger(_ value: Any?) -> Int? {
+    if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() {
+        return nil
+    }
+    switch value {
+    case let value as Int:
+        return value > 0 ? value : nil
+    case let value as Int64:
+        guard value > 0, let integer = Int(exactly: value) else {
+            return nil
+        }
+        return integer
+    case let value as Double:
+        guard
+            value.isFinite,
+            value > 0,
+            value.rounded(.towardZero) == value,
+            let integer = Int(exactly: value)
+        else {
+            return nil
+        }
+        return integer
+    default:
+        return nil
+    }
+}
+
+private func foundryBool(_ value: Any?) -> Bool {
+    guard
+        let value = value as? NSNumber,
+        CFGetTypeID(value) == CFBooleanGetTypeID()
+    else {
+        return true
+    }
+    return value.boolValue
 }
 
 func sentryLevel(for level: Int) -> SentryLevel {
@@ -230,7 +500,24 @@ func makeSentryEvent(
     )
 
     if let exception {
-        event.exceptions = [Exception(value: exception.message, type: exception.typeName)]
+        let sentryException = Exception(value: exception.message, type: exception.typeName)
+        if !exception.frames.isEmpty {
+            let frames = exception.frames.map { payload in
+                let frame = Frame()
+                frame.fileName = payload.file
+                frame.function = payload.function
+                frame.lineNumber = payload.line.map { NSNumber(value: $0) }
+                frame.platform = payload.language
+                frame.inApp = NSNumber(value: payload.inApp)
+                frame.contextLine = payload.contextLine
+                frame.preContext = payload.preContext
+                frame.postContext = payload.postContext
+                frame.vars = payload.variables
+                return frame
+            }
+            sentryException.stacktrace = SentryStacktrace(frames: frames, registers: [:])
+        }
+        event.exceptions = [sentryException]
     }
     return event
 }

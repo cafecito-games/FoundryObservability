@@ -20,6 +20,11 @@ plugin. The plugin registers the FoundryObservability autoload.
 The addon currently requires FoundryLib because its core package includes the
 FoundryLib LogSink adapter. The optional FoundryObservabilitySentry sibling
 addon provides the first production backend for Apple and Android exports.
+Apple projects using that provider must also install the FoundrySwift
+`0.1.0-alpha.2` companion addon. Its `FoundrySwiftEmbed` extension owns the
+single shared FoundrySwift runtime; the Sentry extension intentionally does not
+declare or embed another copy. Android uses the Sentry Android bridge and does
+not require FoundrySwift.
 
 The smallest setup is:
 
@@ -57,6 +62,7 @@ Value types:
 - ObservabilityLevel
 - ObservabilityConfig
 - ObservabilityException
+- ObservabilityStackFrame
 - ObservabilityEvent
 - ObservabilityBreadcrumb
 - ObservabilityCaptureMask
@@ -166,6 +172,8 @@ ObservabilityConfig.new(
 		p_automatic_repeated_error_window_msec: int = 1000,
 		p_automatic_event_throttle_count: int = 20,
 		p_automatic_event_throttle_window_msec: int = 10000,
+		p_stack_trace_source_context_enabled: bool = true,
+		p_stack_trace_variables_enabled: bool = false,
 		p_automatic_message_filter_prefixes: PackedStringArray = PackedStringArray(
 				["FoundryObservability: "],
 		),
@@ -194,6 +202,8 @@ Public fields:
 | automatic_repeated_error_window_msec | int | Duplicate-suppression window; zero disables suppression |
 | automatic_event_throttle_count | int | Maximum automatic exception events in the sliding window; zero is unlimited |
 | automatic_event_throttle_window_msec | int | Sliding-window duration; zero disables that limit |
+| stack_trace_source_context_enabled | bool | Retain bounded stack-frame source context; enabled by default |
+| stack_trace_variables_enabled | bool | Retain a bounded, type-filtered copy of stack-frame variables; disabled by default and requires explicit opt-in |
 
 Accessors:
 
@@ -288,6 +298,22 @@ the same observability pipeline.
 A null config passed to FoundryObservability.configure is replaced with a
 disabled ObservabilityConfig.
 
+Stack-frame source context is enabled by default. When present, the core keeps
+the nearest five preceding and five following lines; source-context arrays are
+omitted unless the frame has a nonempty current `context_line`. Source context
+can reveal source text, so callers must review it before capture. Frame
+variables are disabled by default. They may contain credentials, tokens, PII,
+or game state. Acquiring, inspecting, and copying stack locals can also be
+expensive and increase capture latency and memory use. Producers must check
+`stack_trace_variables_enabled` before acquiring locals, and only acquire them
+when it is explicitly enabled. This is type filtering and bounding, not content
+redaction: supported strings are forwarded verbatim, and callers must review
+both source context and variables before capture. When enabled, the core and
+native bridges retain only a bounded, type-filtered copy of supported values:
+booleans, finite numbers, strings, arrays, and string-keyed dictionaries, up to
+eight nested containers and 256 examined items per frame. Unsupported values,
+nonfinite numbers, non-string keys, and cycles are omitted.
+
 ## ObservabilityException
 
 ObservabilityException carries script or native failure data.
@@ -300,6 +326,7 @@ ObservabilityException.new(
 		p_message: String = "",
 		p_stack_trace: String = "",
 		p_attributes: Dictionary = {},
+		p_frames: Array[ObservabilityStackFrame] = [],
 )
 ~~~
 
@@ -310,10 +337,64 @@ func type_name() -> String
 func message() -> String
 func stack_trace() -> String
 func attributes() -> Dictionary
+func frames() -> Array[ObservabilityStackFrame]
 ~~~
 
-attributes are deep-copied on construction and access. The core does not
-interpret the type or stack string; providers decide how to map them.
+attributes are deep-copied on construction and access. The constructor copies
+the containing frame array and `frames()` returns a copy, so callers cannot
+replace stored entries through either array. `stack_trace()` remains the
+supported formatted-string fallback: structured frames are additive and never
+synthesize or overwrite it. The core does not interpret the type or formatted
+stack string; providers decide how to map them.
+
+## ObservabilityStackFrame
+
+ObservabilityStackFrame is a provider-neutral structured exception frame.
+Callers supply frames oldest-to-newest; core/providers preserve that order.
+Source-context arrays are ordered earlier-to-later.
+
+Constructor:
+
+~~~
+ObservabilityStackFrame.new(
+		p_file: String = "",
+		p_function: String = "",
+		p_line: int = -1,
+		p_language: String = "",
+		p_in_app: bool = true,
+		p_context_line: String = "",
+		p_pre_context: PackedStringArray = PackedStringArray(),
+		p_post_context: PackedStringArray = PackedStringArray(),
+		p_variables: Dictionary = {},
+)
+~~~
+
+Accessors:
+
+~~~
+func file() -> String
+func function() -> String
+func line() -> int
+func language() -> String
+func in_app() -> bool
+func context_line() -> String
+func pre_context() -> PackedStringArray
+func post_context() -> PackedStringArray
+func variables() -> Dictionary
+~~~
+
+`line` is a positive one-based source line, or `-1` when unknown. On capture,
+any nonpositive line normalizes to `-1`. A useful frame has a nonempty file,
+function, or language, or a positive line; null, empty, and otherwise malformed
+frames are omitted. A partial identity is still useful and survives. Malformed
+native frame entries never prevent use of the formatted-stack fallback.
+
+The constructor copies `pre_context` and `post_context` and deep-copies
+`variables`; their accessors return new copies. The constructor's variable
+ownership copy applies the same maximum of eight nested containers and 256
+examined items, and omits cycle back-edges. Scalar fields are immutable after
+construction. The capture boundary applies the source-context and variables
+policy described under `ObservabilityConfig` before dispatching to a provider.
 
 ## ObservabilityEvent
 
@@ -870,11 +951,36 @@ Example:
 ~~~
 import foundry.observability
 
+# Local values can contain secrets or player data. Enable only when intended,
+# before acquiring or adding them to a frame.
+var provider: ObservabilityProvider = MemoryObservabilityProvider.new()
+FoundryObservability.configure(
+		provider,
+		ObservabilityConfig.new(
+				p_enabled = true,
+				p_stack_trace_variables_enabled = true,
+		),
+)
+
 var exception := ObservabilityException.new(
 		p_type_name = "NetworkError",
 		p_message = "Matchmaking request failed",
-		p_stack_trace = stack_trace,
+		# Keep a formatted fallback for providers that do not use frames.
+		p_stack_trace = "at Matchmaker.join()",
 		p_attributes = {"region": "iad"},
+		p_frames = [
+				ObservabilityStackFrame.new(
+						p_file = "res://network/Matchmaker.fs",
+						p_function = "Matchmaker.join",
+						p_line = 42,
+						p_language = "foundryscript",
+						p_context_line = "\treturn _transport.send(request)",
+						p_pre_context = PackedStringArray(["\tvar request := _request()"]),
+						p_post_context = PackedStringArray(["\treturn Error.FAILED"]),
+						# Variables are supplied only because of the explicit opt-in above.
+						p_variables = {"match_id": "match-12345"},
+				),
+		],
 )
 FoundryObservability.capture_exception(exception)
 ~~~
@@ -1056,6 +1162,18 @@ Breadcrumb support remains optional at both provider boundaries. A provider
 without ObservabilityBreadcrumbsProvider, or an older Sentry native bridge
 without `captureBreadcrumb`, returns false for that breadcrumb while ordinary
 event capture continues.
+
+## Sentry structured exception stacks
+
+The optional Sentry provider forwards the neutral frame dictionaries from
+`ObservabilityStackFrame`; it does not require callers to construct a
+provider-specific type. On Apple, the bridge maps them to Sentry Cocoa
+`Frame`/`SentryStacktrace` values. On Android, it maps them to
+`SentryStackFrame`/`SentryStackTrace` values. Both preserve the normalized
+frame order and supported source context and variables. The legacy formatted
+string remains in the `foundry.stack_trace` extras when nonempty, including
+when structured frames are unavailable or malformed, for fallback compatibility
+and operator visibility.
 
 ## Sentry feedback delivery
 

@@ -439,11 +439,88 @@ func _capture_event(event: ObservabilityEvent) -> String:
 		return ""
 
 	_begin_provider_call()
-	var event_id: String = _provider.capture(event)
+	var event_id: String = _provider.capture(_normalized_exception_event(event))
 	_end_provider_call()
 	if event_id.is_empty():
 		_last_error = Error.FAILED
 	return event_id
+
+
+func _normalized_exception_event(event: ObservabilityEvent) -> ObservabilityEvent:
+	var exception: ObservabilityException? = event.exception()
+	if exception == null:
+		return event
+	return ObservabilityEvent.new(
+			p_kind = event.kind(),
+			p_level = event.level(),
+			p_message = event.message(),
+			p_source = event.source(),
+			p_timestamp_msec = event.timestamp_msec(),
+			p_attributes = event.attributes(),
+			p_exception = _normalized_exception(exception),
+			p_engine_ticks_msec = event.engine_ticks_msec(),
+	)
+
+
+func _normalized_exception(exception: ObservabilityException) -> ObservabilityException:
+	var normalized_frames: Array[ObservabilityStackFrame] = []
+	for frame: ObservabilityStackFrame in exception.frames():
+		if frame == null:
+			continue
+		if not _is_useful_stack_frame(frame):
+			continue
+		normalized_frames.append(_normalized_stack_frame(frame))
+	return ObservabilityException.new(
+			p_type_name = exception.type_name(),
+			p_message = exception.message(),
+			p_stack_trace = exception.stack_trace(),
+			p_attributes = exception.attributes(),
+			p_frames = normalized_frames,
+	)
+
+
+func _is_useful_stack_frame(frame: ObservabilityStackFrame) -> bool:
+	return not frame.file().is_empty() \
+			or not frame.function().is_empty() \
+			or not frame.language().is_empty() \
+			or frame.line() >= 1
+
+
+func _normalized_stack_frame(frame: ObservabilityStackFrame) -> ObservabilityStackFrame:
+	var line: int = frame.line()
+	if line < 1:
+		line = -1
+
+	var context_line: String = ""
+	var pre_context: PackedStringArray = PackedStringArray()
+	var post_context: PackedStringArray = PackedStringArray()
+	if _config.stack_trace_source_context_enabled:
+		context_line = frame.context_line()
+		if not context_line.is_empty():
+			var source_pre_context: PackedStringArray = frame.pre_context()
+			for index: int in range(maxi(0, source_pre_context.size() - 5), source_pre_context.size()):
+				pre_context.append(source_pre_context[index])
+			var source_post_context: PackedStringArray = frame.post_context()
+			for index: int in range(mini(5, source_post_context.size())):
+				post_context.append(source_post_context[index])
+
+	var variables: Dictionary = {}
+	if _config.stack_trace_variables_enabled:
+		variables = frame._bounded_sanitized_variables(
+				ObservabilityStackFrame.MAX_VARIABLE_CONTAINER_DEPTH,
+				ObservabilityStackFrame.MAX_VARIABLE_ITEMS,
+		)
+	return ObservabilityStackFrame.new(
+			p_file = frame.file(),
+			p_function = frame.function(),
+			p_line = line,
+			p_language = frame.language(),
+			p_in_app = frame.in_app(),
+			p_context_line = context_line,
+			p_pre_context = pre_context,
+			p_post_context = post_context,
+			p_variables = variables,
+	)
 
 
 func _capture_feedback(feedback: ObservabilityFeedback) -> String:

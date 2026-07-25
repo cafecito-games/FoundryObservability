@@ -8,8 +8,14 @@ import static org.junit.Assert.assertTrue;
 
 import io.sentry.SentryEvent;
 import io.sentry.SentryLevel;
+import io.sentry.protocol.SentryException;
+import io.sentry.protocol.SentryStackFrame;
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
 import org.junit.Test;
@@ -165,5 +171,321 @@ public class SentryEventMapperTest {
         "type", 1, "name", "", "value", 1.0D)));
     assertNull(SentryEventMapper.metricPayload(Map.of(
         "type", 1, "name", "metric", "value", Double.NaN)));
+  }
+
+  @Test
+  public void mapsStructuredExceptionFramesInProviderOrder() {
+    Map<Object, Object> variables = new HashMap<>();
+    variables.put("damage", 10);
+    variables.put("critical", false);
+    variables.put(7, "ignored");
+    Map<String, Object> firstFrame = new HashMap<>();
+    firstFrame.put("file", "res://Player.fs");
+    firstFrame.put("function", "Player.attack");
+    firstFrame.put("line", 24L);
+    firstFrame.put("language", "fsharp");
+    firstFrame.put("in_app", true);
+    firstFrame.put("context_line", "let damage = 10");
+    firstFrame.put("pre_context", new Object[] {"let weapon = sword", 2, "let target = goblin"});
+    firstFrame.put("post_context", Arrays.asList("applyDamage target damage", false));
+    firstFrame.put("variables", variables);
+    Map<String, Object> secondFrame = new HashMap<>();
+    secondFrame.put("file", "res://Combat.fs");
+    secondFrame.put("function", "Combat.resolve");
+    secondFrame.put("line", new BigDecimal("8"));
+    secondFrame.put("language", "fsharp");
+    secondFrame.put("in_app", false);
+
+    SentryEvent result = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "stack_trace", "legacy formatted stack",
+        "frames", new Object[] {firstFrame, secondFrame}));
+
+    assertEquals("legacy formatted stack", result.getExtras().get("foundry.stack_trace"));
+    SentryException exception = result.getExceptions().get(0);
+    assertEquals("InvalidState", exception.getType());
+    assertEquals("bad state", exception.getValue());
+    assertNotNull(exception.getStacktrace());
+    List<SentryStackFrame> frames = exception.getStacktrace().getFrames();
+    assertEquals(2, frames.size());
+
+    SentryStackFrame first = frames.get(0);
+    assertEquals("res://Player.fs", first.getFilename());
+    assertEquals("Player.attack", first.getFunction());
+    assertEquals(Integer.valueOf(24), first.getLineno());
+    assertEquals("fsharp", first.getPlatform());
+    assertEquals(Boolean.TRUE, first.isInApp());
+    assertEquals("let damage = 10", first.getContextLine());
+    assertEquals(Arrays.asList("let weapon = sword", "let target = goblin"), first.getPreContext());
+    assertEquals(List.of("applyDamage target damage"), first.getPostContext());
+    assertEquals(10, first.getVars().get("damage"));
+    assertEquals(false, first.getVars().get("critical"));
+    assertFalse(first.getVars().containsKey("7"));
+    assertFalse(first.getVars() == (Object) variables);
+
+    SentryStackFrame second = frames.get(1);
+    assertEquals("res://Combat.fs", second.getFilename());
+    assertEquals("Combat.resolve", second.getFunction());
+    assertEquals(Integer.valueOf(8), second.getLineno());
+    assertEquals("fsharp", second.getPlatform());
+    assertEquals(Boolean.FALSE, second.isInApp());
+  }
+
+  @Test
+  public void keepsFramesOnlyExceptionData() {
+    SentryEvent result = eventWithException(Map.of(
+        "stack_trace", "legacy formatted stack",
+        "frames", List.of(Map.of("file", "res://frames-only.fs"))));
+
+    assertEquals("legacy formatted stack", result.getExtras().get("foundry.stack_trace"));
+    assertNotNull(result.getExceptions());
+    assertEquals(1, result.getExceptions().size());
+    SentryException exception = result.getExceptions().get(0);
+    assertNotNull(exception.getStacktrace());
+    assertEquals(1, exception.getStacktrace().getFrames().size());
+    assertEquals("res://frames-only.fs", exception.getStacktrace().getFrames().get(0).getFilename());
+  }
+
+  @Test
+  public void skipsMalformedFramesAndKeepsUsefulPartialFrames() {
+    List<Object> frames = new ArrayList<>();
+    frames.add("not a frame");
+    frames.add(Map.of(
+        "file", 42,
+        "function", false,
+        "language", 99,
+        "line", -1,
+        "in_app", "yes",
+        "context_line", "context without identity",
+        "pre_context", new Object[] {"valid", 2, false},
+        "post_context", Arrays.asList(true, 4),
+        "variables", List.of("not", "a map")));
+    frames.add(Map.of(
+        "file", "",
+        "function", "",
+        "language", "",
+        "line", 0,
+        "context_line", "context with empty identity",
+        "variables", Map.of("value", 1)));
+    frames.add(Map.of("context_line", "context only", "pre_context", List.of("nearby")));
+    frames.add(Map.of("variables", Map.of("value", 1)));
+    frames.add(Map.of("in_app", false));
+    frames.add(Map.of("line", 1.5D));
+    frames.add(Map.of("line", new BigDecimal("1.0000000000000000000000000001")));
+    frames.add(Map.of("line", new BigDecimal("2147483646.0000000001")));
+    frames.add(Map.of("line", Double.NaN));
+    frames.add(Map.of("line", Double.POSITIVE_INFINITY));
+    frames.add(Map.of("line", Long.MAX_VALUE));
+    frames.add(Map.of("line", true));
+    frames.add(Map.of("line", "1"));
+    frames.add(Map.of(
+        "file", "res://partial.fs",
+        "function", "",
+        "language", "",
+        "line", -1,
+        "context_line", "",
+        "pre_context", new String[] {"discarded"},
+        "post_context", new String[] {"also discarded"},
+        "variables", Map.of()));
+    frames.add(Map.of(
+        "file", "res://no-context.fs",
+        "context_line", 123,
+        "pre_context", new Object[] {"discarded"},
+        "post_context", List.of("also discarded")));
+    frames.add(Map.of("file", "res://missing-in-app.fs"));
+    frames.add(Map.of("file", "res://wrong-in-app.fs", "in_app", 1));
+
+    SentryEvent result = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "stack_trace", "legacy formatted stack",
+        "frames", frames));
+
+    assertEquals("legacy formatted stack", result.getExtras().get("foundry.stack_trace"));
+    List<SentryStackFrame> mapped = result.getExceptions().get(0).getStacktrace().getFrames();
+    assertEquals(4, mapped.size());
+    SentryStackFrame partial = mapped.get(0);
+    assertEquals("res://partial.fs", partial.getFilename());
+    assertNull(partial.getFunction());
+    assertNull(partial.getLineno());
+    assertNull(partial.getPlatform());
+    assertEquals(Boolean.TRUE, partial.isInApp());
+    assertNull(partial.getContextLine());
+    assertNull(partial.getPreContext());
+    assertNull(partial.getPostContext());
+    assertNull(partial.getVars());
+
+    SentryStackFrame withoutContext = mapped.get(1);
+    assertEquals("res://no-context.fs", withoutContext.getFilename());
+    assertNull(withoutContext.getContextLine());
+    assertNull(withoutContext.getPreContext());
+    assertNull(withoutContext.getPostContext());
+    assertEquals(Boolean.TRUE, withoutContext.isInApp());
+
+    assertEquals("res://missing-in-app.fs", mapped.get(2).getFilename());
+    assertEquals(Boolean.TRUE, mapped.get(2).isInApp());
+    assertEquals("res://wrong-in-app.fs", mapped.get(3).getFilename());
+    assertEquals(Boolean.TRUE, mapped.get(3).isInApp());
+  }
+
+  @Test
+  public void sanitizesNestedFrameVariablesWithoutAliasingOrCycles() {
+    Map<Object, Object> nested = new HashMap<>();
+    nested.put("kept", "nested value");
+    nested.put(7, "discarded key");
+    nested.put("unsupported", new Object());
+    nested.put("nan", Double.NaN);
+    List<Object> list = new ArrayList<>();
+    list.add("list value");
+    list.add(2L);
+    list.add(Double.NEGATIVE_INFINITY);
+    list.add(new Object());
+    Object[] array = new Object[] {"array value", 3, Float.POSITIVE_INFINITY};
+    Map<String, Object> cycle = new HashMap<>();
+    cycle.put("kept", "cycle value");
+    cycle.put("self", cycle);
+    Map<Object, Object> variables = new HashMap<>();
+    variables.put("nested", nested);
+    variables.put("list", list);
+    variables.put("array", array);
+    variables.put("cycle", cycle);
+    variables.put(8, "discarded top-level key");
+
+    SentryEvent result = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "frames", List.of(Map.of("file", "res://variables.fs", "variables", variables))));
+
+    Map<String, Object> sanitized = result.getExceptions().get(0).getStacktrace().getFrames().get(0).getVars();
+    assertEquals(Map.of("kept", "nested value"), sanitized.get("nested"));
+    assertEquals(Arrays.asList("list value", 2L), sanitized.get("list"));
+    assertEquals(Arrays.asList("array value", 3), sanitized.get("array"));
+    assertEquals(Map.of("kept", "cycle value"), sanitized.get("cycle"));
+    assertFalse(sanitized.containsKey("8"));
+    assertFalse(sanitized == (Object) variables);
+
+    nested.put("kept", "mutated nested value");
+    list.set(0, "mutated list value");
+    array[0] = "mutated array value";
+    cycle.put("kept", "mutated cycle value");
+
+    assertEquals(Map.of("kept", "nested value"), sanitized.get("nested"));
+    assertEquals(Arrays.asList("list value", 2L), sanitized.get("list"));
+    assertEquals(Arrays.asList("array value", 3), sanitized.get("array"));
+    assertEquals(Map.of("kept", "cycle value"), sanitized.get("cycle"));
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void copiesRepeatedAcyclicVariableContainersIndependently() {
+    Map<String, Object> sharedMap = new HashMap<>();
+    sharedMap.put("value", "map value");
+    List<Object> sharedList = new ArrayList<>(List.of("list value"));
+    Object[] sharedArray = new Object[] {"array value"};
+    Map<String, Object> variables = new HashMap<>();
+    variables.put("map_one", sharedMap);
+    variables.put("map_two", sharedMap);
+    variables.put("list_one", sharedList);
+    variables.put("list_two", sharedList);
+    variables.put("array_one", sharedArray);
+    variables.put("array_two", sharedArray);
+
+    SentryEvent result = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "frames", List.of(Map.of("file", "res://shared.fs", "variables", variables))));
+
+    Map<String, Object> sanitized = result.getExceptions().get(0).getStacktrace().getFrames().get(0).getVars();
+    Map<String, Object> firstMap = (Map<String, Object>) sanitized.get("map_one");
+    Map<String, Object> secondMap = (Map<String, Object>) sanitized.get("map_two");
+    List<Object> firstList = (List<Object>) sanitized.get("list_one");
+    List<Object> secondList = (List<Object>) sanitized.get("list_two");
+    List<Object> firstArray = (List<Object>) sanitized.get("array_one");
+    List<Object> secondArray = (List<Object>) sanitized.get("array_two");
+    assertEquals(Map.of("value", "map value"), firstMap);
+    assertEquals(Map.of("value", "map value"), secondMap);
+    assertEquals(List.of("list value"), firstList);
+    assertEquals(List.of("list value"), secondList);
+    assertEquals(List.of("array value"), firstArray);
+    assertEquals(List.of("array value"), secondArray);
+    assertFalse(firstMap == secondMap);
+    assertFalse(firstList == secondList);
+    assertFalse(firstArray == secondArray);
+
+    sharedMap.put("value", "mutated source map");
+    sharedList.set(0, "mutated source list");
+    sharedArray[0] = "mutated source array";
+    assertEquals(Map.of("value", "map value"), firstMap);
+    assertEquals(Map.of("value", "map value"), secondMap);
+    assertEquals(List.of("list value"), firstList);
+    assertEquals(List.of("list value"), secondList);
+    assertEquals(List.of("array value"), firstArray);
+    assertEquals(List.of("array value"), secondArray);
+
+    firstMap.put("value", "mutated first map");
+    firstList.set(0, "mutated first list");
+    firstArray.set(0, "mutated first array copy");
+    assertEquals(Map.of("value", "map value"), secondMap);
+    assertEquals(List.of("list value"), secondList);
+    assertEquals(List.of("array value"), secondArray);
+  }
+
+  @Test
+  public void boundsFrameVariableContainerDepthAndItemCount() {
+    Map<String, Object> variables = new HashMap<>();
+    for (int index = 0; index < 257; index++) {
+      variables.put("item" + index, index);
+    }
+
+    SentryEvent itemResult = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "frames", List.of(Map.of("file", "res://items.fs", "variables", variables))));
+
+    assertEquals(256, itemResult.getExceptions().get(0).getStacktrace().getFrames().get(0).getVars().size());
+
+    Map<String, Object> depthVariables = new HashMap<>();
+    Map<String, Object> current = depthVariables;
+    for (int depth = 0; depth < 9; depth++) {
+      Map<String, Object> child = new HashMap<>();
+      current.put("child", child);
+      current = child;
+    }
+    current.put("leaf", "discarded");
+
+    SentryEvent depthResult = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "frames", List.of(Map.of("file", "res://depth.fs", "variables", depthVariables))));
+
+    Map<?, ?> sanitized = depthResult.getExceptions().get(0).getStacktrace().getFrames().get(0).getVars();
+    for (int depth = 0; depth < 8; depth++) {
+      assertTrue(sanitized.get("child") instanceof Map);
+      sanitized = (Map<?, ?>) sanitized.get("child");
+    }
+    assertFalse(sanitized.containsKey("child"));
+  }
+
+  @Test
+  public void leavesStringOnlyExceptionsWithoutStructuredStacktrace() {
+    SentryEvent result = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "stack_trace", "at Player.attack()"));
+
+    assertEquals("at Player.attack()", result.getExtras().get("foundry.stack_trace"));
+    assertNull(result.getExceptions().get(0).getStacktrace());
+  }
+
+  private static SentryEvent eventWithException(Map<String, Object> exception) {
+    Map<String, Object> payload = new HashMap<>();
+    payload.put("kind", "exception");
+    payload.put("level", 50);
+    payload.put("message", "boom");
+    payload.put("source", "combat");
+    payload.put("timestamp_msec", 1612325106123L);
+    payload.put("exception", exception);
+    return SentryEventMapper.makeEvent(payload, Map.of());
   }
 }

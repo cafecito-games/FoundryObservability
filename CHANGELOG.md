@@ -2,6 +2,14 @@
 
 ## [Unreleased] - 2026-07-24
 
+- Added provider-neutral structured exception frames and bounded source context,
+  with source context enabled and local variables disabled unless explicitly
+  opted in. Variable forwarding uses bounded, type-filtered copies.
+- Mapped structured exception frames to native Sentry Cocoa and Sentry Android
+  stack types while retaining the formatted `foundry.stack_trace` extra as a
+  compatible fallback.
+- Removed the incompatible gdtoolkit Python/requirements dependency and the
+  Python build prerequisite.
 - Corrected event timestamps to Unix epoch milliseconds across the core and
   Apple/Android Sentry bridges, preserved monotonic engine ticks separately,
   and made missing timestamps resolve once to capture time.
