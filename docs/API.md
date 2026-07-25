@@ -715,6 +715,11 @@ Behavior:
 
 The method returns the provider configure result.
 
+When the enabled provider is `SentryObservabilityProvider`, a missing native
+bridge or a bridge without lifecycle contract version 1 returns
+`Error.ERR_UNAVAILABLE`. This result leaves the existing active provider
+unchanged.
+
 ### Status methods
 
 ~~~
@@ -1189,6 +1194,45 @@ transport.
 | iOS | Block the main thread for longer than 5 seconds on a physical test device. | Enabled: one native event after recovery; disabled: no event. Inspect severity, mechanism, blocked thread, stack, release, environment, device, and OS data. |
 | Android 10 or earlier | Block the main thread beyond the configured watchdog timeout. | Enabled: one watchdog ANR event only when ActivityManager considers the process not responding; native severity is ERROR. Disabled: no event. Inspect mechanism, threads, release, environment, device, and OS data. |
 | Android 11 or later | Trigger a controlled system ANR, then relaunch the app. | Enabled: when usable `ApplicationExitInfo` and readable trace data produce the native V2 ANR diagnostic, its severity is FATAL; parsed threads appear only after successful trace parsing, and a raw thread dump only when requested and readable and available. If no actionable trace is available, no event may be produced. Disabled: no event. Inspect mechanism, threads when parsed, release, environment, device, and OS data. |
+
+## Sentry native crash lifecycle
+
+The Sentry provider starts the native SDK when enabled configuration succeeds.
+Call `FoundryObservability.configure(SentryObservabilityProvider.new(), config)`
+at the earliest supported startup boundary, once the DSN and deployment
+metadata are available. This is the first point at which the addon can install
+native crash handlers. A fatal crash in the pre-configuration gap is outside
+the addon's capture boundary and cannot be recovered later.
+
+The native startup configuration includes `release`, `environment`, `dist`,
+and scalar global attributes. Global attributes are installed under the
+`foundry.global_attributes` context before capture begins. Apple enables the
+Sentry crash handler. Android enables its uncaught-exception handler, NDK
+integration, and native scope synchronization. Sentry persists fatal crash data
+in-process and sends the previous launch report after the next launch starts
+with the same deployment identity.
+
+Sentry is process-global, while providers are ordinary FoundryScript objects.
+The bridge therefore uses an owner-safe lifecycle:
+
+- Equivalent configuration transfers ownership without restarting the SDK.
+- Changed configuration performs a bounded 2-second shutdown before starting
+  the replacement.
+- If replacement startup fails, the prior owner and configuration are restored.
+- Flush and shutdown calls from a stale owner do nothing, so an obsolete
+  provider cannot stop a newer session.
+
+Enabled configuration returns `Error.ERR_UNAVAILABLE` if the native bridge is
+missing or too old. After `Error.OK`, use
+`FoundryObservability.is_available()` to verify that this provider owns the
+running SDK. Keep release, environment, and distribution stable between the
+crash run and its recovery launch so Sentry can classify the stored report
+consistently.
+
+The repository does not ship a callable production crash helper. Follow
+[Native Crash Validation](NATIVE_CRASH_VALIDATION.md) for guarded macOS and
+Android tooling plus LLDB/Xcode steps for iOS. Perform that procedure only
+against a non-production Sentry project and disposable test data.
 
 ## Sentry structured-log delivery
 

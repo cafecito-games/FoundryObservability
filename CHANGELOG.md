@@ -2,6 +2,10 @@
 
 ## [Unreleased] - 2026-07-24
 
+- Added owner-safe native crash reporting lifecycle support for macOS, iOS, and
+  Android, with explicit Apple/Android crash handlers, Android NDK scope
+  synchronization, stable startup metadata, previous-launch delivery, bounded
+  shutdown, and guarded repository-only validation tooling for issue #7.
 - Added default-enabled provider-neutral Apple app-hang and Android ANR
   diagnostics with configurable timeouts, optional Android thread-dump
   attachment, native severity and metadata preservation, and documented device

@@ -5,8 +5,9 @@
 - Foundry `v0.1.0-alpha.8` or a compatible local development build
 - Go with the `anvil` package tool available on `PATH`
 - Task
-- Xcode 15+, Swift 6, and XcodeGen
-- Java 17 and Android SDK Platform 36
+- Xcode 15+, Swift 6, XcodeGen, and LLDB for Apple native crash validation
+- Java 17, Android SDK Platform 36, and ADB on `PATH` for Android device
+  validation
 - GitHub CLI (`gh`) authenticated for Foundry-Swift release downloads; set
   `GH_TOKEN` for non-interactive builds and CI
 - `jq`, `prek`, `ripgrep`, `zip`, and `unzip`
@@ -87,3 +88,20 @@ Sentry framework loads against its shared runtime before packaging.
 
 Current public source namespaces are `foundry.observability`,
 `foundry.observability.foundrylib`, and `foundry.observability.sentry`.
+
+## Native crash validation tooling
+
+Native crash validation also requires a non-production Sentry project, a
+disposable test release, and the applicable Xcode simulator or physical iOS
+device, macOS test process, or debuggable Android emulator/device. The guarded
+repository helper can signal macOS and Android processes:
+
+```text
+scripts/trigger-test-native-crash macos <pid> --i-understand-this-will-crash
+scripts/trigger-test-native-crash android <debuggable-package> --i-understand-this-will-crash
+```
+
+The helper is intentionally excluded from release packages. iOS validation
+uses Xcode and LLDB instead. Read
+[docs/NATIVE_CRASH_VALIDATION.md](docs/NATIVE_CRASH_VALIDATION.md) before
+running either workflow; every trigger terminates the selected process.

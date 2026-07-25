@@ -23,6 +23,10 @@ packages_manifest="$repo_root/test_project/packages.toml"
 packages_lock="$repo_root/test_project/packages.lock"
 gitignore="$repo_root/.gitignore"
 readme="$repo_root/README.md"
+api_docs="$repo_root/docs/API.md"
+build_docs="$repo_root/BUILD.md"
+changelog="$repo_root/CHANGELOG.md"
+crash_guide="$repo_root/docs/NATIVE_CRASH_VALIDATION.md"
 project_test="$repo_root/scripts/test-project"
 
 [[ -f "$taskfile" ]] || fail "Taskfile.yml is missing"
@@ -31,6 +35,7 @@ project_test="$repo_root/scripts/test-project"
 [[ -f "$descriptor" ]] || fail "Sentry FoundryExtension descriptor is missing"
 [[ -f "$export_plugin" ]] || fail "Sentry export plugin is missing"
 [[ -f "$package_swift" ]] || fail "Sentry Package.swift is missing"
+[[ -f "$crash_guide" ]] || fail "native crash validation guide is missing"
 [[ -f "$packages_manifest" ]] || fail "test project packages.toml is missing"
 [[ -f "$packages_lock" ]] || fail "test project packages.lock is missing"
 [[ -x "$project_test" ]] || fail "project runtime test is missing or not executable"
@@ -105,6 +110,37 @@ rg -q 'FoundrySwiftEmbed' "$readme" \
 	|| fail "README must explain shared runtime ownership by FoundrySwiftEmbed"
 rg -Fq -U $'Android uses the Sentry Android AAR and does not\nrequire the FoundrySwift companion addon.' "$readme" \
 	|| fail "README must state that Android does not require FoundrySwift"
+rg -qi 'native crash' "$readme" \
+	|| fail "README must document native crash reporting"
+rg -qi 'earliest.*startup' "$readme" \
+	|| fail "README must require configuration at the earliest startup hook"
+rg -qi 'previous launch' "$readme" \
+	|| fail "README must explain previous-launch crash delivery"
+rg -Fq 'Error.ERR_UNAVAILABLE' "$api_docs" \
+	|| fail "API docs must define unavailable native bridge behavior"
+rg -qi 'owner-safe' "$api_docs" \
+	|| fail "API docs must explain owner-safe Sentry replacement"
+rg -qi 'pre-configuration gap' "$api_docs" \
+	|| fail "API docs must identify the native crash pre-configuration gap"
+rg -qi '2-second|two-second|2000 ms' "$api_docs" \
+	|| fail "API docs must document bounded native shutdown"
+for guide_term in \
+	'previous launch' \
+	'release' \
+	'environment' \
+	'macOS' \
+	'iOS' \
+	'Android' \
+	'--i-understand-this-will-crash'; do
+	rg -Fqi -- "$guide_term" "$crash_guide" \
+		|| fail "native crash validation guide is missing: $guide_term"
+done
+for prerequisite in LLDB Xcode ADB; do
+	rg -qi "$prerequisite" "$build_docs" \
+		|| fail "BUILD.md is missing native crash prerequisite: $prerequisite"
+done
+rg -qi 'native crash' "$changelog" \
+	|| fail "changelog must record native crash lifecycle support"
 
 rg -q 'FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME' "$project_test" \
 	|| fail "project test must expose strict native runtime verification"
