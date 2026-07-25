@@ -40,6 +40,10 @@ var automatic_repeated_error_window_msec: int = 1000
 var automatic_event_throttle_count: int = 20
 ## Defines the automatic event sliding window; zero disables the limit.
 var automatic_event_throttle_window_msec: int = 10000
+## Retains bounded source context around captured stack frames when true.
+var stack_trace_source_context_enabled: bool = true
+## Retains recursively normalized local stack-frame variables when true.
+var stack_trace_variables_enabled: bool = false
 var _global_attributes: Dictionary = {}
 var _provider_options: Dictionary = {}
 var _automatic_message_filter_prefixes: PackedStringArray = PackedStringArray()
@@ -69,6 +73,8 @@ func _init(
 		p_automatic_event_throttle_window_msec: int = 10000,
 		p_automatic_message_filter_prefixes: PackedStringArray = PackedStringArray(
 				["FoundryObservability: "]),
+		p_stack_trace_source_context_enabled: bool = true,
+		p_stack_trace_variables_enabled: bool = false,
 ) -> void:
 	enabled = p_enabled
 	environment = p_environment
@@ -88,6 +94,8 @@ func _init(
 	automatic_repeated_error_window_msec = maxi(0, p_automatic_repeated_error_window_msec)
 	automatic_event_throttle_count = maxi(0, p_automatic_event_throttle_count)
 	automatic_event_throttle_window_msec = maxi(0, p_automatic_event_throttle_window_msec)
+	stack_trace_source_context_enabled = p_stack_trace_source_context_enabled
+	stack_trace_variables_enabled = p_stack_trace_variables_enabled
 	_global_attributes = p_global_attributes.duplicate(true)
 	_provider_options = p_provider_options.duplicate(true)
 	_automatic_message_filter_prefixes = p_automatic_message_filter_prefixes.duplicate()
