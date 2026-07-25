@@ -88,3 +88,11 @@ func test_project_uses_foundry_script_configuration_without_legacy_warning_keys(
 	]:
 		Expect.that(ProjectSettings.has_setting(old_key)).to_be_false()
 		Expect.that(project_source.find(old_key)).to_equal(-1)
+
+func test_project_contains_startup_status_and_settings_resources() -> void:
+	for resource_path: String in [
+		"res://addons/FoundryObservability/ObservabilityStartupStatus.fs",
+		"res://addons/FoundryObservability/ObservabilityStartupSettings.fs",
+	]:
+		Expect.that(FileAccess.file_exists(resource_path)).to_be_true()
+		Expect.that(FileAccess.file_exists(resource_path + ".uid")).to_be_true()

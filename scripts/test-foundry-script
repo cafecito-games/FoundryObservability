@@ -32,6 +32,10 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/export_plugin.fs" ]] || fail "export_plugin.fs is missing"
 [[ -f "$addon/FoundryObservability.fs" ]] || fail "FoundryObservability.fs is missing"
 [[ -f "$addon/FoundryObservabilityApi.fs" ]] || fail "FoundryObservabilityApi.fs is missing"
+[[ -f "$addon/ObservabilityStartupStatus.fs" ]] \
+	|| fail "ObservabilityStartupStatus.fs is missing"
+[[ -f "$addon/ObservabilityStartupSettings.fs" ]] \
+	|| fail "ObservabilityStartupSettings.fs is missing"
 [[ -f "$addon/AutomaticObservabilityLogger.fs" ]] \
 	|| fail "AutomaticObservabilityLogger.fs is missing"
 [[ -f "$addon/ObservabilityFeedback.fs" ]] || fail "ObservabilityFeedback.fs is missing"
