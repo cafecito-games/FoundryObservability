@@ -8,8 +8,13 @@ import static org.junit.Assert.assertTrue;
 
 import io.sentry.SentryEvent;
 import io.sentry.SentryLevel;
+import io.sentry.protocol.SentryException;
+import io.sentry.protocol.SentryStackFrame;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
 import org.junit.Test;
@@ -165,5 +170,166 @@ public class SentryEventMapperTest {
         "type", 1, "name", "", "value", 1.0D)));
     assertNull(SentryEventMapper.metricPayload(Map.of(
         "type", 1, "name", "metric", "value", Double.NaN)));
+  }
+
+  @Test
+  public void mapsStructuredExceptionFramesInProviderOrder() {
+    Map<Object, Object> variables = new HashMap<>();
+    variables.put("damage", 10);
+    variables.put("critical", false);
+    variables.put(7, "ignored");
+    Map<String, Object> firstFrame = new HashMap<>();
+    firstFrame.put("file", "res://Player.fs");
+    firstFrame.put("function", "Player.attack");
+    firstFrame.put("line", 24L);
+    firstFrame.put("language", "fsharp");
+    firstFrame.put("in_app", true);
+    firstFrame.put("context_line", "let damage = 10");
+    firstFrame.put("pre_context", new Object[] {"let weapon = sword", 2, "let target = goblin"});
+    firstFrame.put("post_context", Arrays.asList("applyDamage target damage", false));
+    firstFrame.put("variables", variables);
+    Map<String, Object> secondFrame = new HashMap<>();
+    secondFrame.put("file", "res://Combat.fs");
+    secondFrame.put("function", "Combat.resolve");
+    secondFrame.put("line", 8);
+    secondFrame.put("language", "fsharp");
+    secondFrame.put("in_app", false);
+
+    SentryEvent result = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "stack_trace", "legacy formatted stack",
+        "frames", new Object[] {firstFrame, secondFrame}));
+
+    assertEquals("legacy formatted stack", result.getExtras().get("foundry.stack_trace"));
+    SentryException exception = result.getExceptions().get(0);
+    assertEquals("InvalidState", exception.getType());
+    assertEquals("bad state", exception.getValue());
+    assertNotNull(exception.getStacktrace());
+    List<SentryStackFrame> frames = exception.getStacktrace().getFrames();
+    assertEquals(2, frames.size());
+
+    SentryStackFrame first = frames.get(0);
+    assertEquals("res://Player.fs", first.getFilename());
+    assertEquals("Player.attack", first.getFunction());
+    assertEquals(Integer.valueOf(24), first.getLineno());
+    assertEquals("fsharp", first.getPlatform());
+    assertEquals(Boolean.TRUE, first.isInApp());
+    assertEquals("let damage = 10", first.getContextLine());
+    assertEquals(Arrays.asList("let weapon = sword", "let target = goblin"), first.getPreContext());
+    assertEquals(List.of("applyDamage target damage"), first.getPostContext());
+    assertEquals(10, first.getVars().get("damage"));
+    assertEquals(false, first.getVars().get("critical"));
+    assertFalse(first.getVars().containsKey("7"));
+    assertFalse(first.getVars() == (Object) variables);
+
+    SentryStackFrame second = frames.get(1);
+    assertEquals("res://Combat.fs", second.getFilename());
+    assertEquals("Combat.resolve", second.getFunction());
+    assertEquals(Integer.valueOf(8), second.getLineno());
+    assertEquals("fsharp", second.getPlatform());
+    assertEquals(Boolean.FALSE, second.isInApp());
+  }
+
+  @Test
+  public void skipsMalformedFramesAndKeepsUsefulPartialFrames() {
+    List<Object> frames = new ArrayList<>();
+    frames.add("not a frame");
+    frames.add(Map.of(
+        "file", 42,
+        "function", false,
+        "language", 99,
+        "line", -1,
+        "in_app", "yes",
+        "context_line", "context without identity",
+        "pre_context", new Object[] {"valid", 2, false},
+        "post_context", Arrays.asList(true, 4),
+        "variables", List.of("not", "a map")));
+    frames.add(Map.of(
+        "file", "",
+        "function", "",
+        "language", "",
+        "line", 0,
+        "context_line", "context with empty identity",
+        "variables", Map.of("value", 1)));
+    frames.add(Map.of("context_line", "context only", "pre_context", List.of("nearby")));
+    frames.add(Map.of("variables", Map.of("value", 1)));
+    frames.add(Map.of("in_app", false));
+    frames.add(Map.of("line", 1.5D));
+    frames.add(Map.of("line", Double.NaN));
+    frames.add(Map.of("line", Double.POSITIVE_INFINITY));
+    frames.add(Map.of("line", Long.MAX_VALUE));
+    frames.add(Map.of("line", true));
+    frames.add(Map.of("line", "1"));
+    frames.add(Map.of(
+        "file", "res://partial.fs",
+        "function", "",
+        "language", "",
+        "line", -1,
+        "context_line", "",
+        "pre_context", new String[] {"discarded"},
+        "post_context", new String[] {"also discarded"},
+        "variables", Map.of()));
+    frames.add(Map.of(
+        "file", "res://no-context.fs",
+        "context_line", 123,
+        "pre_context", new Object[] {"discarded"},
+        "post_context", List.of("also discarded")));
+    frames.add(Map.of("file", "res://missing-in-app.fs"));
+    frames.add(Map.of("file", "res://wrong-in-app.fs", "in_app", 1));
+
+    SentryEvent result = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "stack_trace", "legacy formatted stack",
+        "frames", frames));
+
+    assertEquals("legacy formatted stack", result.getExtras().get("foundry.stack_trace"));
+    List<SentryStackFrame> mapped = result.getExceptions().get(0).getStacktrace().getFrames();
+    assertEquals(4, mapped.size());
+    SentryStackFrame partial = mapped.get(0);
+    assertEquals("res://partial.fs", partial.getFilename());
+    assertNull(partial.getFunction());
+    assertNull(partial.getLineno());
+    assertNull(partial.getPlatform());
+    assertEquals(Boolean.TRUE, partial.isInApp());
+    assertNull(partial.getContextLine());
+    assertNull(partial.getPreContext());
+    assertNull(partial.getPostContext());
+    assertNull(partial.getVars());
+
+    SentryStackFrame withoutContext = mapped.get(1);
+    assertEquals("res://no-context.fs", withoutContext.getFilename());
+    assertNull(withoutContext.getContextLine());
+    assertNull(withoutContext.getPreContext());
+    assertNull(withoutContext.getPostContext());
+    assertEquals(Boolean.TRUE, withoutContext.isInApp());
+
+    assertEquals("res://missing-in-app.fs", mapped.get(2).getFilename());
+    assertEquals(Boolean.TRUE, mapped.get(2).isInApp());
+    assertEquals("res://wrong-in-app.fs", mapped.get(3).getFilename());
+    assertEquals(Boolean.TRUE, mapped.get(3).isInApp());
+  }
+
+  @Test
+  public void leavesStringOnlyExceptionsWithoutStructuredStacktrace() {
+    SentryEvent result = eventWithException(Map.of(
+        "type_name", "InvalidState",
+        "message", "bad state",
+        "stack_trace", "at Player.attack()"));
+
+    assertEquals("at Player.attack()", result.getExtras().get("foundry.stack_trace"));
+    assertNull(result.getExceptions().get(0).getStacktrace());
+  }
+
+  private static SentryEvent eventWithException(Map<String, Object> exception) {
+    Map<String, Object> payload = new HashMap<>();
+    payload.put("kind", "exception");
+    payload.put("level", 50);
+    payload.put("message", "boom");
+    payload.put("source", "combat");
+    payload.put("timestamp_msec", 1612325106123L);
+    payload.put("exception", exception);
+    return SentryEventMapper.makeEvent(payload, Map.of());
   }
 }

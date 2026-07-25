@@ -4,6 +4,8 @@ import io.sentry.SentryEvent;
 import io.sentry.SentryLevel;
 import io.sentry.protocol.Message;
 import io.sentry.protocol.SentryException;
+import io.sentry.protocol.SentryStackFrame;
+import io.sentry.protocol.SentryStackTrace;
 import java.lang.reflect.Array;
 import java.util.ArrayList;
 import java.util.Date;
@@ -144,6 +146,10 @@ final class SentryEventMapper {
         SentryException sentryException = new SentryException();
         sentryException.setType(exceptionType);
         sentryException.setValue(exceptionMessage);
+        SentryStackTrace stacktrace = structuredStacktrace(exception.get("frames"));
+        if (stacktrace != null) {
+          sentryException.setStacktrace(stacktrace);
+        }
         List<SentryException> exceptions = new ArrayList<>();
         exceptions.add(sentryException);
         event.setExceptions(exceptions);
@@ -205,6 +211,116 @@ final class SentryEventMapper {
       }
     }
     return result;
+  }
+
+  private static SentryStackTrace structuredStacktrace(Object value) {
+    List<SentryStackFrame> frames = new ArrayList<>();
+    for (Object frameValue : collectionValues(value)) {
+      if (!(frameValue instanceof Map)) {
+        continue;
+      }
+      SentryStackFrame frame = structuredStackFrame((Map<?, ?>) frameValue);
+      if (frame != null) {
+        frames.add(frame);
+      }
+    }
+    return frames.isEmpty() ? null : new SentryStackTrace(frames);
+  }
+
+  private static SentryStackFrame structuredStackFrame(Map<?, ?> value) {
+    String file = nonEmptyString(value.get("file"));
+    String function = nonEmptyString(value.get("function"));
+    Integer line = positiveLineNumber(value.get("line"));
+    String language = nonEmptyString(value.get("language"));
+    if (file == null && function == null && line == null && language == null) {
+      return null;
+    }
+
+    SentryStackFrame frame = new SentryStackFrame();
+    frame.setFilename(file);
+    frame.setFunction(function);
+    frame.setLineno(line);
+    frame.setPlatform(language);
+    frame.setInApp(value.get("in_app") instanceof Boolean
+        ? (Boolean) value.get("in_app")
+        : true);
+
+    String contextLine = nonEmptyString(value.get("context_line"));
+    if (contextLine != null) {
+      frame.setContextLine(contextLine);
+      List<String> preContext = stringCollection(value.get("pre_context"));
+      if (preContext != null) {
+        frame.setPreContext(preContext);
+      }
+      List<String> postContext = stringCollection(value.get("post_context"));
+      if (postContext != null) {
+        frame.setPostContext(postContext);
+      }
+    }
+
+    Map<String, Object> variables = stringKeyedMap(value.get("variables"));
+    if (variables != null) {
+      frame.setVars(variables);
+    }
+    return frame;
+  }
+
+  private static List<Object> collectionValues(Object value) {
+    List<Object> values = new ArrayList<>();
+    if (value instanceof Iterable) {
+      for (Object element : (Iterable<?>) value) {
+        values.add(element);
+      }
+    } else if (value != null && value.getClass().isArray()) {
+      for (int index = 0; index < Array.getLength(value); index++) {
+        values.add(Array.get(value, index));
+      }
+    }
+    return values;
+  }
+
+  private static List<String> stringCollection(Object value) {
+    List<String> values = new ArrayList<>();
+    for (Object element : collectionValues(value)) {
+      if (element instanceof String) {
+        values.add((String) element);
+      }
+    }
+    return values.isEmpty() ? null : values;
+  }
+
+  private static Map<String, Object> stringKeyedMap(Object value) {
+    if (!(value instanceof Map)) {
+      return null;
+    }
+    Map<String, Object> result = new HashMap<>();
+    for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+      if (entry.getKey() instanceof String) {
+        result.put((String) entry.getKey(), entry.getValue());
+      }
+    }
+    return result.isEmpty() ? null : result;
+  }
+
+  private static String nonEmptyString(Object value) {
+    if (!(value instanceof String) || ((String) value).isEmpty()) {
+      return null;
+    }
+    return (String) value;
+  }
+
+  private static Integer positiveLineNumber(Object value) {
+    if (!(value instanceof Number)) {
+      return null;
+    }
+    double number = ((Number) value).doubleValue();
+    if (!Double.isFinite(number)
+        || number <= 0.0D
+        || number != Math.rint(number)
+        || number > Integer.MAX_VALUE) {
+      return null;
+    }
+    return (int) number;
   }
 
   private static Object copyValue(Object value) {
