@@ -1,0 +1,265 @@
+# Apple Companion Runtime Verification Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Pin the Apple FoundrySwift companion addon and make release builds prove that the built Sentry framework loads with that exact runtime before packaging.
+
+**Architecture:** Reuse `scripts/test-project` as the single project materialization and runtime-test path, adding an opt-in strict mode that preserves Foundry's pipeline status and rejects native loader diagnostics. Keep FoundrySwift ownership in the sibling `FoundrySwiftEmbed` addon; enforce the dependency, documentation, empty Sentry dependency maps, and release ordering through shell contracts.
+
+**Tech Stack:** Bash 3.2, Anvil package manifests, Foundry headless tests, GitHub Actions YAML, ripgrep, Task.
+
+---
+
+### Task 1: Add failing companion-dependency and documentation contracts
+
+**Files:**
+- Modify: `scripts/test-sentry-ios-build-contract`
+- Test: `scripts/test-sentry-ios-build-contract`
+
+- [ ] **Step 1: Write the failing manifest, ignore, and documentation assertions**
+
+Add exact assertions for:
+
+```bash
+[packages.FoundrySwift]
+source = "github-release"
+repo = "cafecito-games/Foundry-Swift"
+version = "0.1.0-alpha.2"
+asset = "FoundrySwift-0.1.0-alpha.2.zip"
+source_path = "addons/FoundrySwift"
+```
+
+Also require `test_project/addons/FoundrySwift/` in `.gitignore`, and require
+README text containing `FoundrySwiftEmbed`, the exact release/asset, and a clear
+statement that Android does not require the companion. Preserve the existing
+assertions that every Sentry descriptor dependency map is `{}` and that the
+descriptor/export plugin do not own FoundrySwift.
+
+- [ ] **Step 2: Run the contract and verify RED**
+
+Run:
+
+```sh
+scripts/test-sentry-ios-build-contract
+```
+
+Expected: failure stating that the test project must pin FoundrySwift.
+
+### Task 2: Add failing strict-runtime and workflow contracts
+
+**Files:**
+- Modify: `scripts/test-sentry-ios-build-contract`
+- Modify: `scripts/test-ci-workflows`
+- Test: both scripts
+
+- [ ] **Step 1: Contract the strict test-project behavior**
+
+Require `scripts/test-project` to contain:
+
+```bash
+FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME
+tee "$runtime_log"
+foundry_status=${PIPESTATUS[0]}
+```
+
+Also require explicit rejection patterns for
+`FoundryObservabilitySentry`, `FoundrySwift`, and extension/dynamic-library
+loader failures.
+
+- [ ] **Step 2: Contract the release step and ordering**
+
+Require the build job to contain exactly:
+
+```yaml
+- name: Verify Apple Sentry runtime
+  env:
+    GH_TOKEN: ${{ github.token }}
+    FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME: "1"
+  run: scripts/test-project
+```
+
+Extend the existing release line-order assertion to prove:
+
+```text
+ios:sentry < strict runtime < android:sentry < package < verify < upload < download < publish
+```
+
+- [ ] **Step 3: Run both contracts and verify RED**
+
+Run:
+
+```sh
+scripts/test-sentry-ios-build-contract
+scripts/test-ci-workflows
+```
+
+Expected: failures for missing strict runtime support and missing release smoke.
+
+### Task 3: Pin and install the companion addon
+
+**Files:**
+- Modify: `test_project/packages.toml`
+- Modify: `test_project/packages.lock`
+- Modify: `.gitignore`
+
+- [ ] **Step 1: Add the exact Anvil package**
+
+Add:
+
+```toml
+[packages.FoundrySwift]
+source = "github-release"
+repo = "cafecito-games/Foundry-Swift"
+version = "0.1.0-alpha.2"
+asset = "FoundrySwift-0.1.0-alpha.2.zip"
+source_path = "addons/FoundrySwift"
+```
+
+Add `test_project/addons/FoundrySwift/` to `.gitignore`.
+
+- [ ] **Step 2: Resolve the lock and verify installation**
+
+Run:
+
+```sh
+anvil pkg install --dir test_project
+```
+
+Expected: `FoundrySwift` resolves to `0.1.0-alpha.2`,
+`test_project/packages.lock` records the source path and spec hash, and
+`test_project/addons/FoundrySwift` contains `FoundrySwiftEmbed` plus its native
+framework.
+
+### Task 4: Implement strict runtime smoke
+
+**Files:**
+- Modify: `scripts/test-project`
+- Test: `scripts/test-sentry-ios-build-contract`
+
+- [ ] **Step 1: Add opt-in prerequisites and cleanup**
+
+Read `FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME`, require the real
+`Versions/A/FoundryObservabilitySentry` binary only when the value is `1`, and
+track an exact `mktemp` log path that the existing exit trap removes.
+
+- [ ] **Step 2: Preserve Foundry status and reject loader diagnostics**
+
+In strict mode run the existing Foundry command as:
+
+```bash
+set +e
+"$foundry_bin" --headless project test \
+	--project "$project_dir" \
+	--runner res://addons/foundrylib/testlib/cli/run.fs \
+	-- --path res://tests 2>&1 | tee "$runtime_log"
+foundry_status=${PIPESTATUS[0]}
+set -e
+```
+
+Fail when `foundry_status` is nonzero. Then scan the log for dynamic-library,
+FoundryExtension, or extension-load errors naming
+`FoundryObservabilitySentry` or `FoundrySwift`, and fail if any are present.
+Keep the direct command path unchanged outside strict mode.
+
+- [ ] **Step 3: Run the build contract and verify GREEN**
+
+Run:
+
+```sh
+scripts/test-sentry-ios-build-contract
+```
+
+Expected: pass once the package/docs changes in Task 5 are also present.
+
+### Task 5: Document and wire the release smoke
+
+**Files:**
+- Modify: `README.md`
+- Modify: `BUILD.md`
+- Modify: `docs/API.md`
+- Modify: `.github/workflows/release.yml`
+
+- [ ] **Step 1: Correct installation documentation**
+
+Replace independently-installable Apple wording with the exact
+`[packages.FoundrySwift]` snippet from Task 3 and `anvil pkg install`. State
+that `0.1.0-alpha.2` is required for Apple, `FoundrySwiftEmbed` owns the sole
+shared runtime copy, Sentry dependency maps intentionally remain empty, and
+Android does not require the companion.
+
+- [ ] **Step 2: Add strict runtime release step**
+
+Immediately after `task ios:sentry`, add:
+
+```yaml
+- name: Verify Apple Sentry runtime
+  env:
+    GH_TOKEN: ${{ github.token }}
+    FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME: "1"
+  run: scripts/test-project
+```
+
+- [ ] **Step 3: Run contracts and verify GREEN**
+
+Run:
+
+```sh
+scripts/test-sentry-ios-build-contract
+scripts/test-ci-workflows
+```
+
+Expected: both pass.
+
+### Task 6: Verify runtime and repository gates
+
+**Files:**
+- Modify only files required to correct verified failures.
+
+- [ ] **Step 1: Run the strict runtime smoke**
+
+Run:
+
+```sh
+FOUNDRY_BIN=/Users/christian/CafecitoGames/Foundry/.worktrees/version-json/bin/foundry.macos.editor.dev.arm64 \
+FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME=1 \
+scripts/test-project
+```
+
+Expected: no FoundrySwift or FoundryObservabilitySentry loader diagnostics and
+`Ran 78 tests: 78 passed, 0 failed, 0 skipped.`
+
+- [ ] **Step 2: Run focused repository verification**
+
+Run:
+
+```sh
+task test:ci
+scripts/test-sentry-ios-build-contract
+task lint
+bash -n scripts/test-project scripts/test-sentry-ios-build-contract scripts/test-ci-workflows
+git diff --check
+```
+
+Expected: every command exits zero.
+
+- [ ] **Step 3: Commit the focused implementation**
+
+Run:
+
+```sh
+git add .gitignore .github/workflows/release.yml README.md BUILD.md docs/API.md \
+  scripts/test-project scripts/test-sentry-ios-build-contract \
+  scripts/test-ci-workflows test_project/packages.toml test_project/packages.lock
+git commit -m "ci: verify Apple companion runtime"
+```
+
+- [ ] **Step 4: Audit final state**
+
+Run:
+
+```sh
+git status --short
+git log -3 --oneline
+```
+
+Expected: clean status, implementation commit at HEAD, and no push or release.
