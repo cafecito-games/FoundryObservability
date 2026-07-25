@@ -465,9 +465,11 @@ func _normalized_exception_event(event: ObservabilityEvent) -> ObservabilityEven
 func _normalized_exception(exception: ObservabilityException) -> ObservabilityException:
 	var normalized_frames: Array[ObservabilityStackFrame] = []
 	for frame: ObservabilityStackFrame in exception.frames():
-		if frame == null or not _is_useful_stack_frame(frame):
+		if frame == null:
 			continue
-		normalized_frames.append(_normalized_stack_frame(frame))
+		var normalized_frame: ObservabilityStackFrame = _normalized_stack_frame(frame)
+		if _is_useful_stack_frame(normalized_frame):
+			normalized_frames.append(normalized_frame)
 	return ObservabilityException.new(
 			p_type_name = exception.type_name(),
 			p_message = exception.message(),
@@ -481,7 +483,12 @@ func _is_useful_stack_frame(frame: ObservabilityStackFrame) -> bool:
 	return not frame.file().is_empty() \
 			or not frame.function().is_empty() \
 			or not frame.language().is_empty() \
-			or frame.line() >= 1
+			or frame.line() >= 1 \
+			or frame.in_app() \
+			or not frame.context_line().is_empty() \
+			or not frame.pre_context().is_empty() \
+			or not frame.post_context().is_empty() \
+			or not frame.variables().is_empty()
 
 
 func _normalized_stack_frame(frame: ObservabilityStackFrame) -> ObservabilityStackFrame:
@@ -494,13 +501,12 @@ func _normalized_stack_frame(frame: ObservabilityStackFrame) -> ObservabilitySta
 	var post_context: PackedStringArray = PackedStringArray()
 	if _config.stack_trace_source_context_enabled:
 		context_line = frame.context_line()
-		if not context_line.is_empty():
-			var source_pre_context: PackedStringArray = frame.pre_context()
-			for index: int in range(maxi(0, source_pre_context.size() - 5), source_pre_context.size()):
-				pre_context.append(source_pre_context[index])
-			var source_post_context: PackedStringArray = frame.post_context()
-			for index: int in range(mini(5, source_post_context.size())):
-				post_context.append(source_post_context[index])
+		var source_pre_context: PackedStringArray = frame.pre_context()
+		for index: int in range(maxi(0, source_pre_context.size() - 5), source_pre_context.size()):
+			pre_context.append(source_pre_context[index])
+		var source_post_context: PackedStringArray = frame.post_context()
+		for index: int in range(mini(5, source_post_context.size())):
+			post_context.append(source_post_context[index])
 
 	var variables: Dictionary = {}
 	if _config.stack_trace_variables_enabled:
@@ -521,11 +527,11 @@ func _normalized_stack_frame(frame: ObservabilityStackFrame) -> ObservabilitySta
 func _normalized_stack_variables(variables: Dictionary) -> Dictionary:
 	var normalized: Dictionary = {}
 	for key: Variant in variables.keys():
-		if not (key is String):
+		if not (key is String) and not (key is StringName):
 			continue
 		var value: Variant = variables[key]
 		if _is_supported_stack_variable(value):
-			normalized[key] = _normalized_stack_variable(value)
+			normalized[str(key)] = _normalized_stack_variable(value)
 	return normalized
 
 
