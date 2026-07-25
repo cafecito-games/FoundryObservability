@@ -228,7 +228,7 @@ func test_stack_frame_capture_drops_empty_frames_and_preserves_partial_fallback(
 	var provider := MemoryObservabilityProvider.new()
 	var frames: Array[ObservabilityStackFrame] = [
 		null,
-		ObservabilityStackFrame.new(p_in_app = false),
+		ObservabilityStackFrame.new(),
 		ObservabilityStackFrame.new(p_language = "foundryscript"),
 	]
 
@@ -248,70 +248,68 @@ func test_stack_frame_capture_drops_empty_frames_and_preserves_partial_fallback(
 	service.shutdown()
 
 
-func test_stack_frame_capture_keeps_partial_frames_only_after_policy() -> void:
+func test_stack_frame_capture_drops_non_identity_frames_and_keeps_partial_identity() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
-	var context_only := ObservabilityStackFrame.new(
-			p_in_app = false,
-			p_context_line = "context only",
-		)
-	var variables_only := ObservabilityStackFrame.new(
-			p_in_app = false,
-			p_pre_context = PackedStringArray(),
-			p_post_context = PackedStringArray(),
-			p_variables = {"kept": 1},
-		)
-	var unsupported_variables_only := ObservabilityStackFrame.new(
-			p_in_app = false,
-			p_pre_context = PackedStringArray(),
-			p_post_context = PackedStringArray(),
-			p_variables = {"unsupported": Vector2(1.0, 2.0)},
-		)
 	var exception := ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
 			p_stack_trace = "formatted fallback",
 			p_attributes = {},
 			p_frames = [
-				context_only,
-				variables_only,
-				unsupported_variables_only,
 				ObservabilityStackFrame.new(),
+				ObservabilityStackFrame.new(p_in_app = true),
+				ObservabilityStackFrame.new(
+						p_in_app = false,
+						p_context_line = "context only",
+				),
+				ObservabilityStackFrame.new(
+						p_in_app = false,
+						p_pre_context = PackedStringArray(),
+						p_post_context = PackedStringArray(),
+						p_variables = {"variables only": 1},
+				),
+				ObservabilityStackFrame.new(
+						p_file = "res://identity_only.fs",
+						p_in_app = false,
+				),
+				ObservabilityStackFrame.new(
+						p_language = "foundryscript",
+						p_in_app = false,
+				),
+				ObservabilityStackFrame.new(
+						p_function = "attack",
+						p_in_app = false,
+				),
+				ObservabilityStackFrame.new(
+						p_line = 42,
+						p_in_app = false,
+				),
 			],
 	)
-	var enabled_config := ObservabilityConfig.new(
+	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {},
 			p_stack_trace_source_context_enabled = true,
 			p_stack_trace_variables_enabled = true,
 	)
 
-	Expect.that(service.configure(provider, enabled_config)).to_equal(Error.OK)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	Expect.that(service.capture_exception(exception)).to_equal("memory:1")
-	var enabled_frames: Array[ObservabilityStackFrame] = provider.events()[0].exception().frames()
-	Expect.that(enabled_frames).to_have_size(3)
-	Expect.that(enabled_frames[0].context_line()).to_equal("context only")
-	Expect.that(enabled_frames[1].variables()).to_equal({"kept": 1})
-	Expect.that(enabled_frames[2].in_app()).to_be_true()
-
-	provider.clear()
-	var disabled_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_source_context_enabled = false,
-			p_stack_trace_variables_enabled = false,
-	)
-	Expect.that(service.configure(provider, disabled_config)).to_equal(Error.OK)
-	Expect.that(service.capture_exception(exception)).to_equal("memory:2")
-	Expect.that(provider.events()[0].exception().frames()).to_have_size(1)
-	Expect.that(provider.events()[0].exception().frames()[0].in_app()).to_be_true()
+	var captured_frames: Array[ObservabilityStackFrame] = provider.events()[0].exception().frames()
+	Expect.that(captured_frames).to_have_size(4)
+	Expect.that(captured_frames[0].file()).to_equal("res://identity_only.fs")
+	Expect.that(captured_frames[1].language()).to_equal("foundryscript")
+	Expect.that(captured_frames[2].function()).to_equal("attack")
+	Expect.that(captured_frames[3].line()).to_equal(42)
 	service.shutdown()
 
 
-func test_stack_frame_capture_caps_nearby_context_without_a_current_line() -> void:
+func test_stack_frame_capture_clears_nearby_context_without_a_current_line() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	var frame := ObservabilityStackFrame.new(
+			p_function = "attack",
 			p_in_app = false,
 			p_pre_context = PackedStringArray([
 				"discard", "keep 1", "keep 2", "keep 3", "keep 4", "keep 5",
@@ -332,12 +330,8 @@ func test_stack_frame_capture_caps_nearby_context_without_a_current_line() -> vo
 
 	var captured_frame: ObservabilityStackFrame = provider.events()[0].exception().frames()[0]
 	Expect.that(captured_frame.context_line()).to_equal("")
-	Expect.that(captured_frame.pre_context()).to_equal(PackedStringArray([
-			"keep 1", "keep 2", "keep 3", "keep 4", "keep 5",
-	]))
-	Expect.that(captured_frame.post_context()).to_equal(PackedStringArray([
-			"keep 1", "keep 2", "keep 3", "keep 4", "keep 5",
-	]))
+	Expect.that(captured_frame.pre_context()).to_equal(PackedStringArray())
+	Expect.that(captured_frame.post_context()).to_equal(PackedStringArray())
 	service.shutdown()
 
 
@@ -345,6 +339,7 @@ func test_stack_frame_capture_normalizes_string_name_variable_keys() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	var frame := ObservabilityStackFrame.new(
+			p_file = "res://variables.fs",
 			p_in_app = false,
 			p_pre_context = PackedStringArray(),
 			p_post_context = PackedStringArray(),
@@ -385,6 +380,7 @@ func test_stack_frame_capture_bounds_variable_container_depth() -> void:
 	for _index: int in range(7):
 		expected_beyond_limit = [expected_beyond_limit]
 	var frame := ObservabilityStackFrame.new(
+			p_file = "res://depth.fs",
 			p_in_app = false,
 			p_pre_context = PackedStringArray(),
 			p_post_context = PackedStringArray(),
@@ -425,6 +421,7 @@ func test_stack_frame_capture_bounds_total_variable_items() -> void:
 		if index < 53:
 			expected_second_branch.append(index)
 	var frame := ObservabilityStackFrame.new(
+			p_file = "res://budget.fs",
 			p_in_app = false,
 			p_pre_context = PackedStringArray(),
 			p_post_context = PackedStringArray(),
@@ -456,6 +453,7 @@ func test_stack_frame_capture_stops_cyclic_variable_traversal() -> void:
 	var cyclic: Array = []
 	cyclic.append(cyclic)
 	var frame := ObservabilityStackFrame.new(
+			p_file = "res://cycle.fs",
 			p_in_app = false,
 			p_pre_context = PackedStringArray(),
 			p_post_context = PackedStringArray(),

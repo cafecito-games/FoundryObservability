@@ -487,12 +487,7 @@ func _is_useful_stack_frame(frame: ObservabilityStackFrame) -> bool:
 	return not frame.file().is_empty() \
 			or not frame.function().is_empty() \
 			or not frame.language().is_empty() \
-			or frame.line() >= 1 \
-			or frame.in_app() \
-			or not frame.context_line().is_empty() \
-			or not frame.pre_context().is_empty() \
-			or not frame.post_context().is_empty() \
-			or not frame.variables().is_empty()
+			or frame.line() >= 1
 
 
 func _normalized_stack_frame(frame: ObservabilityStackFrame) -> ObservabilityStackFrame:
@@ -505,12 +500,13 @@ func _normalized_stack_frame(frame: ObservabilityStackFrame) -> ObservabilitySta
 	var post_context: PackedStringArray = PackedStringArray()
 	if _config.stack_trace_source_context_enabled:
 		context_line = frame.context_line()
-		var source_pre_context: PackedStringArray = frame.pre_context()
-		for index: int in range(maxi(0, source_pre_context.size() - 5), source_pre_context.size()):
-			pre_context.append(source_pre_context[index])
-		var source_post_context: PackedStringArray = frame.post_context()
-		for index: int in range(mini(5, source_post_context.size())):
-			post_context.append(source_post_context[index])
+		if not context_line.is_empty():
+			var source_pre_context: PackedStringArray = frame.pre_context()
+			for index: int in range(maxi(0, source_pre_context.size() - 5), source_pre_context.size()):
+				pre_context.append(source_pre_context[index])
+			var source_post_context: PackedStringArray = frame.post_context()
+			for index: int in range(mini(5, source_post_context.size())):
+				post_context.append(source_post_context[index])
 
 	var variables: Dictionary = {}
 	if _config.stack_trace_variables_enabled:
