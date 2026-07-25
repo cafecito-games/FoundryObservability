@@ -51,6 +51,9 @@ global_release_permission=$(
 )
 [[ "$global_release_permission" == "  contents: read" ]] \
 	|| fail "release workflow must default to read-only contents permission"
+rg -q -U '^concurrency:\n  group: release-\$\{\{ github\.repository \}\}-\$\{\{ github\.workflow \}\}\n  cancel-in-progress: false$' \
+	"$release_workflow" \
+	|| fail "release workflow must serialize manual releases per repository and workflow"
 rg -q '^  build:$' "$release_workflow" \
 	|| fail "release workflow must have a build job"
 rg -q '^  publish:$' "$release_workflow" \
@@ -63,11 +66,13 @@ rg -q '^    permissions:$' <<<"$build_job" \
 rg -q '^      contents: read$' <<<"$build_job" \
 	|| fail "release build job must use read-only contents permission"
 rg -q '^    outputs:$' <<<"$build_job" \
-	|| fail "release build job must expose version and tag outputs"
+	|| fail "release build job must expose release metadata outputs"
 rg -q 'version: \$\{\{ steps\.version\.outputs\.version \}\}' <<<"$build_job" \
 	|| fail "release build job must expose the computed version"
 rg -q 'tag: \$\{\{ steps\.version\.outputs\.tag \}\}' <<<"$build_job" \
 	|| fail "release build job must expose the computed tag"
+rg -q 'commit: \$\{\{ github\.sha \}\}' <<<"$build_job" \
+	|| fail "release build job must expose the exact verified source commit"
 if rg -q 'gh release create' <<<"$build_job"; then
 	fail "release build job must not publish"
 fi
@@ -100,6 +105,8 @@ rg -q 'dist/FoundryObservability-\$\{\{ needs\.build\.outputs\.version \}\}\.zip
 rg -q 'dist/FoundryObservabilitySentry-\$\{\{ needs\.build\.outputs\.version \}\}\.zip' \
 	<<<"$publish_job" \
 	|| fail "release publish job must publish the downloaded Sentry archive"
+rg -q -- '--target "\$\{\{ needs\.build\.outputs\.commit \}\}"' <<<"$publish_job" \
+	|| fail "release publish job must target the exact commit verified by the build job"
 
 rg -q '^  contents: read$' "$pr_workflow" \
 	|| fail "pull-request workflow must request read-only contents permission"

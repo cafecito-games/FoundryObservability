@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.repository }}-${{ github.workflow }}
+  cancel-in-progress: false
+
 env:
   FOUNDRY_VERSION: "v0.1.0-alpha.7"
 
@@ -29,6 +33,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      commit: ${{ github.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -166,5 +171,6 @@ jobs:
             "${{ needs.build.outputs.tag }}" \
             "dist/FoundryObservability-${{ needs.build.outputs.version }}.zip" \
             "dist/FoundryObservabilitySentry-${{ needs.build.outputs.version }}.zip" \
+            --target "${{ needs.build.outputs.commit }}" \
             --title "FoundryObservability ${{ needs.build.outputs.tag }}" \
             --generate-notes
