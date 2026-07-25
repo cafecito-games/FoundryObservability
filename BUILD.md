@@ -5,7 +5,6 @@
 - Foundry `v0.1.0-alpha.7` or a compatible local development build
 - Go with the `anvil` package tool available on `PATH`
 - Task
-- Python 3.12+ with the dependencies in `requirements.txt`
 - Xcode 15+, Swift 6, and XcodeGen
 - Java 17 and Android SDK Platform 36
 - GitHub CLI (`gh`) authenticated for Foundry-Swift release downloads
