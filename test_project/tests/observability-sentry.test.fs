@@ -92,6 +92,114 @@ func test_forwards_config_event_and_flush_to_native_bridge() -> void:
 	Expect.that(bridge.flush_timeouts).to_equal([321])
 
 
+func test_service_forwards_normalized_structured_exception_frames_to_native_bridge() -> void:
+	var service: FoundryObservability = _service()
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://player.fs",
+			p_function = "attack",
+			p_line = 42,
+			p_language = "foundryscript",
+			p_in_app = true,
+			p_context_line = "deal_damage()",
+			p_pre_context = PackedStringArray(["before"]),
+			p_post_context = PackedStringArray(["after"]),
+			p_variables = {"damage": 10},
+		)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_stack_trace_variables_enabled = true,
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("sentry:1")
+
+	var exception_payload: Dictionary = bridge.captured_payloads[0]["exception"]
+	Expect.that(exception_payload["stack_trace"]).to_equal("formatted fallback")
+	Expect.that(exception_payload.has("frames")).to_be_true()
+	var frames: Array = exception_payload["frames"]
+	Expect.that(frames).to_have_size(1)
+	var captured_frame: Dictionary = frames[0]
+	Expect.that(captured_frame).to_equal({
+			"file": "res://player.fs",
+			"function": "attack",
+			"line": 42,
+			"language": "foundryscript",
+			"in_app": true,
+			"context_line": "deal_damage()",
+			"pre_context": ["before"],
+			"post_context": ["after"],
+			"variables": {"damage": 10},
+		})
+	Expect.that(captured_frame["pre_context"] is Array).to_be_true()
+	Expect.that(captured_frame["post_context"] is Array).to_be_true()
+	service.shutdown()
+
+
+func test_service_preserves_legacy_exception_bridge_payload_without_frames() -> void:
+	var service: FoundryObservability = _service()
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+	))).to_equal("sentry:1")
+
+	var exception_payload: Dictionary = bridge.captured_payloads[0]["exception"]
+	Expect.that(exception_payload["stack_trace"]).to_equal("formatted fallback")
+	Expect.that(exception_payload.has("frames")).to_be_false()
+	service.shutdown()
+
+
+func test_service_omits_empty_structured_frame_context_from_native_bridge() -> void:
+	var service: FoundryObservability = _service()
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://empty.fs",
+			p_function = "idle",
+			p_line = 7,
+			p_language = "foundryscript",
+			p_in_app = false,
+		)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("sentry:1")
+
+	var frames: Array = bridge.captured_payloads[0]["exception"]["frames"]
+	Expect.that(frames[0]).to_equal({
+			"file": "res://empty.fs",
+			"function": "idle",
+			"line": 7,
+			"language": "foundryscript",
+			"in_app": false,
+		})
+	service.shutdown()
+
+
 func test_routes_log_events_to_native_structured_log_method() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)

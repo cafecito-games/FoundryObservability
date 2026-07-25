@@ -94,12 +94,18 @@ func capture(event: ObservabilityEvent) -> String:
 		}
 	var exception: ObservabilityException? = event.exception()
 	if exception != null:
-		payload["exception"] = {
+		var exception_payload: Dictionary = {
 				"type_name": exception.type_name(),
 				"message": exception.message(),
 				"stack_trace": exception.stack_trace(),
 				"attributes": exception.attributes(),
 			}
+		var frames: Array = []
+		for frame: ObservabilityStackFrame in exception.frames():
+			frames.append(_stack_frame_payload(frame))
+		if not frames.is_empty():
+			exception_payload["frames"] = frames
+		payload["exception"] = exception_payload
 	var method: String = "capture"
 	if event.kind() == &"log":
 		method = "captureLog"
@@ -201,3 +207,26 @@ func _resolve_bridge() -> Object?:
 		return null
 	_bridge = ClassDB.instantiate(_NATIVE_CLASS)
 	return _bridge
+
+
+func _stack_frame_payload(frame: ObservabilityStackFrame) -> Dictionary:
+	var payload: Dictionary = {
+			"file": frame.file(),
+			"function": frame.function(),
+			"line": frame.line(),
+			"language": frame.language(),
+			"in_app": frame.in_app(),
+		}
+	var context_line: String = frame.context_line()
+	if not context_line.is_empty():
+		payload["context_line"] = context_line
+	var pre_context: PackedStringArray = frame.pre_context()
+	if not pre_context.is_empty():
+		payload["pre_context"] = Array(pre_context)
+	var post_context: PackedStringArray = frame.post_context()
+	if not post_context.is_empty():
+		payload["post_context"] = Array(post_context)
+	var variables: Dictionary = frame.variables()
+	if not variables.is_empty():
+		payload["variables"] = variables
+	return payload
