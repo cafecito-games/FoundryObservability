@@ -110,6 +110,32 @@ func test_replaced_sentry_provider_ignores_stale_shutdown() -> void:
 	second.shutdown()
 
 
+func test_failed_reconfigure_preserves_restored_native_session() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var initial_config := ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.is_available()).to_be_true()
+	bridge.configure_result = Error.FAILED
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "staging",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+		))).to_equal(Error.FAILED)
+
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "restored session",
+		))).to_equal("sentry:1")
+	provider.shutdown()
+
+
 func test_forwards_config_event_and_flush_to_native_bridge() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
