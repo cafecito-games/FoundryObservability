@@ -94,37 +94,55 @@ final func _bounded_sanitized_variables(
 		max_container_depth: int,
 		max_total_items: int,
 ) -> Dictionary:
-	var budget: Dictionary = {"remaining": maxi(0, max_total_items)}
-	var visited_containers: Array = []
-	if not _visit_variable_container(_variables, visited_containers):
-		return {}
-	return _bounded_sanitized_variable_dictionary(
+	return _bounded_sanitized_variable_source(
 			_variables,
+			max_container_depth,
+			max_total_items,
+	)
+
+
+## Internal capture support for sanitizing an arbitrary variable source without exposing it.
+## The returned provider-safe containers are always fresh, bounded, and cycle-free.
+final func _bounded_sanitized_variable_source(
+		source_variables: Dictionary,
+		max_container_depth: int,
+		max_total_items: int,
+) -> Dictionary:
+	var budget: Dictionary = {"remaining": maxi(0, max_total_items)}
+	var active_containers: Array = []
+	if not _enter_active_variable_container(source_variables, active_containers):
+		return {}
+	var sanitized: Dictionary = _bounded_sanitized_variable_dictionary(
+			source_variables,
 			0,
 			maxi(0, max_container_depth),
 			budget,
-			visited_containers,
+			active_containers,
 	)
+	active_containers.pop_back()
+	return sanitized
 
 
 final func _bounded_owned_variables(source_variables: Dictionary) -> Dictionary:
 	var budget: Dictionary = {"remaining": MAX_VARIABLE_ITEMS}
-	var visited_containers: Array = []
-	if not _visit_variable_container(source_variables, visited_containers):
+	var active_containers: Array = []
+	if not _enter_active_variable_container(source_variables, active_containers):
 		return {}
-	return _bounded_owned_variable_dictionary(
+	var owned: Dictionary = _bounded_owned_variable_dictionary(
 			source_variables,
 			0,
 			budget,
-			visited_containers,
+			active_containers,
 	)
+	active_containers.pop_back()
+	return owned
 
 
 final func _bounded_owned_variable_dictionary(
 		source_variables: Dictionary,
 		container_depth: int,
 		budget: Dictionary,
-		visited_containers: Array,
+		active_containers: Array,
 ) -> Dictionary:
 	var owned: Dictionary = {}
 	for key: Variant in source_variables:
@@ -135,22 +153,24 @@ final func _bounded_owned_variable_dictionary(
 		var value: Variant = source_variables[key]
 		if value is Array:
 			if container_depth + 1 <= MAX_VARIABLE_CONTAINER_DEPTH \
-					and _visit_variable_container(value, visited_containers):
+					and _enter_active_variable_container(value, active_containers):
 				owned[key] = _bounded_owned_variable_array(
 						value,
 						container_depth + 1,
 						budget,
-						visited_containers,
+						active_containers,
 				)
+				active_containers.pop_back()
 		elif value is Dictionary:
 			if container_depth + 1 <= MAX_VARIABLE_CONTAINER_DEPTH \
-					and _visit_variable_container(value, visited_containers):
+					and _enter_active_variable_container(value, active_containers):
 				owned[key] = _bounded_owned_variable_dictionary(
 						value,
 						container_depth + 1,
 						budget,
-						visited_containers,
+						active_containers,
 				)
+				active_containers.pop_back()
 		else:
 			owned[key] = value
 	return owned
@@ -160,7 +180,7 @@ final func _bounded_owned_variable_array(
 		source_values: Array,
 		container_depth: int,
 		budget: Dictionary,
-		visited_containers: Array,
+		active_containers: Array,
 ) -> Array:
 	var owned: Array = []
 	for value: Variant in source_values:
@@ -168,22 +188,24 @@ final func _bounded_owned_variable_array(
 			break
 		if value is Array:
 			if container_depth + 1 <= MAX_VARIABLE_CONTAINER_DEPTH \
-					and _visit_variable_container(value, visited_containers):
+					and _enter_active_variable_container(value, active_containers):
 				owned.append(_bounded_owned_variable_array(
 						value,
 						container_depth + 1,
 						budget,
-						visited_containers,
+						active_containers,
 				))
+				active_containers.pop_back()
 		elif value is Dictionary:
 			if container_depth + 1 <= MAX_VARIABLE_CONTAINER_DEPTH \
-					and _visit_variable_container(value, visited_containers):
+					and _enter_active_variable_container(value, active_containers):
 				owned.append(_bounded_owned_variable_dictionary(
 						value,
 						container_depth + 1,
 						budget,
-						visited_containers,
+						active_containers,
 				))
+				active_containers.pop_back()
 		else:
 			owned.append(value)
 	return owned
@@ -194,7 +216,7 @@ final func _bounded_sanitized_variable_dictionary(
 		container_depth: int,
 		max_container_depth: int,
 		budget: Dictionary,
-		visited_containers: Array,
+		active_containers: Array,
 ) -> Dictionary:
 	var sanitized: Dictionary = {}
 	for key: Variant in source_variables:
@@ -205,24 +227,26 @@ final func _bounded_sanitized_variable_dictionary(
 		var value: Variant = source_variables[key]
 		if value is Array:
 			if container_depth + 1 <= max_container_depth \
-					and _visit_variable_container(value, visited_containers):
+					and _enter_active_variable_container(value, active_containers):
 				sanitized[str(key)] = _bounded_sanitized_variable_array(
 						value,
 						container_depth + 1,
 						max_container_depth,
 						budget,
-						visited_containers,
+						active_containers,
 				)
+				active_containers.pop_back()
 		elif value is Dictionary:
 			if container_depth + 1 <= max_container_depth \
-					and _visit_variable_container(value, visited_containers):
+					and _enter_active_variable_container(value, active_containers):
 				sanitized[str(key)] = _bounded_sanitized_variable_dictionary(
 						value,
 						container_depth + 1,
 						max_container_depth,
 						budget,
-						visited_containers,
+						active_containers,
 				)
+				active_containers.pop_back()
 		elif _is_supported_bounded_variable_scalar(value):
 			sanitized[str(key)] = _bounded_sanitized_variable_scalar(value)
 	return sanitized
@@ -255,7 +279,7 @@ final func _bounded_sanitized_variable_array(
 		container_depth: int,
 		max_container_depth: int,
 		budget: Dictionary,
-		visited_containers: Array,
+		active_containers: Array,
 ) -> Array:
 	var sanitized: Array = []
 	for value: Variant in source_values:
@@ -263,32 +287,34 @@ final func _bounded_sanitized_variable_array(
 			break
 		if value is Array:
 			if container_depth + 1 <= max_container_depth \
-					and _visit_variable_container(value, visited_containers):
+					and _enter_active_variable_container(value, active_containers):
 				sanitized.append(_bounded_sanitized_variable_array(
 						value,
 						container_depth + 1,
 						max_container_depth,
 						budget,
-						visited_containers,
+						active_containers,
 				))
+				active_containers.pop_back()
 		elif value is Dictionary:
 			if container_depth + 1 <= max_container_depth \
-					and _visit_variable_container(value, visited_containers):
+					and _enter_active_variable_container(value, active_containers):
 				sanitized.append(_bounded_sanitized_variable_dictionary(
 						value,
 						container_depth + 1,
 						max_container_depth,
 						budget,
-						visited_containers,
+						active_containers,
 				))
+				active_containers.pop_back()
 		elif _is_supported_bounded_variable_scalar(value):
 			sanitized.append(_bounded_sanitized_variable_scalar(value))
 	return sanitized
 
 
-final func _visit_variable_container(container: Variant, visited_containers: Array) -> bool:
-	for visited_container: Variant in visited_containers:
-		if is_same(container, visited_container):
+final func _enter_active_variable_container(container: Variant, active_containers: Array) -> bool:
+	for active_container: Variant in active_containers:
+		if is_same(container, active_container):
 			return false
-	visited_containers.append(container)
+	active_containers.append(container)
 	return true

@@ -590,7 +590,7 @@ func test_stack_frame_construction_omits_cyclic_dictionary_references() -> void:
 	service.shutdown()
 
 
-func test_stack_frame_construction_omits_repeated_container_references() -> void:
+func test_stack_frame_construction_preserves_repeated_containers_as_isolated_copies() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	var shared: Array = ["shared value"]
@@ -609,7 +609,16 @@ func test_stack_frame_construction_omits_repeated_container_references() -> void
 	shared[0] = "mutated"
 	source_variables["finite"] = 99
 
-	Expect.that(frame.variables()).to_equal({"first": ["shared value"], "finite": 7})
+	var exposed_variables: Dictionary = frame.variables()
+	var exposed_first: Array = exposed_variables["first"]
+	var exposed_second: Array = exposed_variables.get("second", [])
+	exposed_first[0] = "mutated first copy"
+	Expect.that(exposed_second).to_equal(["shared value"])
+	Expect.that(frame.variables()).to_equal({
+			"first": ["shared value"],
+			"second": ["shared value"],
+			"finite": 7,
+	})
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
 			p_global_attributes = {},
@@ -626,9 +635,62 @@ func test_stack_frame_construction_omits_repeated_container_references() -> void
 
 	Expect.that(provider.events()[0].exception().frames()[0].variables()).to_equal({
 			"first": ["shared value"],
+			"second": ["shared value"],
 			"finite": 7,
 	})
 	service.shutdown()
+
+
+func test_stack_frame_capture_preserves_valid_repeat_after_unsupported_key() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var shared: Array = ["shared value"]
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://invalid-repeat.fs",
+			p_in_app = false,
+			p_pre_context = PackedStringArray(),
+			p_post_context = PackedStringArray(),
+			p_variables = {7: shared, "valid": shared},
+	)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_trace_variables_enabled = true,
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_exception(ObservabilityException.new(
+			p_type_name = "CombatError",
+			p_message = "attack failed",
+			p_stack_trace = "formatted fallback",
+			p_attributes = {},
+			p_frames = [frame],
+	))).to_equal("memory:1")
+
+	Expect.that(provider.events()[0].exception().frames()[0].variables()).to_equal({
+			"valid": ["shared value"],
+	})
+	service.shutdown()
+
+
+func test_stack_frame_internal_sanitizer_omits_mutual_cycle_back_edge() -> void:
+	var cyclic_array: Array = []
+	var cyclic_dictionary: Dictionary = {"kept": "cycle value"}
+	cyclic_dictionary["array"] = cyclic_array
+	cyclic_array.append(cyclic_dictionary)
+	var frame := ObservabilityStackFrame.new()
+
+	var sanitized: Dictionary = frame._bounded_sanitized_variable_source(
+			{"cycle": cyclic_array, "finite": 7},
+			ObservabilityStackFrame.MAX_VARIABLE_CONTAINER_DEPTH,
+			ObservabilityStackFrame.MAX_VARIABLE_ITEMS,
+	)
+
+	Expect.that(sanitized).to_equal({
+			"cycle": [{"kept": "cycle value"}],
+			"finite": 7,
+	})
+	sanitized["cycle"][0]["kept"] = "mutated sanitized copy"
+	Expect.that(cyclic_dictionary["kept"]).to_equal("cycle value")
 
 
 func test_event_separates_wall_clock_timestamp_and_engine_ticks() -> void:
