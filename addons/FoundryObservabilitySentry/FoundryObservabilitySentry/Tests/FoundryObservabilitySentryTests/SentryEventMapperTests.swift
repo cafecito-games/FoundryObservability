@@ -240,7 +240,19 @@ final class SentryEventMapperTests: XCTestCase {
                     "function": "Combat.resolve",
                     "line": NSNumber(value: 8),
                     "language": "fsharp",
+                    "in_app": false,
+                ],
+                [
+                    "file": "res://NSNumberLine.fs",
+                    "line": NSNumber(value: 1),
                     "in_app": NSNumber(value: false),
+                ],
+                [
+                    "file": "res://MalformedInApp.fs",
+                    "in_app": NSNumber(value: 8.5),
+                ],
+                [
+                    "file": "res://MissingInApp.fs",
                 ],
             ],
         ])
@@ -264,7 +276,7 @@ final class SentryEventMapperTests: XCTestCase {
             XCTFail("Expected structured Sentry stacktrace")
             return
         }
-        XCTAssertEqual(frames.count, 2)
+        XCTAssertEqual(frames.count, 5)
 
         XCTAssertEqual(frames[0].fileName, "res://Player.fs")
         XCTAssertEqual(frames[0].function, "Player.attack")
@@ -282,6 +294,17 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(frames[1].lineNumber?.intValue, 8)
         XCTAssertEqual(frames[1].platform, "fsharp")
         XCTAssertEqual(frames[1].inApp?.boolValue, false)
+
+        XCTAssertEqual(frames[2].fileName, "res://NSNumberLine.fs")
+        XCTAssertEqual(frames[2].lineNumber?.intValue, 1)
+        XCTAssertEqual(frames[2].inApp?.boolValue, false)
+
+        XCTAssertEqual(frames[3].fileName, "res://MalformedInApp.fs")
+        XCTAssertNil(frames[3].lineNumber)
+        XCTAssertEqual(frames[3].inApp?.boolValue, true)
+
+        XCTAssertEqual(frames[4].fileName, "res://MissingInApp.fs")
+        XCTAssertEqual(frames[4].inApp?.boolValue, true)
     }
 
     func testSkipsMalformedFramesAndRetainsPartialFrames() {
@@ -297,12 +320,32 @@ final class SentryEventMapperTests: XCTestCase {
                     "line": -1,
                     "language": 99,
                     "in_app": "yes",
-                    "context_line": 3,
+                    "context_line": "context without identity",
                     "pre_context": ["valid", 2, false],
                     "post_context": [true, 4],
                     "variables": ["not", "a dictionary"],
                 ],
-                ["file": "res://partial.fs"],
+                [
+                    "file": "",
+                    "function": "",
+                    "language": "",
+                    "line": -1,
+                    "context_line": "context with empty identity",
+                    "pre_context": ["nearby"],
+                    "variables": ["value": 1],
+                ],
+                ["context_line": "context only", "pre_context": ["nearby"]],
+                ["variables": ["value": 1]],
+                ["in_app": false],
+                [
+                    "file": "res://partial.fs",
+                    "function": "",
+                    "language": "",
+                    "line": -1,
+                    "context_line": "",
+                    "pre_context": ["discarded"],
+                    "post_context": ["also discarded"],
+                ],
                 ["line": 0],
                 ["line": true],
                 ["line": NSNumber(value: true)],
@@ -328,19 +371,15 @@ final class SentryEventMapperTests: XCTestCase {
             XCTFail("Expected partial frame stacktrace")
             return
         }
-        XCTAssertEqual(frames.count, 2)
-        XCTAssertNil(frames[0].fileName)
+        XCTAssertEqual(frames.count, 1)
+        XCTAssertEqual(frames[0].fileName, "res://partial.fs")
         XCTAssertNil(frames[0].function)
         XCTAssertNil(frames[0].lineNumber)
         XCTAssertNil(frames[0].platform)
-        XCTAssertEqual(frames[0].inApp?.boolValue, false)
+        XCTAssertEqual(frames[0].inApp?.boolValue, true)
         XCTAssertNil(frames[0].contextLine)
-        XCTAssertEqual(frames[0].preContext, ["valid"])
+        XCTAssertNil(frames[0].preContext)
         XCTAssertNil(frames[0].postContext)
-        XCTAssertNil(frames[0].vars)
-        XCTAssertEqual(frames[1].fileName, "res://partial.fs")
-        XCTAssertNil(frames[1].function)
-        XCTAssertNil(frames[1].lineNumber)
     }
 
     func testStringOnlyExceptionHasNoStructuredStacktrace() {

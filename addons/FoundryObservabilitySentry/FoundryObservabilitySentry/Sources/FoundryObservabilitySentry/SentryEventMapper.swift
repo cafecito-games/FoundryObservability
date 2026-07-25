@@ -161,16 +161,8 @@ struct FoundryStackFramePayload {
     let postContext: [String]?
     let variables: [String: Any]?
 
-    var isEmpty: Bool {
-        file == nil
-            && function == nil
-            && line == nil
-            && language == nil
-            && !inApp
-            && contextLine == nil
-            && preContext == nil
-            && postContext == nil
-            && variables == nil
+    var isUseful: Bool {
+        file != nil || function != nil || line != nil || language != nil
     }
 }
 
@@ -196,26 +188,34 @@ private func foundryStackFramePayloads(_ value: Any?) -> [FoundryStackFramePaylo
         guard let dictionary = foundryDictionary(value) else {
             return nil
         }
-        let preContext = foundryStringArray(dictionary["pre_context"])
-        let postContext = foundryStringArray(dictionary["post_context"])
+        let contextLine = foundryNonEmptyString(dictionary["context_line"])
+        let preContext = contextLine == nil ? nil : foundryStringArray(dictionary["pre_context"])
+        let postContext = contextLine == nil ? nil : foundryStringArray(dictionary["post_context"])
         let variables = foundryNonEmptyDictionary(dictionary["variables"])
         let frame = FoundryStackFramePayload(
-            file: foundryString(dictionary["file"]),
-            function: foundryString(dictionary["function"]),
+            file: foundryNonEmptyString(dictionary["file"]),
+            function: foundryNonEmptyString(dictionary["function"]),
             line: foundryPositiveInteger(dictionary["line"]),
-            language: foundryString(dictionary["language"]),
+            language: foundryNonEmptyString(dictionary["language"]),
             inApp: foundryBool(dictionary["in_app"]),
-            contextLine: foundryString(dictionary["context_line"]),
+            contextLine: contextLine,
             preContext: preContext,
             postContext: postContext,
             variables: variables
         )
-        return frame.isEmpty ? nil : frame
+        return frame.isUseful ? frame : nil
     }
 }
 
 private func foundryString(_ value: Any?) -> String? {
     value as? String
+}
+
+private func foundryNonEmptyString(_ value: Any?) -> String? {
+    guard let value = foundryString(value), !value.isEmpty else {
+        return nil
+    }
+    return value
 }
 
 private func foundryDictionary(_ value: Any?) -> [String: Any]? {
@@ -238,9 +238,6 @@ private func foundryStringArray(_ value: Any?) -> [String]? {
 }
 
 private func foundryPositiveInteger(_ value: Any?) -> Int? {
-    if value is Bool {
-        return nil
-    }
     if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() {
         return nil
     }
@@ -268,13 +265,13 @@ private func foundryPositiveInteger(_ value: Any?) -> Int? {
 }
 
 private func foundryBool(_ value: Any?) -> Bool {
-    if let value = value as? Bool {
-        return value
+    guard
+        let value = value as? NSNumber,
+        CFGetTypeID(value) == CFBooleanGetTypeID()
+    else {
+        return true
     }
-    if let value = value as? NSNumber {
-        return value.boolValue
-    }
-    return false
+    return value.boolValue
 }
 
 func sentryLevel(for level: Int) -> SentryLevel {
