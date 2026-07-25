@@ -38,6 +38,197 @@ func test_levels_are_ordered_and_named() -> void:
 	Expect.that(ObservabilityLevel.name(ObservabilityLevel.ERROR)).to_equal("ERROR")
 
 
+func test_observability_user_exposes_explicit_valid_identity() -> void:
+	var user := ObservabilityUser.new("player-7", "Mina", "mina@example.com")
+
+	Expect.that(user.application_user_id()).to_equal("player-7")
+	Expect.that(user.display_name()).to_equal("Mina")
+	Expect.that(user.contact_email()).to_equal("mina@example.com")
+	Expect.that(user.is_valid()).to_be_true()
+
+
+func test_observability_user_rejects_empty_padded_and_control_character_identity() -> void:
+	Expect.that(ObservabilityUser.new().is_valid()).to_be_false()
+	Expect.that(ObservabilityUser.new(" player-7").is_valid()).to_be_false()
+	Expect.that(ObservabilityUser.new("", "Mina ").is_valid()).to_be_false()
+	Expect.that(ObservabilityUser.new("", "", "\tmina@example.com").is_valid()).to_be_false()
+	Expect.that(ObservabilityUser.new("player\n7").is_valid()).to_be_false()
+
+
+func test_observability_scope_mutates_and_defensively_copies_tags_and_contexts() -> void:
+	var source_context: Dictionary = {
+		"round": 3,
+		"active": true,
+		"ratio": 2.5,
+		"winner": null,
+		"players": [&"Mina", "Bo"],
+		&"rules": {&"mode": &"ranked"},
+	}
+	var scope := ObservabilityScope.new()
+
+	Expect.that(scope.is_empty()).to_be_true()
+	Expect.that(scope.set_tag("region", "iad")).to_be_true()
+	Expect.that(scope.set_context("game", source_context)).to_be_true()
+	source_context["round"] = 99
+	source_context["players"][0] = "Changed"
+
+	var exposed_tags: Dictionary = scope.tags()
+	var exposed_contexts: Dictionary = scope.contexts()
+	exposed_tags["region"] = "fra"
+	exposed_contexts["game"]["round"] = 100
+	exposed_contexts["game"]["players"][0] = "Changed again"
+
+	Expect.that(scope.tags()).to_equal({"region": "iad"})
+	Expect.that(scope.contexts()).to_equal({
+		"game": {
+			"round": 3,
+			"active": true,
+			"ratio": 2.5,
+			"winner": null,
+			"players": ["Mina", "Bo"],
+			"rules": {"mode": "ranked"},
+		},
+	})
+	Expect.that(scope.is_empty()).to_be_false()
+
+	var copied_scope: ObservabilityScope = scope.duplicate()
+	Expect.that(copied_scope.remove_tag("region")).to_be_true()
+	Expect.that(copied_scope.remove_context("game")).to_be_true()
+	Expect.that(copied_scope.remove_tag("missing")).to_be_false()
+	Expect.that(copied_scope.remove_context("missing")).to_be_false()
+	Expect.that(copied_scope.is_empty()).to_be_true()
+	Expect.that(scope.tags()).to_equal({"region": "iad"})
+	Expect.that(scope.contexts().has("game")).to_be_true()
+
+	scope.clear_tags()
+	scope.clear_contexts()
+	Expect.that(scope.is_empty()).to_be_true()
+
+
+func test_observability_scope_rejects_invalid_names_and_values_atomically() -> void:
+	var scope := ObservabilityScope.new()
+	Expect.that(scope.set_tag("stable", "kept")).to_be_true()
+	Expect.that(scope.set_context("stable", {"value": 7})).to_be_true()
+	var original_contexts: Dictionary = scope.contexts()
+
+	Expect.that(scope.set_tag("", "value")).to_be_false()
+	Expect.that(scope.set_tag(" padded", "value")).to_be_false()
+	Expect.that(scope.set_tag("padded ", "value")).to_be_false()
+	Expect.that(scope.set_tag("bad\nname", "value")).to_be_false()
+	Expect.that(scope.remove_tag(" bad")).to_be_false()
+	Expect.that(scope.set_context("", {})).to_be_false()
+	Expect.that(scope.set_context(" padded", {})).to_be_false()
+	Expect.that(scope.set_context("bad\u007fname", {})).to_be_false()
+	Expect.that(scope.remove_context("bad\tname")).to_be_false()
+
+	Expect.that(scope.set_context("nan", {"value": NAN})).to_be_false()
+	Expect.that(scope.set_context("infinity", {"value": INF})).to_be_false()
+	Expect.that(scope.set_context("object", {"value": RefCounted.new()})).to_be_false()
+	Expect.that(scope.set_context("unsupported key", {7: "value"})).to_be_false()
+
+	var cyclic_array: Array = []
+	cyclic_array.append(cyclic_array)
+	Expect.that(scope.set_context("array cycle", {"value": cyclic_array})).to_be_false()
+	var cyclic_dictionary: Dictionary = {}
+	cyclic_dictionary["self"] = cyclic_dictionary
+	Expect.that(scope.set_context("dictionary cycle", cyclic_dictionary)).to_be_false()
+
+	Expect.that(scope.tags()).to_equal({"stable": "kept"})
+	Expect.that(scope.contexts()).to_equal(original_contexts)
+
+
+func test_observability_scope_enforces_depth_and_item_limits_atomically() -> void:
+	var scope := ObservabilityScope.new()
+	Expect.that(scope.set_context("stable", {"value": 7})).to_be_true()
+
+	var accepted_depth: Array = []
+	var accepted_cursor: Array = accepted_depth
+	for _index: int in range(ObservabilityScope.MAX_CONTAINER_DEPTH - 1):
+		var child: Array = []
+		accepted_cursor.append(child)
+		accepted_cursor = child
+	Expect.that(scope.set_context("accepted depth", {"value": accepted_depth})).to_be_true()
+
+	var excessive_depth: Array = []
+	var excessive_cursor: Array = excessive_depth
+	for _index: int in range(ObservabilityScope.MAX_CONTAINER_DEPTH):
+		var child: Array = []
+		excessive_cursor.append(child)
+		excessive_cursor = child
+	Expect.that(scope.set_context("excessive depth", {"value": excessive_depth})).to_be_false()
+
+	var accepted_items: Dictionary = {}
+	for index: int in range(ObservabilityScope.MAX_CONTAINER_ITEMS):
+		accepted_items["item-%s" % index] = index
+	Expect.that(scope.set_context("accepted items", accepted_items)).to_be_true()
+
+	var excessive_items: Dictionary = accepted_items.duplicate()
+	excessive_items["overflow"] = true
+	Expect.that(scope.set_context("excessive items", excessive_items)).to_be_false()
+	Expect.that(scope.contexts().has("excessive depth")).to_be_false()
+	Expect.that(scope.contexts().has("excessive items")).to_be_false()
+	Expect.that(scope.contexts()["stable"]).to_equal({"value": 7})
+
+
+func test_observability_scope_preserves_repeated_noncyclic_containers() -> void:
+	var shared: Dictionary = {"players": [&"Mina", "Bo"]}
+	var scope := ObservabilityScope.new()
+
+	Expect.that(scope.set_context("match", {
+		"first": shared,
+		"second": shared,
+	})).to_be_true()
+	shared["players"][0] = "Changed source"
+
+	var exposed: Dictionary = scope.contexts()
+	exposed["match"]["first"]["players"][0] = "Changed first copy"
+	Expect.that(exposed["match"]["second"]["players"]).to_equal(["Mina", "Bo"])
+	Expect.that(scope.contexts()["match"]).to_equal({
+		"first": {"players": ["Mina", "Bo"]},
+		"second": {"players": ["Mina", "Bo"]},
+	})
+
+
+func test_observability_event_snapshots_scope_and_returns_isolated_copies() -> void:
+	var source_scope := ObservabilityScope.new()
+	Expect.that(source_scope.set_tag("region", "iad")).to_be_true()
+	Expect.that(source_scope.set_context("game", {"round": 3})).to_be_true()
+	var event := ObservabilityEvent.new(
+			p_attributes = {},
+			p_scope = source_scope,
+	)
+	source_scope.set_tag("region", "fra")
+	source_scope.set_context("game", {"round": 99})
+
+	var exposed_scope: ObservabilityScope = event.scope()
+	exposed_scope.set_tag("region", "syd")
+	exposed_scope.set_context("game", {"round": 100})
+
+	Expect.that(event.scope().tags()).to_equal({"region": "iad"})
+	Expect.that(event.scope().contexts()).to_equal({"game": {"round": 3}})
+	Expect.that(ObservabilityEvent.new().scope()).to_be_null()
+
+
+func test_observability_breadcrumb_appends_type_without_changing_existing_positions() -> void:
+	var legacy := ObservabilityBreadcrumb.new(
+			"door opened",
+			ObservabilityLevel.INFO,
+			&"navigation",
+			1234,
+			{"door": "north"},
+	)
+	var typed := ObservabilityBreadcrumb.new(
+			p_message = "request sent",
+			p_attributes = {},
+			p_type = &"http",
+	)
+
+	Expect.that(legacy.message()).to_equal("door opened")
+	Expect.that(legacy.attributes()).to_equal({"door": "north"})
+	Expect.that(legacy.type()).to_equal(&"default")
+	Expect.that(typed.type()).to_equal(&"http")
+
+
 func test_exception_and_event_copy_attributes() -> void:
 	var source := {"request_id": "abc", "nested": {"attempt": 1}}
 	var exception := ObservabilityException.new(

@@ -116,6 +116,10 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 	|| fail "AutomaticObservabilityLogger.fs is missing"
 [[ -f "$addon/ObservabilityFeedback.fs" ]] || fail "ObservabilityFeedback.fs is missing"
 [[ -f "$addon/ObservabilityBreadcrumb.fs" ]] || fail "ObservabilityBreadcrumb.fs is missing"
+[[ -f "$addon/ObservabilityUser.fs" ]] || fail "ObservabilityUser.fs is missing"
+[[ -f "$addon/ObservabilityScope.fs" ]] || fail "ObservabilityScope.fs is missing"
+[[ -f "$addon/ObservabilityScopeProvider.fs" ]] \
+	|| fail "ObservabilityScopeProvider.fs is missing"
 [[ -f "$addon/ObservabilityCaptureMask.fs" ]] || fail "ObservabilityCaptureMask.fs is missing"
 [[ -f "$addon/ObservabilityBreadcrumbsProvider.fs" ]] \
 	|| fail "ObservabilityBreadcrumbsProvider.fs is missing"
@@ -129,9 +133,21 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 	|| fail "Sentry runtime context probe is missing"
 [[ -f "$sentry_addon/SentryRuntimeContextCollector.fs" ]] \
 	|| fail "Sentry runtime context collector is missing"
-for field in _kind _level _message _source _timestamp_msec _attributes _exception _engine_ticks_msec; do
+for field in _kind _level _message _source _timestamp_msec _attributes _exception _engine_ticks_msec _scope; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityEvent.fs" \
 		|| fail "ObservabilityEvent field must be immutable: ${field}"
+done
+for field in _message _level _category _timestamp_msec _attributes _type; do
+	rg -q "^final var ${field}:" "$addon/ObservabilityBreadcrumb.fs" \
+		|| fail "ObservabilityBreadcrumb field must be immutable: ${field}"
+done
+for field in _application_user_id _display_name _contact_email; do
+	rg -q "^final var ${field}:" "$addon/ObservabilityUser.fs" \
+		|| fail "ObservabilityUser field must be immutable: ${field}"
+done
+for field in _tags _contexts; do
+	rg -q "^final var ${field}:" "$addon/ObservabilityScope.fs" \
+		|| fail "ObservabilityScope container reference must be immutable: ${field}"
 done
 rg -q '^const UNASSIGNED_TIMESTAMP: int = -1$' "$addon/ObservabilityEvent.fs" \
 	|| fail "ObservabilityEvent must define the unassigned timestamp sentinel"
@@ -154,6 +170,12 @@ rg -q '^class_name ObservabilityFeedback$' "$addon/ObservabilityFeedback.fs" \
 	|| fail "feedback value type declaration is missing"
 rg -q '^class_name ObservabilityBreadcrumb$' "$addon/ObservabilityBreadcrumb.fs" \
 	|| fail "breadcrumb value type declaration is missing"
+rg -q '^class_name ObservabilityUser$' "$addon/ObservabilityUser.fs" \
+	|| fail "user value type declaration is missing"
+rg -q '^class_name ObservabilityScope$' "$addon/ObservabilityScope.fs" \
+	|| fail "scope value type declaration is missing"
+rg -q '^trait_name ObservabilityScopeProvider$' "$addon/ObservabilityScopeProvider.fs" \
+	|| fail "optional scope provider contract is missing"
 rg -q '^class_name ObservabilityCaptureMask$' "$addon/ObservabilityCaptureMask.fs" \
 	|| fail "automatic capture mask declaration is missing"
 rg -q '^trait_name ObservabilityBreadcrumbsProvider$' \
