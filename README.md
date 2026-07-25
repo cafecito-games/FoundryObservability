@@ -52,6 +52,7 @@ source = "github-release"
 repo = "cafecito-games/Foundry-Swift"
 version = "0.1.0-alpha.2"
 asset = "FoundrySwift-0.1.0-alpha.2.zip"
+checksum = "51fedac51e9157430df2e3802dbb0c827c5d35500af418bb1fcb04114d040ffb"
 source_path = "addons/FoundrySwift"
 ```
 

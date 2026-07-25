@@ -33,6 +33,11 @@ for workflow in "$pr_workflow" "$release_workflow"; do
 		|| fail "$(basename "$workflow") must pin Foundry v0.1.0-alpha.7"
 	rg -q 'project import --project' "$workflow" \
 		|| fail "$(basename "$workflow") must use command-first project import"
+	rg -Fq 'go install github.com/cafecito-games/foundry-tools/cmd/anvil@176f5f7c5909c07c785fe6e1fd21051e0c13c5bf' "$workflow" \
+		|| fail "$(basename "$workflow") must pin Anvil to the immutable v0.0.1 commit"
+	if rg -q 'foundry-tools/cmd/anvil@latest' "$workflow"; then
+		fail "$(basename "$workflow") must not install Anvil from a mutable latest reference"
+	fi
 	rg -q 'task test' "$workflow" \
 		|| fail "$(basename "$workflow") must run the repository test gate"
 	if rg -n -- '--headless[[:space:]]+--path|--headless[[:space:]]+--editor|--check-only' "$workflow"; then

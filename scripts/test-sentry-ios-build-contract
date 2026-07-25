@@ -18,6 +18,7 @@ descriptor="$repo_root/addons/FoundryObservabilitySentry/FoundryObservabilitySen
 export_plugin="$repo_root/addons/FoundryObservabilitySentry/export_plugin.fs"
 package_swift="$native_root/Package.swift"
 packages_manifest="$repo_root/test_project/packages.toml"
+packages_lock="$repo_root/test_project/packages.lock"
 gitignore="$repo_root/.gitignore"
 readme="$repo_root/README.md"
 project_test="$repo_root/scripts/test-project"
@@ -29,6 +30,7 @@ project_test="$repo_root/scripts/test-project"
 [[ -f "$export_plugin" ]] || fail "Sentry export plugin is missing"
 [[ -f "$package_swift" ]] || fail "Sentry Package.swift is missing"
 [[ -f "$packages_manifest" ]] || fail "test project packages.toml is missing"
+[[ -f "$packages_lock" ]] || fail "test project packages.lock is missing"
 [[ -x "$project_test" ]] || fail "project runtime test is missing or not executable"
 [[ -f "$swift_sources/FoundryObservabilitySentry.swift" ]] || fail "Sentry bridge source is missing"
 [[ -f "$swift_sources/SentryEventMapper.swift" ]] || fail "Sentry mapper source is missing"
@@ -67,14 +69,32 @@ for package_field in \
 	'repo = "cafecito-games/Foundry-Swift"' \
 	'version = "0.1.0-alpha.2"' \
 	'asset = "FoundrySwift-0.1.0-alpha.2.zip"' \
+	'checksum = "51fedac51e9157430df2e3802dbb0c827c5d35500af418bb1fcb04114d040ffb"' \
 	'source_path = "addons/FoundrySwift"'; do
 	rg -Fq "$package_field" "$packages_manifest" \
 		|| fail "FoundrySwift package is missing exact field: $package_field"
+done
+foundryswift_lock=$(
+	awk '
+		/^  \[packages\.FoundrySwift\]$/ { in_section = 1; next }
+		in_section && /^  \[packages\./ { exit }
+		in_section { print }
+	' "$packages_lock"
+)
+for lock_field in \
+	'    resolved_version = "0.1.0-alpha.2"' \
+	'    source_path = "addons/FoundrySwift"' \
+	'    checksum = "51fedac51e9157430df2e3802dbb0c827c5d35500af418bb1fcb04114d040ffb"' \
+	'    spec_hash = "00b367e9ec6319ed1ef0523f11252e55ac0833690932a99b457bba1fa1d3bddc"'; do
+	rg -Fxq "$lock_field" <<<"$foundryswift_lock" \
+		|| fail "FoundrySwift lock entry is missing exact field: $lock_field"
 done
 rg -q '^test_project/addons/FoundrySwift/$' "$gitignore" \
 	|| fail "installed FoundrySwift test addon must be ignored"
 rg -q 'FoundrySwift-0\.1\.0-alpha\.2\.zip' "$readme" \
 	|| fail "README must show the exact compatible FoundrySwift release asset"
+rg -Fq 'checksum = "51fedac51e9157430df2e3802dbb0c827c5d35500af418bb1fcb04114d040ffb"' "$readme" \
+	|| fail "README must show the published FoundrySwift archive checksum"
 rg -q 'FoundrySwiftEmbed' "$readme" \
 	|| fail "README must explain shared runtime ownership by FoundrySwiftEmbed"
 rg -Fq -U $'Android uses the Sentry Android AAR and does not\nrequire the FoundrySwift companion addon.' "$readme" \
@@ -82,10 +102,30 @@ rg -Fq -U $'Android uses the Sentry Android AAR and does not\nrequire the Foundr
 
 rg -q 'FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME' "$project_test" \
 	|| fail "project test must expose strict native runtime verification"
-rg -Fq '2>&1 | tee "$runtime_log"' "$project_test" \
-	|| fail "strict runtime verification must capture combined Foundry output"
-rg -Fq 'foundry_status=${PIPESTATUS[0]}' "$project_test" \
-	|| fail "strict runtime verification must preserve Foundry status under Bash 3.2"
+rg -Fq -U $'run_project_tests 2>&1 | tee "$runtime_log"\n\tpipeline_status=("${PIPESTATUS[@]}")' "$project_test" \
+	|| fail "strict runtime verification must immediately snapshot every Bash 3.2 pipeline status"
+rg -Fq 'foundry_status=${pipeline_status[0]}' "$project_test" \
+	|| fail "strict runtime verification must read Foundry status from the pipeline snapshot"
+rg -Fq 'tee_status=${pipeline_status[1]}' "$project_test" \
+	|| fail "strict runtime verification must read tee status from the pipeline snapshot"
+rg -Fq 'strict native runtime Foundry tests failed with status $foundry_status' "$project_test" \
+	|| fail "strict runtime verification must report Foundry failure distinctly"
+rg -Fq 'strict native runtime output capture failed with status $tee_status' "$project_test" \
+	|| fail "strict runtime verification must report tee failure distinctly"
+rg -Fq 'foundryswift_plugin="$project_dir/addons/FoundrySwift/plugin.cfg"' "$project_test" \
+	|| fail "strict runtime verification must inspect the installed FoundrySwift plugin"
+rg -Fq 'rg -q '\''^version="0\.1\.0-alpha\.2"$'\'' "$foundryswift_plugin"' "$project_test" \
+	|| fail "strict runtime verification must require the exact installed FoundrySwift version"
+
+set +e
+/bin/bash -c 'exit 23' | /bin/bash -c 'exit 37'
+pipeline_probe_status=("${PIPESTATUS[@]}")
+set -e
+[[ ${#pipeline_probe_status[@]} -eq 2 \
+	&& ${pipeline_probe_status[0]} -eq 23 \
+	&& ${pipeline_probe_status[1]} -eq 37 ]] \
+	|| fail "Bash 3.2 pipeline status snapshot must preserve both command failures"
+
 for loader_marker in \
 	"Can't open dynamic library" \
 	"Can't open FoundryExtension dynamic library" \

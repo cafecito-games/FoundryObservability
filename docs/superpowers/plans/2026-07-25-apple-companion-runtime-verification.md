@@ -26,6 +26,7 @@ source = "github-release"
 repo = "cafecito-games/Foundry-Swift"
 version = "0.1.0-alpha.2"
 asset = "FoundrySwift-0.1.0-alpha.2.zip"
+checksum = "51fedac51e9157430df2e3802dbb0c827c5d35500af418bb1fcb04114d040ffb"
 source_path = "addons/FoundrySwift"
 ```
 
@@ -59,7 +60,9 @@ Require `scripts/test-project` to contain:
 ```bash
 FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME
 tee "$runtime_log"
-foundry_status=${PIPESTATUS[0]}
+pipeline_status=("${PIPESTATUS[@]}")
+foundry_status=${pipeline_status[0]}
+tee_status=${pipeline_status[1]}
 ```
 
 Also require explicit rejection patterns for
@@ -112,6 +115,7 @@ source = "github-release"
 repo = "cafecito-games/Foundry-Swift"
 version = "0.1.0-alpha.2"
 asset = "FoundrySwift-0.1.0-alpha.2.zip"
+checksum = "51fedac51e9157430df2e3802dbb0c827c5d35500af418bb1fcb04114d040ffb"
 source_path = "addons/FoundrySwift"
 ```
 
@@ -152,11 +156,14 @@ set +e
 	--project "$project_dir" \
 	--runner res://addons/foundrylib/testlib/cli/run.fs \
 	-- --path res://tests 2>&1 | tee "$runtime_log"
-foundry_status=${PIPESTATUS[0]}
+pipeline_status=("${PIPESTATUS[@]}")
 set -e
+foundry_status=${pipeline_status[0]}
+tee_status=${pipeline_status[1]}
 ```
 
-Fail when `foundry_status` is nonzero. Then scan the log for dynamic-library,
+Fail distinctly when `tee_status` or `foundry_status` is nonzero. Then scan the
+log for dynamic-library,
 FoundryExtension, or extension-load errors naming
 `FoundryObservabilitySentry` or `FoundrySwift`, and fail if any are present.
 Keep the direct command path unchanged outside strict mode.
