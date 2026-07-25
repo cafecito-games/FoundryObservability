@@ -36,8 +36,16 @@ job_mentions_task_name() {
 job_line() {
 	local job_body=$1
 	local needle=$2
-	awk -v needle="$needle" 'index($0, needle) { print NR; exit }' \
-		<<<"$job_body"
+	local job_id
+	local line
+	job_id=${job_body%%$'\n'*}
+	job_id=${job_id#"  "}
+	job_id=${job_id%:}
+	line=$(awk -v needle="$needle" 'index($0, needle) { print NR; exit }' \
+		<<<"$job_body")
+	[[ -n "$line" ]] \
+		|| fail "$job_id job is missing ordering needle: $needle"
+	printf '%s\n' "$line"
 }
 
 for job_id in validate-core build-apple build-android; do
@@ -258,6 +266,10 @@ done
 
 rg -Fxq '    name: Build Apple Sentry addon' <<<"$apple_job" \
 	|| fail "build-apple job must be named Build Apple Sentry addon"
+rg -Fxq '    runs-on: macos-26' <<<"$apple_job" \
+	|| fail "build-apple job must run on macos-26"
+rg -Fxq '        uses: actions/checkout@v7.0.1' <<<"$apple_job" \
+	|| fail "build-apple job must use actions/checkout@v7.0.1"
 rg -Fxq '        run: task test:sentry-apple' <<<"$apple_job" \
 	|| fail "build-apple job must run task test:sentry-apple"
 for forbidden_task in \
@@ -272,14 +284,17 @@ done
 rg -q -U -- '^      - name: Build Apple artifacts$\n^        env:$\n^          GH_TOKEN: \$\{\{ github\.token \}\}$\n^        run: task ios:sentry$' \
 	<<<"$apple_job" \
 	|| fail "build-apple job must build Apple artifacts with GH_TOKEN"
-rg -q '^        run: brew install( [[:alnum:]_.@/+:-]+)* xcodegen( [[:alnum:]_.@/+:-]+)*$' \
-	<<<"$apple_job" \
+rg -Fxq '        run: brew install ripgrep xcodegen' <<<"$apple_job" \
 	|| fail "build-apple job must install XcodeGen via brew"
 rg -Fxq '        uses: go-task/setup-task@v2.1.0' <<<"$apple_job" \
 	|| fail "build-apple job must use go-task/setup-task@v2.1.0"
 
 rg -Fxq '    name: Build Android Sentry addon' <<<"$android_job" \
 	|| fail "build-android job must be named Build Android Sentry addon"
+rg -Fxq '    runs-on: ubuntu-latest' <<<"$android_job" \
+	|| fail "build-android job must run on ubuntu-latest"
+rg -Fxq '        uses: actions/checkout@v7.0.1' <<<"$android_job" \
+	|| fail "build-android job must use actions/checkout@v7.0.1"
 rg -Fxq '        run: sudo apt-get update && sudo apt-get install --yes ripgrep' \
 	<<<"$android_job" \
 	|| fail "build-android job must install ripgrep"
@@ -314,14 +329,21 @@ rg -q '^        run: chmod \+x addons/FoundryObservabilitySentry/AndroidFoundryO
 	|| fail "build-android job must make the Android Gradle wrapper executable"
 
 core_test_line=$(job_line "$core_job" 'run: task test:core')
+core_tooling_line=$(job_line "$core_job" 'run: brew install prek ripgrep')
+core_task_setup_line=$(job_line "$core_job" 'uses: go-task/setup-task@v2.1.0')
+core_go_line=$(job_line "$core_job" 'uses: actions/setup-go@v7.0.0')
+core_anvil_line=$(job_line "$core_job" 'foundry-tools/cmd/anvil@176f5f7c5909c07c785fe6e1fd21051e0c13c5bf')
+core_download_line=$(job_line "$core_job" 'Foundry/releases/download/')
+core_install_line=$(job_line "$core_job" 'unzip -q')
+core_import_line=$(job_line "$core_job" '--headless project import --project test_project')
 for core_setup_line in \
-	"$(job_line "$core_job" 'run: brew install prek ripgrep')" \
-	"$(job_line "$core_job" 'uses: go-task/setup-task@v2.1.0')" \
-	"$(job_line "$core_job" 'uses: actions/setup-go@v7.0.0')" \
-	"$(job_line "$core_job" 'foundry-tools/cmd/anvil@176f5f7c5909c07c785fe6e1fd21051e0c13c5bf')" \
-	"$(job_line "$core_job" 'Foundry/releases/download/')" \
-	"$(job_line "$core_job" 'unzip -q')" \
-	"$(job_line "$core_job" '--headless project import --project test_project')"; do
+	"$core_tooling_line" \
+	"$core_task_setup_line" \
+	"$core_go_line" \
+	"$core_anvil_line" \
+	"$core_download_line" \
+	"$core_install_line" \
+	"$core_import_line"; do
 	(( core_setup_line < core_test_line )) \
 		|| fail "validate-core setup must run before task test:core"
 done
