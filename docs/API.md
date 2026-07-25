@@ -297,12 +297,14 @@ Stack-frame source context is enabled by default. When present, the core keeps
 the nearest five preceding and five following lines; source-context arrays are
 omitted unless the frame has a nonempty current `context_line`. Frame variables
 are disabled by default. They may contain credentials, tokens, PII, or game
-state, so producers must not acquire or inspect locals unless
-`stack_trace_variables_enabled` is explicitly enabled. When enabled, the core
-and native bridges retain only supported values in a bounded copy: booleans,
-finite numbers, strings, arrays, and string-keyed dictionaries, up to eight
-nested containers and 256 examined items per frame. Unsupported values,
-nonfinite numbers, non-string keys, and cycles are omitted.
+state. Acquiring, inspecting, and copying stack locals can also be expensive
+and increase capture latency and memory use. Producers must check
+`stack_trace_variables_enabled` before acquiring locals, and only acquire them
+when it is explicitly enabled. When enabled, the core and native bridges retain
+only supported values in a bounded copy: booleans, finite numbers, strings,
+arrays, and string-keyed dictionaries, up to eight nested containers and 256
+examined items per frame. Unsupported values, nonfinite numbers, non-string
+keys, and cycles are omitted.
 
 ## ObservabilityException
 
