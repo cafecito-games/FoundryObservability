@@ -12,6 +12,9 @@ var _shutdown: bool = false
 var _log_window_second: int = -1
 var _log_window_count: int = 0
 var _metric_sample_accumulator: float = 0.0
+var _pipeline_mutex: Mutex = Mutex.new()
+var _provider_call_count: int = 0
+var _automatic_logger: AutomaticObservabilityLogger
 
 const MAX_FEEDBACK_MESSAGE_LENGTH: int = 4096
 const MAX_METRIC_NAME_LENGTH: int = 200
@@ -42,7 +45,9 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return Error.ERR_INVALID_PARAMETER
 
+	_begin_provider_call()
 	var result: int = provider.configure(candidate_config)
+	_end_provider_call()
 	if result != Error.OK:
 		_last_error = result
 		return result
@@ -53,10 +58,14 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 		_shutdown = false
 		_reset_log_rate_limit()
 		_reset_metric_sampling()
+		_refresh_automatic_logger()
 		return Error.OK
 
+	_remove_automatic_logger()
 	if _provider != null:
+		_begin_provider_call()
 		_provider.shutdown()
+		_end_provider_call()
 
 	_provider = provider
 	_config = candidate_config
@@ -64,6 +73,7 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	_shutdown = false
 	_reset_log_rate_limit()
 	_reset_metric_sampling()
+	_refresh_automatic_logger()
 	return Error.OK
 
 
@@ -74,14 +84,22 @@ func is_enabled() -> bool:
 
 ## Returns whether the active provider can currently accept events.
 func is_available() -> bool:
-	return _provider != null and _provider.is_available()
+	if _provider == null:
+		return false
+	_begin_provider_call()
+	var available: bool = _provider.is_available()
+	_end_provider_call()
+	return available
 
 
 ## Returns the active provider identifier, including null before configuration.
 func provider_name() -> StringName:
 	if _provider == null:
 		return &"null"
-	return _provider.provider_name()
+	_begin_provider_call()
+	var provider_id: StringName = _provider.provider_name()
+	_end_provider_call()
+	return provider_id
 
 
 ## Returns the most recent provider, capture, configuration, or flush error.
@@ -163,6 +181,42 @@ func capture_log(
 	))
 
 
+## Captures a breadcrumb when the active provider supports the optional capability.
+func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
+	return _capture_breadcrumb(breadcrumb, true, true)
+
+
+## Captures an automatic breadcrumb without treating an absent optional capability as an error.
+func _capture_automatic_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
+	return _capture_breadcrumb(breadcrumb, false, false)
+
+
+func _capture_breadcrumb(
+		breadcrumb: ObservabilityBreadcrumb,
+		report_unsupported: bool,
+		report_success: bool,
+) -> bool:
+	if breadcrumb == null:
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return false
+	if not is_enabled() or _provider == null:
+		return false
+	if not _provider.has_method("capture_breadcrumb"):
+		if report_unsupported:
+			_last_error = Error.ERR_UNAVAILABLE
+		return false
+
+	_begin_provider_call()
+	var capture_result: Variant = _provider.call("capture_breadcrumb", breadcrumb)
+	_end_provider_call()
+	if not (capture_result is bool) or not capture_result:
+		_last_error = Error.FAILED
+		return false
+	if report_success:
+		_last_error = Error.OK
+	return true
+
+
 ## Captures explicitly submitted player feedback without creating an error event.
 func capture_feedback(feedback: ObservabilityFeedback) -> String:
 	if not _is_valid_feedback(feedback):
@@ -196,7 +250,9 @@ func capture_metric(metric: ObservabilityMetric) -> bool:
 		_last_error = Error.ERR_UNAVAILABLE
 		return false
 
+	_begin_provider_call()
 	var capture_result: Variant = _provider.call("capture_metric", normalized)
+	_end_provider_call()
 	if not (capture_result is bool) or not capture_result:
 		_last_error = Error.FAILED
 		return false
@@ -382,7 +438,9 @@ func _capture_event(event: ObservabilityEvent) -> String:
 	if not is_enabled() or _provider == null:
 		return ""
 
+	_begin_provider_call()
 	var event_id: String = _provider.capture(event)
+	_end_provider_call()
 	if event_id.is_empty():
 		_last_error = Error.FAILED
 	return event_id
@@ -392,7 +450,9 @@ func _capture_feedback(feedback: ObservabilityFeedback) -> String:
 	if not is_enabled() or _provider == null:
 		return ""
 
+	_begin_provider_call()
 	var feedback_id: String = _provider.capture_feedback(feedback)
+	_end_provider_call()
 	if feedback_id.is_empty():
 		_last_error = Error.FAILED
 	return feedback_id
@@ -456,12 +516,63 @@ func _reset_log_rate_limit() -> void:
 	_log_window_count = 0
 
 
+func _begin_provider_call() -> void:
+	_pipeline_mutex.lock()
+	_provider_call_count += 1
+	_pipeline_mutex.unlock()
+
+
+func _end_provider_call() -> void:
+	_pipeline_mutex.lock()
+	_provider_call_count = maxi(0, _provider_call_count - 1)
+	_pipeline_mutex.unlock()
+
+
+## Atomically reserves the provider pipeline for one automatic logger callback.
+func try_begin_automatic_capture() -> bool:
+	if not _pipeline_mutex.try_lock():
+		return false
+	if _provider_call_count > 0:
+		_pipeline_mutex.unlock()
+		return false
+	_provider_call_count += 1
+	_pipeline_mutex.unlock()
+	return true
+
+
+## Releases a successful automatic logger callback reservation.
+func end_automatic_capture() -> void:
+	_end_provider_call()
+
+
+func _refresh_automatic_logger() -> void:
+	var should_install: bool = _config.enabled and _config.automatic_capture_enabled
+	if not should_install:
+		_remove_automatic_logger()
+		return
+	if _automatic_logger != null:
+		_automatic_logger.reconfigure(_config)
+		return
+	_automatic_logger = AutomaticObservabilityLogger.new(self, _config)
+	OS.add_logger(_automatic_logger)
+
+
+func _remove_automatic_logger() -> void:
+	if _automatic_logger == null:
+		return
+	OS.remove_logger(_automatic_logger)
+	_automatic_logger.reset()
+	_automatic_logger = null
+
+
 ## Flushes pending provider work within timeout_msec and stores the returned error.
 func flush(timeout_msec: int = 2000) -> int:
 	if _provider == null:
 		return Error.OK
 
+	_begin_provider_call()
 	var result: int = _provider.flush(timeout_msec)
+	_end_provider_call()
 	_last_error = result
 	return result
 
@@ -472,9 +583,12 @@ func shutdown() -> void:
 		return
 
 	_shutdown = true
+	_remove_automatic_logger()
 	flush()
 	if _provider != null:
+		_begin_provider_call()
 		_provider.shutdown()
+		_end_provider_call()
 	_provider = NullObservabilityProvider.new()
 	_config = ObservabilityConfig.new(p_enabled = false)
 	_last_error = Error.OK

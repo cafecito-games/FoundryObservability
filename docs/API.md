@@ -1,10 +1,11 @@
 # FoundryObservability API
 
 FoundryObservability is the provider-neutral observability boundary for Foundry
-games. It normalizes messages, exceptions, structured log records, and custom
-metrics before dispatching them to a backend provider. It also exposes an
-explicit, separate player-feedback path; feedback is never collected
-implicitly by event capture.
+games. It normalizes messages, exceptions, breadcrumbs, structured log records,
+and custom metrics before dispatching them to a backend provider. It can also
+capture engine diagnostics and output automatically after successful
+configuration. Player feedback remains an explicit, separate path and is never
+collected implicitly.
 
 The public namespace is **foundry.observability**. The FoundryLib adapter lives
 in **foundry.observability.foundrylib**. Global class and trait names are
@@ -57,6 +58,8 @@ Value types:
 - ObservabilityConfig
 - ObservabilityException
 - ObservabilityEvent
+- ObservabilityBreadcrumb
+- ObservabilityCaptureMask
 - ObservabilityFeedback
 - ObservabilityMetricType
 - ObservabilityMetric
@@ -64,6 +67,7 @@ Value types:
 Optional provider capabilities:
 
 - ObservabilityMetricsProvider
+- ObservabilityBreadcrumbsProvider
 
 Built-in providers:
 
@@ -83,9 +87,10 @@ A provider configuration or flush failure is returned to the caller and stored
 by the service in last_error(). Capture methods return String event IDs rather
 than Error values. An empty capture ID means the event was not accepted; the
 service records Error.FAILED for an enabled provider that returns an empty ID.
-Metric capture methods return bool. Rejected invalid input stores
+Metric and breadcrumb capture methods return bool. Rejected invalid input stores
 Error.ERR_INVALID_PARAMETER, a provider without the optional metrics capability
 stores Error.ERR_UNAVAILABLE, and a provider rejection stores Error.FAILED.
+The same unavailable/rejected behavior applies to optional breadcrumb capture.
 
 ### Timestamps
 
@@ -103,11 +108,11 @@ metadata when useful.
 
 ### Defensive copies
 
-Configuration, event, and metric dictionaries are copied deeply when stored and
-when returned through accessors. This prevents callers from mutating a payload
-after it has been handed to the observability service. Memory provider list
-accessors copy the containing array; the payload objects themselves are the
-captured objects.
+Configuration, event, breadcrumb, and metric dictionaries are copied deeply
+when stored and when returned through accessors. This prevents callers from
+mutating a payload after it has been handed to the observability service.
+Memory provider list accessors copy the containing array; the payload objects
+themselves are the captured objects.
 
 ## ObservabilityLevel
 
@@ -153,6 +158,17 @@ ObservabilityConfig.new(
 		p_metrics_enabled: bool = true,
 		p_metric_sample_rate: float = 1.0,
 		p_metric_filter: Callable = Callable(),
+		p_automatic_capture_enabled: bool = true,
+		p_automatic_event_mask: int = ObservabilityCaptureMask.DEFAULT_EVENTS,
+		p_automatic_breadcrumb_mask: int = ObservabilityCaptureMask.DEFAULT_BREADCRUMBS,
+		p_automatic_log_mask: int = ObservabilityCaptureMask.NONE,
+		p_automatic_events_per_frame: int = 5,
+		p_automatic_repeated_error_window_msec: int = 1000,
+		p_automatic_event_throttle_count: int = 20,
+		p_automatic_event_throttle_window_msec: int = 10000,
+		p_automatic_message_filter_prefixes: PackedStringArray = PackedStringArray(
+				["FoundryObservability: "],
+		),
 )
 ~~~
 
@@ -170,17 +186,28 @@ Public fields:
 | metrics_enabled | bool | Whether custom metrics are accepted; enabled by default |
 | metric_sample_rate | float | Deterministic accepted fraction from 0.0 through 1.0 |
 | metric_filter | Callable | Optional predicate receiving each normalized metric before sampling |
+| automatic_capture_enabled | bool | Whether successful enabled configuration installs the automatic engine logger |
+| automatic_event_mask | int | Categories routed to exception events |
+| automatic_breadcrumb_mask | int | Categories routed to breadcrumbs |
+| automatic_log_mask | int | Categories routed to structured logs |
+| automatic_events_per_frame | int | Maximum automatic exception events per processed frame; zero is unlimited |
+| automatic_repeated_error_window_msec | int | Duplicate-suppression window; zero disables suppression |
+| automatic_event_throttle_count | int | Maximum automatic exception events in the sliding window; zero is unlimited |
+| automatic_event_throttle_window_msec | int | Sliding-window duration; zero disables that limit |
 
 Accessors:
 
 ~~~
 func global_attributes() -> Dictionary
 func provider_options() -> Dictionary
+func automatic_message_filter_prefixes() -> PackedStringArray
 ~~~
 
-Both accessors return deep copies. global_attributes are shared metadata for a
-provider integration. provider_options are opaque to the core and are passed
-to provider implementations through the config object.
+Dictionary accessors return deep copies. global_attributes are shared metadata
+for a provider integration. provider_options are opaque to the core and are
+passed to provider implementations through the config object.
+automatic_message_filter_prefixes returns a copied list of ordinary output
+prefixes excluded from automatic capture.
 
 Structured logs are enabled by default independently of messages and
 exceptions. The core applies log_minimum_level and log_rate_limit_per_second
@@ -196,6 +223,67 @@ metric_filter must return bool. Returning false drops the metric normally;
 returning another type stores Error.ERR_INVALID_PARAMETER. Filtering happens
 before deterministic accumulator-based sampling, and the sampling sequence
 resets on successful configuration and shutdown.
+
+### Automatic engine capture
+
+Automatic capture activates only after a provider completes enabled
+configuration successfully. Reconfiguring the active provider updates and
+resets the logger without adding a duplicate. Provider replacement removes the
+old logger before shutting down the previous provider; failed replacement
+leaves the active provider and logger unchanged. Disabling the service,
+disabling automatic capture, or calling shutdown removes the logger.
+
+The three destination masks are independent:
+
+| Destination | Default mask | Default behavior |
+| --- | --- | --- |
+| Events | `ERROR | SCRIPT | SHADER` | Capture engine/native errors, `push_error`, script errors, and shader errors |
+| Breadcrumbs | `ALL` | Capture every error category plus ordinary output messages |
+| Structured logs | `NONE` | No automatic structured logs until explicitly enabled |
+
+`ObservabilityCaptureMask` categories map as follows:
+
+| Category | Engine input | Normalized level |
+| --- | --- | --- |
+| ERROR | Engine/native errors and `push_error` | ERROR |
+| ERROR | Fatal diagnostics | FATAL |
+| WARNING | Warnings and `push_warning` | WARN |
+| SCRIPT | Script runtime errors | ERROR |
+| SHADER | Shader errors | ERROR |
+| MESSAGE | Ordinary output; error-stream output uses ERROR, other output uses INFO | ERROR or INFO |
+
+MESSAGE never creates an exception event. It may create a breadcrumb and/or
+structured log when its destination masks include MESSAGE. Before routing an
+ordinary message, the logger strips ANSI escape sequences and control
+characters, drops empty results, and applies
+automatic_message_filter_prefixes. The default prefix prevents the
+observability addon from collecting its own output.
+
+Automatic error records preserve the callback's function, file, line, code,
+rationale, diagnostic type, editor-notify flag, and serialized script
+backtraces. These fields use `error.*` attribute names. Exception events also
+carry a printable stack trace; every automatic record includes
+`observability.origin = "auto.log.foundry"` and uses source
+`foundry.engine`. Ordinary output includes its error-stream flag.
+Automatic throttling uses the diagnostic's monotonic engine tick. Exception
+events and structured logs pass that value as `engine_ticks_msec`, allowing the
+core capture boundary to derive the Unix occurrence timestamp. Breadcrumbs
+retain the engine tick in their provider-neutral `timestamp_msec`; native
+Sentry breadcrumbs use wall-clock receipt time.
+
+Duplicate identity is `(message, file, line, diagnostic type)`. A duplicate
+inside automatic_repeated_error_window_msec is suppressed from every
+destination. The identity table is bounded and periodically cleared.
+automatic_events_per_frame and the sliding
+automatic_event_throttle_count/automatic_event_throttle_window_msec pair limit
+only exception events; breadcrumbs and automatic structured logs still flow.
+All non-negative limit values are accepted, zero disables the corresponding
+limit, and successful reconfiguration resets accumulated limit state.
+
+Provider calls are guarded so an error emitted by provider configuration,
+capture, flush, or shutdown cannot recursively enter automatic capture.
+Providers should still avoid deliberately reporting their own failures through
+the same observability pipeline.
 
 A null config passed to FoundryObservability.configure is replaced with a
 disabled ObservabilityConfig.
@@ -285,6 +373,57 @@ attributes are deep-copied on construction and access. exception is optional and
 is returned as the original payload object. Every event field is final after
 construction; timestamp resolution creates a new normalized event rather than
 mutating the caller's event.
+
+## ObservabilityCaptureMask
+
+ObservabilityCaptureMask defines bit flags used by the three automatic
+destination policies:
+
+| Constant | Value | Meaning |
+| --- | ---: | --- |
+| NONE | 0 | No categories |
+| ERROR | `1 << 0` | Engine/native errors, `push_error`, and fatals |
+| WARNING | `1 << 1` | Warnings and `push_warning` |
+| SCRIPT | `1 << 2` | Script runtime errors |
+| SHADER | `1 << 3` | Shader errors |
+| MESSAGE | `1 << 7` | Ordinary output messages |
+| ALL_ERRORS | combined | ERROR, WARNING, SCRIPT, and SHADER |
+| ALL | combined | Every error category plus MESSAGE |
+| DEFAULT_EVENTS | combined | ERROR, SCRIPT, and SHADER |
+| DEFAULT_BREADCRUMBS | combined | ALL |
+
+Combine categories with bitwise OR. For example, opt warnings and script errors
+into automatic structured logs with
+`ObservabilityCaptureMask.WARNING | ObservabilityCaptureMask.SCRIPT`.
+
+## ObservabilityBreadcrumb
+
+ObservabilityBreadcrumb is the normalized provider-neutral trail record.
+
+Constructor:
+
+~~~
+ObservabilityBreadcrumb.new(
+		p_message: String = "",
+		p_level: int = ObservabilityLevel.INFO,
+		p_category: StringName = &"",
+		p_timestamp_msec: int = 0,
+		p_attributes: Dictionary = {},
+)
+~~~
+
+Accessors:
+
+~~~
+func message() -> String
+func level() -> int
+func category() -> StringName
+func timestamp_msec() -> int
+func attributes() -> Dictionary
+~~~
+
+attributes are deep-copied on construction and access. Breadcrumb delivery is
+capability-based so event-only providers remain compatible.
 
 ## ObservabilityFeedback
 
@@ -408,6 +547,21 @@ Existing providers that implement only ObservabilityProvider remain compatible:
 event, log, and feedback capture continue to work, while metric capture safely
 returns false and stores Error.ERR_UNAVAILABLE.
 
+## ObservabilityBreadcrumbsProvider
+
+ObservabilityBreadcrumbsProvider is an optional provider capability:
+
+~~~
+trait_name ObservabilityBreadcrumbsProvider
+
+abstract func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool
+~~~
+
+A provider implements this trait when it accepts normalized breadcrumbs.
+Providers that implement only ObservabilityProvider remain compatible: their
+event, log, feedback, and metric behavior is unchanged, while breadcrumb
+capture returns false and stores Error.ERR_UNAVAILABLE.
+
 ## FoundryObservabilityApi
 
 FoundryObservabilityApi is the provider-neutral service trait. It allows an
@@ -426,6 +580,7 @@ abstract func capture_event(event: ObservabilityEvent) -> String
 abstract func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String
 abstract func capture_log(message: String, level: int = ObservabilityLevel.INFO, source: StringName = &"game", timestamp_msec: int = -1, attributes: Dictionary = {}, engine_ticks_msec: int = -1) -> String
 abstract func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String
+abstract func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool
 abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
 abstract func capture_metric(metric: ObservabilityMetric) -> bool
 abstract func capture_counter(metric_name: String, value: int = 1, attributes: Dictionary = {}) -> bool
@@ -463,6 +618,9 @@ Behavior:
    it down.
 6. Configuring a different provider shuts down the old provider once, then
    activates the candidate and clears last_error().
+7. Successful enabled configuration installs or updates automatic capture when
+   automatic_capture_enabled is true. Failed configuration does not disturb
+   the current logger.
 
 The method returns the provider configure result.
 
@@ -565,6 +723,30 @@ FoundryObservability.capture_log(
 
 Providers that do not support structured logs may safely return an empty ID;
 the service records the failed capture status when the provider is enabled.
+
+### capture_breadcrumb
+
+~~~
+func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool
+~~~
+
+Dispatches a normalized breadcrumb when the active provider implements
+ObservabilityBreadcrumbsProvider. A true result means the provider accepted
+the breadcrumb into its local SDK or store; it does not guarantee remote
+delivery. Null input returns false and stores Error.ERR_INVALID_PARAMETER.
+Disabled capture returns false without calling the provider. A provider without
+the optional capability returns false and stores Error.ERR_UNAVAILABLE; a
+non-boolean or false provider result stores Error.FAILED.
+
+Automatic capture silently skips this optional destination when the provider
+does not implement it, so a successfully accepted exception event does not
+leave `last_error()` in an unrelated unavailable state. Explicit
+`capture_breadcrumb()` calls retain the observable `ERR_UNAVAILABLE` behavior.
+A successful automatic breadcrumb also does not clear a failure from an earlier
+automatic event destination in the same callback.
+If a provider implements breadcrumb capture but rejects an automatic
+breadcrumb, that provider failure remains observable as `Error.FAILED`, even
+when an independent event destination accepted the same diagnostic.
 
 ### capture_feedback
 
@@ -746,17 +928,20 @@ Public methods:
 
 ~~~
 func events() -> Array[ObservabilityEvent]
+func breadcrumbs() -> Array[ObservabilityBreadcrumb]
 func feedback() -> Array[ObservabilityFeedback]
 func metrics() -> Array[ObservabilityMetric]
 func clear() -> void
+func clear_breadcrumbs() -> void
 func clear_feedback() -> void
 func clear_metrics() -> void
 ~~~
 
 events returns a copy of the captured event list. clear removes captured events
-without changing configuration. Successful capture returns sequential IDs in
-the form memory:N. Feedback is stored in a separate list and returns IDs in the
-form memory-feedback:N. Metrics are stored in a third list and return true when
+without changing configuration. Successful event capture returns sequential
+IDs in the form memory:N. Breadcrumbs are stored in their own list and return
+true when accepted. Feedback is stored separately and returns IDs in the form
+memory-feedback:N. Metrics are stored in another list and return true when
 accepted. Capture returns an empty ID or false while disabled or after
 shutdown.
 
@@ -856,6 +1041,22 @@ method is absent, so mismatched native and FoundryScript provider versions are
 detected before the provider becomes active. Ordinary messages and exceptions
 continue using the regular event path.
 
+## Sentry breadcrumb delivery
+
+The optional Sentry provider implements ObservabilityBreadcrumbsProvider and
+maps normalized breadcrumbs directly to native Sentry breadcrumbs. Apple uses
+Sentry Cocoa 9.23.0 `Breadcrumb` and `SentrySDK.addBreadcrumb`; Android uses
+Sentry Android 8.50.1 `Breadcrumb` and `Sentry.addBreadcrumb`. Both preserve
+message, normalized level, category, global attributes, and per-breadcrumb
+attributes. Per-breadcrumb values override matching global values. The native
+SDK timestamp records wall-clock receipt time; the normalized engine uptime is
+retained as reserved `foundry.timestamp_msec` data.
+
+Breadcrumb support remains optional at both provider boundaries. A provider
+without ObservabilityBreadcrumbsProvider, or an older Sentry native bridge
+without `captureBreadcrumb`, returns false for that breadcrumb while ordinary
+event capture continues.
+
 ## Sentry feedback delivery
 
 The optional Sentry provider maps capture_feedback() to Sentry's dedicated
@@ -889,7 +1090,7 @@ events, structured logs, and feedback continue using their available paths.
 ## Custom provider outline
 
 A provider implements all methods in ObservabilityProvider and may also
-implement ObservabilityMetricsProvider to translate metrics into its backend:
+implement optional capabilities to translate metrics and breadcrumbs:
 
 ~~~
 namespace my_game.telemetry
@@ -898,7 +1099,7 @@ import foundry.observability
 
 class_name MyProvider
 extends RefCounted
-uses ObservabilityProvider, ObservabilityMetricsProvider
+uses ObservabilityProvider, ObservabilityMetricsProvider, ObservabilityBreadcrumbsProvider
 
 func provider_name() -> StringName:
 	return &"my_provider"
@@ -914,6 +1115,10 @@ func capture(event: ObservabilityEvent) -> String:
 
 func capture_feedback(feedback: ObservabilityFeedback) -> String:
 	return "my_provider:feedback"
+
+func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
+	# Enqueue the normalized breadcrumb in the provider SDK.
+	return true
 
 func capture_metric(metric: ObservabilityMetric) -> bool:
 	# Enqueue the normalized metric in the provider SDK.
@@ -934,8 +1139,8 @@ interpret them.
 
 This core API does not include Sentry, Apple/Android native bindings, crash
 handlers, automatic identity collection, persistence, or retry queues,
-breadcrumbs, attachments, or performance transactions. Providers own native
-delivery, offline storage, retry policy, and flush behavior. The optional
-Sentry sibling addon contains its native bindings, structured-log delivery,
-feedback delivery, and custom-metric delivery. A foundry-cpp project is not
-required by this API.
+attachments, or performance transactions. Providers own native delivery,
+offline storage, retry policy, and flush behavior. The optional Sentry sibling
+addon contains its native bindings, breadcrumb delivery, structured-log
+delivery, feedback delivery, and custom-metric delivery. A foundry-cpp project
+is not required by this API.

@@ -3,7 +3,7 @@ namespace foundry.observability
 ## Deterministic provider for tests and local integration work.
 class_name MemoryObservabilityProvider
 extends RefCounted
-uses ObservabilityProvider, ObservabilityMetricsProvider
+uses ObservabilityProvider, ObservabilityMetricsProvider, ObservabilityBreadcrumbsProvider
 
 ## Result returned by the next configure call.
 var configure_result: int = Error.OK
@@ -19,6 +19,7 @@ var shutdown_count: int = 0
 var metric_capture_result: bool = true
 
 var _events: Array[ObservabilityEvent] = []
+var _breadcrumbs: Array[ObservabilityBreadcrumb] = []
 var _feedback: Array[ObservabilityFeedback] = []
 var _metrics: Array[ObservabilityMetric] = []
 var _event_sequence: int = 0
@@ -53,6 +54,14 @@ func capture(event: ObservabilityEvent) -> String:
 	_events.append(event)
 	_event_sequence += 1
 	return "memory:%s" % _event_sequence
+
+
+## Stores a breadcrumb when enabled.
+func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
+	if not _enabled or _shutdown:
+		return false
+	_breadcrumbs.append(breadcrumb)
+	return true
 
 
 ## Stores explicit feedback and returns a sequential memory feedback ID when enabled.
@@ -92,6 +101,11 @@ func events() -> Array[ObservabilityEvent]:
 	return _events.duplicate()
 
 
+## Returns a shallow copy of captured breadcrumbs.
+func breadcrumbs() -> Array[ObservabilityBreadcrumb]:
+	return _breadcrumbs.duplicate()
+
+
 ## Returns a shallow copy of explicitly captured feedback.
 func feedback() -> Array[ObservabilityFeedback]:
 	return _feedback.duplicate()
@@ -105,6 +119,11 @@ func metrics() -> Array[ObservabilityMetric]:
 ## Removes captured events without changing provider configuration.
 func clear() -> void:
 	_events.clear()
+
+
+## Removes captured breadcrumbs without changing provider configuration.
+func clear_breadcrumbs() -> void:
+	_breadcrumbs.clear()
 
 
 ## Removes captured feedback without changing provider configuration.

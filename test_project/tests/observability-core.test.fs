@@ -117,6 +117,57 @@ func test_config_copies_attributes_and_options() -> void:
 	Expect.that(config.provider_options()).to_equal({"provider_key": "value"})
 
 
+func test_automatic_capture_masks_and_config_defaults() -> void:
+	var config := ObservabilityConfig.new()
+
+	Expect.that(config.automatic_capture_enabled).to_be_true()
+	Expect.that(config.automatic_event_mask).to_equal(
+			ObservabilityCaptureMask.ERROR
+			| ObservabilityCaptureMask.SCRIPT
+			| ObservabilityCaptureMask.SHADER)
+	Expect.that(config.automatic_breadcrumb_mask).to_equal(ObservabilityCaptureMask.ALL)
+	Expect.that(config.automatic_log_mask).to_equal(ObservabilityCaptureMask.NONE)
+	Expect.that(config.automatic_events_per_frame).to_equal(5)
+	Expect.that(config.automatic_repeated_error_window_msec).to_equal(1000)
+	Expect.that(config.automatic_event_throttle_count).to_equal(20)
+	Expect.that(config.automatic_event_throttle_window_msec).to_equal(10000)
+
+
+func test_automatic_capture_config_and_breadcrumb_copy_inputs() -> void:
+	var prefixes := PackedStringArray(["Internal: "])
+	var attributes := {"file": "res://player.fs"}
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_events_per_frame = -1,
+			p_automatic_repeated_error_window_msec = -1,
+			p_automatic_event_throttle_count = -1,
+			p_automatic_event_throttle_window_msec = -1,
+			p_automatic_message_filter_prefixes = prefixes,
+		)
+	var breadcrumb := ObservabilityBreadcrumb.new(
+			p_message = "warning",
+			p_level = ObservabilityLevel.WARN,
+			p_category = &"error",
+			p_timestamp_msec = 1234,
+			p_attributes = attributes,
+		)
+	prefixes[0] = "changed"
+	attributes["file"] = "changed"
+
+	Expect.that(config.automatic_events_per_frame).to_equal(0)
+	Expect.that(config.automatic_repeated_error_window_msec).to_equal(0)
+	Expect.that(config.automatic_event_throttle_count).to_equal(0)
+	Expect.that(config.automatic_event_throttle_window_msec).to_equal(0)
+	Expect.that(config.automatic_message_filter_prefixes()).to_equal(
+			PackedStringArray(["Internal: "]))
+	Expect.that(breadcrumb.message()).to_equal("warning")
+	Expect.that(breadcrumb.level()).to_equal(ObservabilityLevel.WARN)
+	Expect.that(breadcrumb.category()).to_equal(&"error")
+	Expect.that(breadcrumb.timestamp_msec()).to_equal(1234)
+	Expect.that(breadcrumb.attributes()).to_equal({"file": "res://player.fs"})
+
+
 func test_metric_types_and_value_copy_attributes() -> void:
 	var source := {"region": "iad", "nested": {"attempt": 1}}
 	var metric := ObservabilityMetric.new(
@@ -419,6 +470,447 @@ func test_memory_provider_captures_feedback_separately_from_events() -> void:
 	service.shutdown()
 
 
+func test_memory_provider_captures_and_clears_breadcrumbs() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	var breadcrumb := ObservabilityBreadcrumb.new(p_message = "trail")
+
+	Expect.that(service.capture_breadcrumb(breadcrumb)).to_be_true()
+	Expect.that(provider.breadcrumbs()).to_equal([breadcrumb])
+	provider.clear_breadcrumbs()
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	service.shutdown()
+
+
+func test_missing_breadcrumb_capability_is_observable_and_isolated() -> void:
+	var service: FoundryObservability = _service()
+	var provider := BreadcrumblessObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "unsupported"))).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(service.capture_message("still works")).to_equal("event:1")
+	service.shutdown()
+
+
+func test_automatic_logger_routes_error_metadata_by_independent_masks() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1234, func() -> int: return 7)
+	var backtraces: Array[ScriptBacktrace] = Engine.capture_script_backtraces(false)
+
+	logger._log_error(
+			"attack", "res://player.fs", 42, "ERR_INVALID_DATA", "bad hit",
+			false, Logger.ERROR_TYPE_ERROR, backtraces)
+
+	Expect.that(provider.events()).to_have_size(2)
+	var exception_event: ObservabilityEvent = provider.events()[0]
+	Expect.that(exception_event.kind()).to_equal(&"exception")
+	Expect.that(exception_event.source()).to_equal(&"foundry.engine")
+	Expect.that(exception_event.timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(exception_event.engine_ticks_msec()).to_equal(1234)
+	Expect.that(exception_event.exception().type_name()).to_equal("ERROR")
+	Expect.that(exception_event.exception().stack_trace()).to_contain("observability-core.test.fs")
+	Expect.that(exception_event.attributes()["error.function"]).to_equal("attack")
+	Expect.that(exception_event.attributes()["error.file"]).to_equal("res://player.fs")
+	Expect.that(exception_event.attributes()["error.line"]).to_equal(42)
+	Expect.that(exception_event.attributes()["error.code"]).to_equal("ERR_INVALID_DATA")
+	Expect.that(exception_event.attributes()["error.rationale"]).to_equal("bad hit")
+	var serialized_backtraces: Array = exception_event.attributes()["error.script_backtraces"]
+	Expect.that(serialized_backtraces.size()).to_be_greater_than(0)
+	Expect.that(provider.breadcrumbs()).to_have_size(1)
+	Expect.that(provider.breadcrumbs()[0].timestamp_msec()).to_equal(1234)
+	Expect.that(provider.events()[1].kind()).to_equal(&"log")
+	Expect.that(provider.events()[1].timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(provider.events()[1].engine_ticks_msec()).to_equal(1234)
+	service.shutdown()
+
+
+func test_automatic_logger_maps_error_categories_and_levels() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ALL_ERRORS,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_repeated_error_window_msec = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1, func() -> int: return 1)
+
+	logger._log_error("run", "res://case.fs", 1, "warning", "", false,
+			Logger.ERROR_TYPE_WARNING, [])
+	logger._log_error("run", "res://case.fs", 2, "script", "", false,
+			Logger.ERROR_TYPE_SCRIPT, [])
+	logger._log_error("run", "res://case.fs", 3, "shader", "", false,
+			Logger.ERROR_TYPE_SHADER, [])
+	logger._log_error("run", "res://case.fs", 4, "fatal", "", false,
+			Logger.ERROR_TYPE_FATAL, [])
+
+	Expect.that(provider.events()[0].level()).to_equal(ObservabilityLevel.WARN)
+	Expect.that(provider.events()[0].exception().type_name()).to_equal("WARNING")
+	Expect.that(provider.events()[1].level()).to_equal(ObservabilityLevel.ERROR)
+	Expect.that(provider.events()[1].exception().type_name()).to_equal("SCRIPT ERROR")
+	Expect.that(provider.events()[2].exception().type_name()).to_equal("SHADER ERROR")
+	Expect.that(provider.events()[3].level()).to_equal(ObservabilityLevel.FATAL)
+	Expect.that(provider.events()[3].exception().type_name()).to_equal("FATAL")
+	service.shutdown()
+
+
+func test_automatic_logger_filters_and_routes_messages_without_events() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ALL_ERRORS,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.MESSAGE,
+			p_automatic_log_mask = ObservabilityCaptureMask.MESSAGE,
+			p_automatic_message_filter_prefixes = PackedStringArray(["Internal: "]),
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1234, func() -> int: return 1)
+
+	logger._log_message("\u001b[31mhello\u001b[0m\n", false)
+	logger._log_message("Internal: ignored", true)
+
+	Expect.that(provider.breadcrumbs()).to_have_size(1)
+	Expect.that(provider.breadcrumbs()[0].message()).to_equal("hello")
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].kind()).to_equal(&"log")
+	Expect.that(provider.events()[0].level()).to_equal(ObservabilityLevel.INFO)
+	Expect.that(provider.events()[0].timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(provider.events()[0].engine_ticks_msec()).to_equal(1234)
+	service.shutdown()
+
+
+func test_automatic_logger_suppresses_duplicate_errors_deterministically() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 1000,
+			p_automatic_events_per_frame = 0,
+			p_automatic_event_throttle_count = 0,
+		)
+	var capture_time := AutomaticCaptureTime.new(1000, 1)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, capture_time.now, capture_time.frame)
+
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	capture_time.now_msec = 1500
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.breadcrumbs()).to_have_size(1)
+
+	capture_time.now_msec = 2000
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.events()).to_have_size(4)
+	Expect.that(provider.breadcrumbs()).to_have_size(2)
+	service.shutdown()
+
+
+func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RejectingObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 1000,
+			p_automatic_events_per_frame = 1,
+			p_automatic_event_throttle_count = 1,
+			p_automatic_event_throttle_window_msec = 1000,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1000, func() -> int: return 1)
+
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+
+	Expect.that(provider.capture_count).to_equal(4)
+	Expect.that(provider.breadcrumb_count).to_equal(2)
+	service.shutdown()
+
+
+func test_successful_automatic_breadcrumb_does_not_clear_event_failure() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RejectingObservabilityProvider.new()
+	provider.breadcrumb_capture_result = true
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_repeated_error_window_msec = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("rejected event")).to_equal("")
+	Expect.that(service._capture_automatic_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "accepted breadcrumb"))).to_be_true()
+
+	Expect.that(provider.capture_count).to_equal(1)
+	Expect.that(provider.breadcrumb_count).to_equal(1)
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	service.shutdown()
+
+
+func test_rejected_automatic_breadcrumb_reports_failure_after_accepted_event() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RejectingObservabilityProvider.new()
+	provider.event_capture_result = true
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_repeated_error_window_msec = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1000, func() -> int: return 1)
+
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+
+	Expect.that(provider.capture_count).to_equal(1)
+	Expect.that(provider.breadcrumb_count).to_equal(1)
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	service.shutdown()
+
+
+func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 0,
+			p_automatic_events_per_frame = 1,
+			p_automatic_event_throttle_count = 2,
+			p_automatic_event_throttle_window_msec = 1000,
+		)
+	var capture_time := AutomaticCaptureTime.new(1000, 1)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, capture_time.now, capture_time.frame)
+
+	logger._log_error("tick", "res://loop.fs", 9, "a", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	logger._log_error("tick", "res://loop.fs", 9, "b", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	capture_time.frame_index = 2
+	capture_time.now_msec = 1002
+	logger._log_error("tick", "res://loop.fs", 9, "c", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	logger._log_error("tick", "res://loop.fs", 9, "d", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	capture_time.frame_index = 3
+	capture_time.now_msec = 1003
+	logger._log_error("tick", "res://loop.fs", 9, "e", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+
+	var exception_count: int = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() == &"exception":
+			exception_count += 1
+	Expect.that(exception_count).to_equal(2)
+	Expect.that(provider.breadcrumbs()).to_have_size(5)
+	Expect.that(provider.events()).to_have_size(7)
+
+	capture_time.frame_index = 4
+	capture_time.now_msec = 2001
+	logger._log_error("tick", "res://loop.fs", 9, "f", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.breadcrumbs()).to_have_size(6)
+	Expect.that(provider.events()).to_have_size(9)
+	service.shutdown()
+
+
+func test_automatic_logger_bounds_identity_state_and_resets_limits() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_repeated_error_window_msec = 100000,
+			p_automatic_events_per_frame = 0,
+			p_automatic_event_throttle_count = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1000, func() -> int: return 1)
+	for index: int in range(101):
+		logger._log_error("tick", "res://loop.fs", index, str(index), "", false,
+				Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.events()).to_have_size(101)
+
+	logger._log_error("tick", "res://loop.fs", 0, "0", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.events()).to_have_size(102)
+	logger.reset()
+	logger._log_error("tick", "res://loop.fs", 0, "0", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.events()).to_have_size(103)
+	service.shutdown()
+
+
+func test_automatic_capture_reservation_is_atomic() -> void:
+	var service: FoundryObservability = _service()
+
+	Expect.that(service.try_begin_automatic_capture()).to_be_true()
+	Expect.that(service.try_begin_automatic_capture()).to_be_false()
+	service.end_automatic_capture()
+	Expect.that(service.try_begin_automatic_capture()).to_be_true()
+	service.end_automatic_capture()
+
+
+func test_automatic_capture_skips_missing_optional_breadcrumb_capability() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service()
+	var provider := BreadcrumblessObservabilityProvider.new()
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	push_error("event-only automatic capture")
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.capture_message("next event")).to_equal("event:2")
+	service.shutdown()
+
+
+func test_automatic_capture_installs_only_after_successful_enabled_configuration() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	var disabled := ObservabilityConfig.new(
+			p_enabled = true,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		)
+
+	Expect.that(service.configure(provider, disabled)).to_equal(Error.OK)
+	push_error("automatic disabled")
+	Expect.that(provider.events()).to_have_size(0)
+
+	var failing: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	failing.configure_result = Error.FAILED
+	Expect.that(service.configure(failing, ObservabilityConfig.new())).to_equal(Error.FAILED)
+	push_error("failed candidate")
+	Expect.that(provider.events()).to_have_size(0)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	push_error("automatic enabled")
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].message()).to_equal("automatic enabled")
+
+	failing.configure_result = Error.FAILED
+	Expect.that(service.configure(failing, ObservabilityConfig.new())).to_equal(Error.FAILED)
+	push_error("failed active replacement")
+	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.events()[1].message()).to_equal("failed active replacement")
+	service.shutdown()
+
+
+func test_automatic_capture_reconfigures_without_duplicate_logger_registration() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	_push_test_error("same diagnostic")
+	Expect.that(provider.events()).to_have_size(1)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	_push_test_error("same diagnostic")
+	Expect.that(provider.events()).to_have_size(2)
+	_push_test_error("new diagnostic")
+	Expect.that(provider.events()).to_have_size(3)
+	service.shutdown()
+
+
+func test_automatic_capture_moves_to_replacement_provider_and_is_removed_on_shutdown() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service()
+	var first: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	var second: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+
+	Expect.that(service.configure(first, ObservabilityConfig.new())).to_equal(Error.OK)
+	push_error("first provider")
+	Expect.that(first.events()).to_have_size(1)
+
+	Expect.that(service.configure(second, ObservabilityConfig.new())).to_equal(Error.OK)
+	push_error("second provider")
+	Expect.that(first.events()).to_have_size(1)
+	Expect.that(second.events()).to_have_size(1)
+
+	service.shutdown()
+	push_error("after shutdown")
+	Expect.that(second.events()).to_have_size(1)
+
+
+func test_automatic_capture_blocks_provider_generated_diagnostic_recursion() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service()
+	var provider: ReentrantObservabilityProvider = ReentrantObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+		)
+
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	Expect.that(service.capture_message("outer diagnostic")).to_equal("reentrant:1")
+	Expect.that(provider.capture_count).to_equal(1)
+	service.shutdown()
+
+
 func test_feedback_accepts_anonymous_and_identified_submissions() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
@@ -686,6 +1178,10 @@ func test_shutdown_is_idempotent() -> void:
 func _service() -> FoundryObservability:
 	var tree: SceneTree = Engine.get_main_loop() as SceneTree
 	return tree.root.get_node("FoundryObservability") as FoundryObservability
+
+
+func _push_test_error(message: String) -> void:
+	push_error(message)
 
 
 func _repeated(value: String, count: int) -> String:

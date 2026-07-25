@@ -24,8 +24,25 @@ var metrics_enabled: bool = true
 var metric_sample_rate: float = 1.0
 ## Optional predicate receiving each normalized metric before sampling.
 var metric_filter: Callable = Callable()
+## Enables automatic engine error and message capture after configuration.
+var automatic_capture_enabled: bool = true
+## Selects engine error categories captured as events.
+var automatic_event_mask: int = ObservabilityCaptureMask.DEFAULT_EVENTS
+## Selects engine error and message categories captured as breadcrumbs.
+var automatic_breadcrumb_mask: int = ObservabilityCaptureMask.DEFAULT_BREADCRUMBS
+## Selects engine error and message categories captured as structured logs.
+var automatic_log_mask: int = ObservabilityCaptureMask.NONE
+## Limits automatic error events accepted during one processed frame; zero disables the limit.
+var automatic_events_per_frame: int = 5
+## Suppresses identical automatic errors inside this window; zero disables suppression.
+var automatic_repeated_error_window_msec: int = 1000
+## Limits automatic error events inside the sliding window; zero disables the limit.
+var automatic_event_throttle_count: int = 20
+## Defines the automatic event sliding window; zero disables the limit.
+var automatic_event_throttle_window_msec: int = 10000
 var _global_attributes: Dictionary = {}
 var _provider_options: Dictionary = {}
+var _automatic_message_filter_prefixes: PackedStringArray = PackedStringArray()
 
 
 ## Creates configuration with enabled metadata, copied attributes, and opaque provider options.
@@ -42,6 +59,16 @@ func _init(
 		p_metrics_enabled: bool = true,
 		p_metric_sample_rate: float = 1.0,
 		p_metric_filter: Callable = Callable(),
+		p_automatic_capture_enabled: bool = true,
+		p_automatic_event_mask: int = ObservabilityCaptureMask.DEFAULT_EVENTS,
+		p_automatic_breadcrumb_mask: int = ObservabilityCaptureMask.DEFAULT_BREADCRUMBS,
+		p_automatic_log_mask: int = ObservabilityCaptureMask.NONE,
+		p_automatic_events_per_frame: int = 5,
+		p_automatic_repeated_error_window_msec: int = 1000,
+		p_automatic_event_throttle_count: int = 20,
+		p_automatic_event_throttle_window_msec: int = 10000,
+		p_automatic_message_filter_prefixes: PackedStringArray = PackedStringArray(
+				["FoundryObservability: "]),
 ) -> void:
 	enabled = p_enabled
 	environment = p_environment
@@ -53,8 +80,17 @@ func _init(
 	metrics_enabled = p_metrics_enabled
 	metric_sample_rate = p_metric_sample_rate
 	metric_filter = p_metric_filter
+	automatic_capture_enabled = p_automatic_capture_enabled
+	automatic_event_mask = p_automatic_event_mask
+	automatic_breadcrumb_mask = p_automatic_breadcrumb_mask
+	automatic_log_mask = p_automatic_log_mask
+	automatic_events_per_frame = maxi(0, p_automatic_events_per_frame)
+	automatic_repeated_error_window_msec = maxi(0, p_automatic_repeated_error_window_msec)
+	automatic_event_throttle_count = maxi(0, p_automatic_event_throttle_count)
+	automatic_event_throttle_window_msec = maxi(0, p_automatic_event_throttle_window_msec)
 	_global_attributes = p_global_attributes.duplicate(true)
 	_provider_options = p_provider_options.duplicate(true)
+	_automatic_message_filter_prefixes = p_automatic_message_filter_prefixes.duplicate()
 
 
 ## Returns a deep copy of attributes applied by provider integrations.
@@ -65,3 +101,8 @@ func global_attributes() -> Dictionary:
 ## Returns a deep copy of backend-specific options not interpreted by the core.
 func provider_options() -> Dictionary:
 	return _provider_options.duplicate(true)
+
+
+## Returns copied prefixes excluded from automatic output-message capture.
+func automatic_message_filter_prefixes() -> PackedStringArray:
+	return _automatic_message_filter_prefixes.duplicate()

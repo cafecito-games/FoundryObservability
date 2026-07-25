@@ -5,7 +5,7 @@ import foundry.observability
 ## FoundryScript adapter for the optional cross-platform Sentry native bridge.
 class_name SentryObservabilityProvider
 extends RefCounted
-uses ObservabilityProvider, ObservabilityMetricsProvider
+uses ObservabilityProvider, ObservabilityMetricsProvider, ObservabilityBreadcrumbsProvider
 
 const _NATIVE_CLASS: String = "SentryObservabilityBridge"
 
@@ -106,6 +106,27 @@ func capture(event: ObservabilityEvent) -> String:
 		if not bridge.has_method(method):
 			return ""
 	return str(bridge.call(method, payload))
+
+
+## Translates one normalized breadcrumb to the optional native breadcrumb API.
+func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
+	if breadcrumb == null or not _enabled or _shutdown:
+		return false
+
+	var bridge: Object? = _resolve_bridge()
+	if bridge == null or not is_available() or not bridge.has_method("captureBreadcrumb"):
+		return false
+
+	var result: Variant = bridge.call("captureBreadcrumb", {
+			"message": breadcrumb.message(),
+			"level": breadcrumb.level(),
+			"category": String(breadcrumb.category()),
+			"timestamp_msec": breadcrumb.timestamp_msec(),
+			"attributes": breadcrumb.attributes(),
+		})
+	if not (result is bool):
+		return false
+	return result
 
 
 ## Translates explicit feedback to the native dedicated feedback API.

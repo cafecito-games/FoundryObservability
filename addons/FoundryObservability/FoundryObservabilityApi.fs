@@ -28,6 +28,8 @@ abstract func capture_log(
 		attributes: Dictionary = {},
 		engine_ticks_msec: int = -1,
 ) -> String
+## Captures a normalized breadcrumb through an optional provider capability.
+abstract func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool
 ## Captures explicit player feedback and returns a provider ID, or an empty string on no-op/failure.
 abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
 ## Captures a normalized custom metric and reports whether a provider accepted it.

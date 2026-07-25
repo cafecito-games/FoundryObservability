@@ -66,6 +66,41 @@ func scalarLogAttributes(_ attributes: [String: Any]) -> [String: Any] {
     return result
 }
 
+func sentryBreadcrumbData(
+    global: [String: Any],
+    breadcrumb: [String: Any],
+    timestampMsec: Int64
+) -> [String: Any] {
+    var data = global
+    for (key, value) in breadcrumb {
+        data[key] = value
+    }
+    data["foundry.timestamp_msec"] = timestampMsec
+    return data
+}
+
+func makeSentryBreadcrumb(
+    message: String,
+    level: Int,
+    category: String,
+    timestampMsec: Int64,
+    sdkTimestamp: Date = Date(),
+    globalAttributes: [String: Any] = [:],
+    breadcrumbAttributes: [String: Any] = [:]
+) -> Breadcrumb {
+    let breadcrumb = Breadcrumb()
+    breadcrumb.message = message
+    breadcrumb.category = category
+    breadcrumb.level = sentryLevel(for: level)
+    breadcrumb.timestamp = sdkTimestamp
+    breadcrumb.data = sentryBreadcrumbData(
+        global: globalAttributes,
+        breadcrumb: breadcrumbAttributes,
+        timestampMsec: timestampMsec
+    )
+    return breadcrumb
+}
+
 func sentryMetricAttributes(_ attributes: [String: Any]) -> [String: SentryAttributeValue] {
     var result: [String: SentryAttributeValue] = [:]
     for (key, value) in attributes {

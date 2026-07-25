@@ -11,6 +11,8 @@ The first core slice is available now:
 - Typed messages, exceptions, events, configuration, and severity levels.
 - A null provider by default and an in-memory provider for tests and local work.
 - Provider replacement, flush, failure reporting, and idempotent shutdown.
+- Automatic engine error, warning, script-error, shader-error, fatal, and
+  output-message capture with independent event, breadcrumb, and log policies.
 - First-class structured logs with level filtering, optional rate limiting, and
   global/per-record scalar attributes.
 - Explicit player feedback capture with validation, optional identity, and
@@ -54,6 +56,9 @@ var config := ObservabilityConfig.new(
 		p_enabled = true,
 		p_environment = "production",
 		p_release = "1.0.0",
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_log_mask = ObservabilityCaptureMask.ALL_ERRORS,
 	)
 var provider: ObservabilityProvider = MemoryObservabilityProvider.new()
 FoundryObservability.configure(provider, config)
@@ -77,6 +82,13 @@ FoundryObservability.capture_feedback(ObservabilityFeedback.new(
 		p_message = "The tutorial was confusing.",
 ))
 ```
+
+Successful enabled configuration automatically installs the engine logger.
+By default, errors, script errors, and shader errors become events; every
+diagnostic category and ordinary output message becomes a breadcrumb; and no
+automatic structured logs are emitted. The example opts all error categories
+into structured logs as well. Each destination can be configured independently
+or automatic capture can be disabled entirely.
 
 `MemoryObservabilityProvider` is intended for tests and local integration work.
 The Sentry provider is optional and requires an export containing its native

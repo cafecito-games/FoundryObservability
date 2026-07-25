@@ -9,6 +9,7 @@ var flush_result: int = Error.OK
 var configured_payload: Dictionary = {}
 var captured_payloads: Array[Dictionary] = []
 var captured_log_payloads: Array[Dictionary] = []
+var captured_breadcrumb_payloads: Array[Dictionary] = []
 var captured_feedback_payloads: Array[Dictionary] = []
 var captured_metric_payloads: Array[Dictionary] = []
 var flush_timeouts: Array[int] = []
@@ -39,6 +40,11 @@ func captureLog(payload: Dictionary) -> String:
 	var event_id: String = "sentry-log:%s" % next_log_id
 	next_log_id += 1
 	return event_id
+
+
+func captureBreadcrumb(payload: Dictionary) -> bool:
+	captured_breadcrumb_payloads.append(payload.duplicate(true))
+	return true
 
 
 func captureFeedback(payload: Dictionary) -> String:

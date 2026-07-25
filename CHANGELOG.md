@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] - 2026-07-23
+## [Unreleased] - 2026-07-24
 
 - Corrected event timestamps to Unix epoch milliseconds across the core and
   Apple/Android Sentry bridges, preserved monotonic engine ticks separately,
@@ -28,3 +28,7 @@
   global/per-metric scalar attributes, filtering, deterministic sampling, safe
   optional provider capability detection, and native Apple/Android Sentry
   delivery.
+- Added automatic engine diagnostic and output capture with independent event,
+  breadcrumb, and structured-log masks; preserved source/backtrace metadata;
+  deterministic duplicate, per-frame, and sliding-window limits; recursion
+  protection; and native Apple/Android Sentry breadcrumb delivery.

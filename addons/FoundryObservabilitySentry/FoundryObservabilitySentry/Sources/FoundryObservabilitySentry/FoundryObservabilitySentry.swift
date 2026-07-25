@@ -229,6 +229,26 @@ class SentryObservabilityBridge: RefCounted {
     }
 
     @Callable
+    func captureBreadcrumb(payload: VariantDictionary) -> Bool {
+        guard isAvailable() else {
+            return false
+        }
+
+        let values = foundationDictionary(from: payload)
+        let timestampMsec = Int64(intValue(values["timestamp_msec"]))
+        let breadcrumb = makeSentryBreadcrumb(
+            message: stringValue(values["message"]),
+            level: intValue(values["level"]),
+            category: stringValue(values["category"]),
+            timestampMsec: timestampMsec,
+            globalAttributes: globalAttributes,
+            breadcrumbAttributes: dictionaryValue(values["attributes"])
+        )
+        SentrySDK.addBreadcrumb(breadcrumb)
+        return true
+    }
+
+    @Callable
     func captureMetric(payload: VariantDictionary) -> Bool {
         guard isAvailable(), metricsEnabled else {
             return false

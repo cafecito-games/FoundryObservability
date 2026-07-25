@@ -95,6 +95,39 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertNil(attributes["unsupported"])
     }
 
+    func testBreadcrumbDataPreservesFieldsAndReservedMetadata() {
+        let data = sentryBreadcrumbData(
+            global: ["build": 42, "error.file": "global"],
+            breadcrumb: ["error.file": "res://player.fs"],
+            timestampMsec: 1234
+        )
+
+        XCTAssertEqual(data["build"] as? Int, 42)
+        XCTAssertEqual(data["error.file"] as? String, "res://player.fs")
+        XCTAssertEqual(data["foundry.timestamp_msec"] as? Int64, 1234)
+    }
+
+    func testBuildsBreadcrumbWithWallClockTimestampAndEngineTickData() {
+        let wallClock = Date(timeIntervalSince1970: 1_700_000_000)
+        let breadcrumb = makeSentryBreadcrumb(
+            message: "warning",
+            level: 40,
+            category: "error",
+            timestampMsec: 1234,
+            sdkTimestamp: wallClock,
+            globalAttributes: ["build": 42],
+            breadcrumbAttributes: ["error.file": "res://player.fs"]
+        )
+
+        XCTAssertEqual(breadcrumb.message, "warning")
+        XCTAssertEqual(breadcrumb.category, "error")
+        XCTAssertEqual(breadcrumb.level, .warning)
+        XCTAssertEqual(breadcrumb.timestamp, wallClock)
+        XCTAssertEqual(breadcrumb.data?["build"] as? Int, 42)
+        XCTAssertEqual(breadcrumb.data?["error.file"] as? String, "res://player.fs")
+        XCTAssertEqual(breadcrumb.data?["foundry.timestamp_msec"] as? Int64, 1234)
+    }
+
     func testMetricAttributesPreserveSupportedScalarValues() {
         let attributes = sentryMetricAttributes([
             "string": "value",
