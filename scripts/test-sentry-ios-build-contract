@@ -164,6 +164,15 @@ rg -q 'captureMetric' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose custom metric capture"
 rg -q 'enableMetrics' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must configure Sentry Metrics"
+diagnostics_configurator="$swift_sources/SentryDiagnosticsConfigurator.swift"
+[[ -f "$diagnostics_configurator" ]] \
+	|| fail "Apple diagnostics configurator is missing"
+rg -q 'enableAppHangTracking' "$diagnostics_configurator" \
+	|| fail "Apple bridge must configure native app-hang tracking"
+rg -q 'appHangTimeoutInterval' "$diagnostics_configurator" \
+	|| fail "Apple bridge must configure the native app-hang timeout"
+rg -q 'applyAppleHangDiagnostics' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "Apple bridge must apply mobile diagnostics before startup"
 for metric in count gauge distribution; do
 	rg -q "SentrySDK\\.metrics\\.${metric}" "$swift_sources/FoundryObservabilitySentry.swift" \
 		|| fail "bridge source is missing the ${metric} mapping"
