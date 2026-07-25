@@ -48,18 +48,33 @@ tasks:
     cmds:
       - scripts/test-sentry-android-build-contract
 
-  test:
-    desc: Run all local validation gates
+  test:core:
+    desc: Run provider-neutral repository and Foundry validation
     deps:
       - lint
       - test:ci
       - test:package
-      - test:sentry-swift
-      - test:sentry-contract
-      - test:sentry-android-contract
     cmds:
       - task: test:project
       - task: test:foundry-script
+
+  test:sentry-apple:
+    desc: Run Apple Sentry unit and build contract tests
+    deps:
+      - test:sentry-swift
+      - test:sentry-contract
+
+  test:sentry-android:
+    desc: Run Android Sentry build contract tests
+    deps:
+      - test:sentry-android-contract
+
+  test:
+    desc: Run all local validation gates
+    deps:
+      - test:core
+      - test:sentry-apple
+      - test:sentry-android
 
   package:
     desc: Create distributable FoundryObservability addon zips

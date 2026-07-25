@@ -7,14 +7,13 @@ on:
 permissions:
   contents: read
 
-env:
-  FOUNDRY_VERSION: "v0.1.0-alpha.7"
-
 jobs:
-  validate:
+  validate-core:
     name: Validate FoundryObservability
     runs-on: macos-26
     timeout-minutes: 20
+    env:
+      FOUNDRY_VERSION: "v0.1.0-alpha.8"
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
@@ -54,10 +53,34 @@ jobs:
         run: |
           "$FOUNDRY_BIN" --headless project import --project test_project
 
-      - name: Run validation
+      - name: Run core validation
         env:
           GH_TOKEN: ${{ github.token }}
-        run: task test
+        run: task test:core
+
+  build-apple:
+    name: Build Apple Sentry addon
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Install repository tooling
+        run: brew install ripgrep xcodegen
+
+      - name: Install Task
+        uses: go-task/setup-task@v2.1.0
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Apple validation
+        run: task test:sentry-apple
+
+      - name: Build Apple artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: task ios:sentry
 
   build-android:
     name: Build Android Sentry addon
@@ -66,6 +89,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+
+      - name: Install repository tooling
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5.6.0
@@ -88,6 +114,9 @@ jobs:
 
       - name: Make gradlew executable
         run: chmod +x addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/gradlew
+
+      - name: Run Android validation
+        run: task test:sentry-android
 
       - name: Build Android AARs
         run: task android:sentry
