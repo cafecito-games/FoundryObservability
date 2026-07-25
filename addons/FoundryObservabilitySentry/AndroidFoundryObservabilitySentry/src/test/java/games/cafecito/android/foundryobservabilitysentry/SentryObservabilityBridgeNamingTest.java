@@ -21,7 +21,7 @@ public class SentryObservabilityBridgeNamingTest {
     }
     String source = contents.toString();
 
-    assertTrue(source.contains("org.godotengine.plugin.v2.SentryObservabilityBridge"));
+    assertTrue(source.contains("org.foundryengine.plugin.v2.SentryObservabilityBridge"));
     assertTrue(source.contains(
         "games.cafecito.android.foundryobservabilitysentry.SentryObservabilityBridge"));
   }
