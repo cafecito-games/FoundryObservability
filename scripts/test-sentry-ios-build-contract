@@ -198,6 +198,8 @@ rg -q 'static let lifecycleCoordinator' "$swift_sources/FoundryObservabilitySent
 	|| fail "bridge instances must share a process-global lifecycle coordinator"
 rg -q 'lifecycle_owner' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge configuration must consume the lifecycle owner"
+rg -q 'if candidateOwner == lifecycleOwner' "$swift_sources/FoundryObservabilitySentry.swift" \
+	|| fail "stale disabled Apple owners must not clear current bridge state"
 rg -q 'captureLog' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose structured log capture"
 rg -q 'captureBreadcrumb' "$swift_sources/FoundryObservabilitySentry.swift" \

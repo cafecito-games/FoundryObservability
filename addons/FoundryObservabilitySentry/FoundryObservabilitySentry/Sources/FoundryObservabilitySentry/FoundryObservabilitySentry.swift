@@ -121,10 +121,12 @@ class SentryObservabilityBridge: RefCounted {
 
         if !enabled {
             Self.lifecycleCoordinator.shutdown(owner: candidateOwner)
-            lifecycleOwner = ""
-            globalAttributes = [:]
-            logsEnabled = false
-            metricsEnabled = false
+            if candidateOwner == lifecycleOwner {
+                lifecycleOwner = ""
+                globalAttributes = [:]
+                logsEnabled = false
+                metricsEnabled = false
+            }
             return bridgeErrorOK
         }
 
@@ -330,7 +332,9 @@ class SentryObservabilityBridge: RefCounted {
 
     @Callable
     func flush(_ owner: String, _ timeoutMsec: Int) -> Int {
-        Self.lifecycleCoordinator.flush(
+        // Stale owners are idempotent no-ops. The public provider also gates
+        // this call with isAvailable before reaching the bridge.
+        _ = Self.lifecycleCoordinator.flush(
             owner: owner,
             timeout: sentryTimeoutSeconds(milliseconds: timeoutMsec)
         )

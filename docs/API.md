@@ -1220,7 +1220,8 @@ The bridge therefore uses an owner-safe lifecycle:
   the replacement.
 - If replacement startup fails, the prior owner and configuration are restored.
 - Flush and shutdown calls from a stale owner do nothing, so an obsolete
-  provider cannot stop a newer session.
+  provider cannot stop a newer session. These idempotent no-ops return
+  `Error.OK`; availability remains the observable ownership signal.
 
 Enabled configuration returns `Error.ERR_UNAVAILABLE` if the native bridge is
 missing or too old. After `Error.OK`, use

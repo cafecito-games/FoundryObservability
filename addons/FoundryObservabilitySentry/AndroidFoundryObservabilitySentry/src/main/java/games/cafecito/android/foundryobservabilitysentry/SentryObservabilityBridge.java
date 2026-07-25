@@ -225,6 +225,8 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   @UsedByFoundry
   public int flush(String owner, int timeoutMsec) {
+    // Stale owners are idempotent no-ops. The public provider also gates this
+    // call with isAvailable before reaching the bridge.
     LIFECYCLE_COORDINATOR.flush(owner, timeoutMsec);
     return BRIDGE_ERROR_OK;
   }
