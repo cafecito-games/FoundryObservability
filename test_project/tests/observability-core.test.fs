@@ -549,6 +549,200 @@ func test_automatic_logger_filters_and_routes_messages_without_events() -> void:
 	service.shutdown()
 
 
+func test_automatic_logger_suppresses_duplicate_errors_deterministically() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 1000,
+			p_automatic_events_per_frame = 0,
+			p_automatic_event_throttle_count = 0,
+		)
+	var capture_time := AutomaticCaptureTime.new(1000, 1)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, capture_time.now, capture_time.frame)
+
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	capture_time.now_msec = 1500
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.breadcrumbs()).to_have_size(1)
+
+	capture_time.now_msec = 2000
+	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.events()).to_have_size(4)
+	Expect.that(provider.breadcrumbs()).to_have_size(2)
+	service.shutdown()
+
+
+func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 0,
+			p_automatic_events_per_frame = 1,
+			p_automatic_event_throttle_count = 2,
+			p_automatic_event_throttle_window_msec = 1000,
+		)
+	var capture_time := AutomaticCaptureTime.new(1000, 1)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, capture_time.now, capture_time.frame)
+
+	logger._log_error("tick", "res://loop.fs", 9, "a", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	logger._log_error("tick", "res://loop.fs", 9, "b", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	capture_time.frame_index = 2
+	capture_time.now_msec = 1002
+	logger._log_error("tick", "res://loop.fs", 9, "c", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	logger._log_error("tick", "res://loop.fs", 9, "d", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	capture_time.frame_index = 3
+	capture_time.now_msec = 1003
+	logger._log_error("tick", "res://loop.fs", 9, "e", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+
+	var exception_count: int = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() == &"exception":
+			exception_count += 1
+	Expect.that(exception_count).to_equal(2)
+	Expect.that(provider.breadcrumbs()).to_have_size(5)
+	Expect.that(provider.events()).to_have_size(7)
+
+	capture_time.frame_index = 4
+	capture_time.now_msec = 2001
+	logger._log_error("tick", "res://loop.fs", 9, "f", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.breadcrumbs()).to_have_size(6)
+	Expect.that(provider.events()).to_have_size(9)
+	service.shutdown()
+
+
+func test_automatic_logger_bounds_identity_state_and_resets_limits() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_repeated_error_window_msec = 100000,
+			p_automatic_events_per_frame = 0,
+			p_automatic_event_throttle_count = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1000, func() -> int: return 1)
+	for index: int in range(101):
+		logger._log_error("tick", "res://loop.fs", index, str(index), "", false,
+				Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.events()).to_have_size(101)
+
+	logger._log_error("tick", "res://loop.fs", 0, "0", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.events()).to_have_size(102)
+	logger.reset()
+	logger._log_error("tick", "res://loop.fs", 0, "0", "", false,
+			Logger.ERROR_TYPE_ERROR, [])
+	Expect.that(provider.events()).to_have_size(103)
+	service.shutdown()
+
+
+func test_automatic_capture_installs_only_after_successful_enabled_configuration() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	var disabled := ObservabilityConfig.new(
+			p_enabled = true,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		)
+
+	Expect.that(service.configure(provider, disabled)).to_equal(Error.OK)
+	push_error("automatic disabled")
+	Expect.that(provider.events()).to_have_size(0)
+
+	var failing: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	failing.configure_result = Error.FAILED
+	Expect.that(service.configure(failing, ObservabilityConfig.new())).to_equal(Error.FAILED)
+	push_error("failed candidate")
+	Expect.that(provider.events()).to_have_size(0)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	push_error("automatic enabled")
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].message()).to_equal("automatic enabled")
+	service.shutdown()
+
+
+func test_automatic_capture_reconfigures_without_duplicate_logger_registration() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	push_error("same diagnostic")
+	Expect.that(provider.events()).to_have_size(1)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	push_error("same diagnostic")
+	Expect.that(provider.events()).to_have_size(2)
+	service.shutdown()
+
+
+func test_automatic_capture_moves_to_replacement_provider_and_is_removed_on_shutdown() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service()
+	var first: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	var second: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+
+	Expect.that(service.configure(first, ObservabilityConfig.new())).to_equal(Error.OK)
+	push_error("first provider")
+	Expect.that(first.events()).to_have_size(1)
+
+	Expect.that(service.configure(second, ObservabilityConfig.new())).to_equal(Error.OK)
+	push_error("second provider")
+	Expect.that(first.events()).to_have_size(1)
+	Expect.that(second.events()).to_have_size(1)
+
+	service.shutdown()
+	push_error("after shutdown")
+	Expect.that(second.events()).to_have_size(1)
+
+
+func test_automatic_capture_blocks_provider_generated_diagnostic_recursion() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service()
+	var provider: ReentrantObservabilityProvider = ReentrantObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+		)
+
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	push_error("outer diagnostic")
+	Expect.that(provider.capture_count).to_equal(1)
+	service.shutdown()
+
+
 func test_feedback_accepts_anonymous_and_identified_submissions() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()

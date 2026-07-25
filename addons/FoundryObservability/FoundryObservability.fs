@@ -14,6 +14,7 @@ var _log_window_count: int = 0
 var _metric_sample_accumulator: float = 0.0
 var _pipeline_mutex: Mutex = Mutex.new()
 var _provider_call_count: int = 0
+var _automatic_logger: AutomaticObservabilityLogger
 
 const MAX_FEEDBACK_MESSAGE_LENGTH: int = 4096
 const MAX_METRIC_NAME_LENGTH: int = 200
@@ -57,8 +58,10 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 		_shutdown = false
 		_reset_log_rate_limit()
 		_reset_metric_sampling()
+		_refresh_automatic_logger()
 		return Error.OK
 
+	_remove_automatic_logger()
 	if _provider != null:
 		_begin_provider_call()
 		_provider.shutdown()
@@ -70,6 +73,7 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	_shutdown = false
 	_reset_log_rate_limit()
 	_reset_metric_sampling()
+	_refresh_automatic_logger()
 	return Error.OK
 
 
@@ -480,6 +484,26 @@ func automatic_capture_blocked() -> bool:
 	return blocked
 
 
+func _refresh_automatic_logger() -> void:
+	var should_install: bool = _config.enabled and _config.automatic_capture_enabled
+	if not should_install:
+		_remove_automatic_logger()
+		return
+	if _automatic_logger != null:
+		_automatic_logger.reconfigure(_config)
+		return
+	_automatic_logger = AutomaticObservabilityLogger.new(self, _config)
+	OS.add_logger(_automatic_logger)
+
+
+func _remove_automatic_logger() -> void:
+	if _automatic_logger == null:
+		return
+	OS.remove_logger(_automatic_logger)
+	_automatic_logger.reset()
+	_automatic_logger = null
+
+
 ## Flushes pending provider work within timeout_msec and stores the returned error.
 func flush(timeout_msec: int = 2000) -> int:
 	if _provider == null:
@@ -498,6 +522,7 @@ func shutdown() -> void:
 		return
 
 	_shutdown = true
+	_remove_automatic_logger()
 	flush()
 	if _provider != null:
 		_begin_provider_call()
