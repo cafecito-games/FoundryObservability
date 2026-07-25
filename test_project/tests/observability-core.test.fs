@@ -99,6 +99,26 @@ func test_stack_frame_and_exception_defensively_copy_structured_data() -> void:
 	Expect.that(exception.frames()).to_equal([frame])
 
 
+func test_stack_frame_defaults_and_legacy_exception_positional_arguments() -> void:
+	var frame := ObservabilityStackFrame.new()
+	var exception := ObservabilityException.new("Legacy", "message", "stack", {})
+
+	Expect.that(frame.file()).to_equal("")
+	Expect.that(frame.function()).to_equal("")
+	Expect.that(frame.line()).to_equal(-1)
+	Expect.that(frame.language()).to_equal("")
+	Expect.that(frame.in_app()).to_be_true()
+	Expect.that(frame.context_line()).to_equal("")
+	Expect.that(frame.pre_context()).to_equal(PackedStringArray())
+	Expect.that(frame.post_context()).to_equal(PackedStringArray())
+	Expect.that(frame.variables()).to_equal({})
+	Expect.that(exception.type_name()).to_equal("Legacy")
+	Expect.that(exception.message()).to_equal("message")
+	Expect.that(exception.stack_trace()).to_equal("stack")
+	Expect.that(exception.attributes()).to_equal({})
+	Expect.that(exception.frames()).to_equal([])
+
+
 func test_event_separates_wall_clock_timestamp_and_engine_ticks() -> void:
 	var event := ObservabilityEvent.new(
 			p_timestamp_msec = 1721865600123,

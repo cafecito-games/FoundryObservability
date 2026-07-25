@@ -11,7 +11,7 @@ var _attributes: Dictionary = {}
 var _frames: Array[ObservabilityStackFrame] = []
 
 
-## Creates an exception payload from type, message, stack, and copied attributes.
+## Creates an exception payload from type, message, stack, copied attributes, and copied structured frames.
 func _init(
 		p_type_name: String = "Error",
 		p_message: String = "",
