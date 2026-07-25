@@ -57,10 +57,12 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
     if (!booleanValue(payload.get("enabled"))) {
       LIFECYCLE_COORDINATOR.shutdown(candidateOwner);
-      lifecycleOwner = "";
-      globalAttributes = Collections.emptyMap();
-      logsEnabled = false;
-      metricsEnabled = false;
+      if (candidateOwner.equals(lifecycleOwner)) {
+        lifecycleOwner = "";
+        globalAttributes = Collections.emptyMap();
+        logsEnabled = false;
+        metricsEnabled = false;
+      }
       return BRIDGE_ERROR_OK;
     }
 

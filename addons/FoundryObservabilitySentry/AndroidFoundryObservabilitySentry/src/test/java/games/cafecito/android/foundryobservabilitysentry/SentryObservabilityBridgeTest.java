@@ -96,6 +96,38 @@ public class SentryObservabilityBridgeTest {
   }
 
   @Test
+  public void staleDisabledConfigurationDoesNotClearCurrentOwnerState() {
+    SentryObservabilityBridge bridge = newBridge();
+    String currentOwner = "current-owner";
+
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("environment", "test");
+    configuration.put("release", "1.2.3");
+    configuration.put("global_attributes", Map.of("build", 42));
+    configuration.put("lifecycle_owner", OWNER);
+    assertEquals(0, bridge.configure(configuration));
+
+    configuration.put("lifecycle_owner", currentOwner);
+    assertEquals(0, bridge.configure(configuration));
+    assertTrue(bridge.isAvailable(currentOwner));
+
+    Dictionary staleDisabledConfiguration = new Dictionary();
+    staleDisabledConfiguration.put("enabled", false);
+    staleDisabledConfiguration.put("lifecycle_owner", OWNER);
+    assertEquals(0, bridge.configure(staleDisabledConfiguration));
+    assertTrue(bridge.isAvailable(currentOwner));
+
+    Dictionary event = new Dictionary();
+    event.put("kind", "message");
+    event.put("message", "current owner still captures");
+    assertNotEquals("", bridge.capture(event));
+
+    bridge.shutdown(currentOwner);
+  }
+
+  @Test
   public void configuredBridgeCapturesStructuredLogs() {
     SentryObservabilityBridge bridge = newBridge();
 
