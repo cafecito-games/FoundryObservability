@@ -1892,6 +1892,172 @@ func test_shutdown_is_idempotent() -> void:
 	Expect.that(service.is_enabled()).to_be_false()
 
 
+func test_startup_settings_resolve_project_environment_and_default_precedence() -> void:
+	var explicit := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.DSN: " https://project@example/1 ",
+				ObservabilityStartupSettings.RELEASE: "{app_name}-custom-{app_version}",
+				ObservabilityStartupSettings.ENVIRONMENT: " staging ",
+				ObservabilityStartupSettings.DIST: " ios ",
+			},
+			{
+				"SENTRY_DSN": "https://environment@example/2",
+				"SENTRY_RELEASE": "environment-release",
+				"SENTRY_ENVIRONMENT": "environment-name",
+			},
+			{
+				"app_name": "Oakhaven",
+				"app_version": "1.2.3",
+				"debug_build": true,
+			},
+		)
+	var explicit_config: ObservabilityConfig = explicit.observability_config()
+
+	Expect.that(explicit_config.provider_options().get("dsn")).to_equal(
+			"https://project@example/1",
+		)
+	Expect.that(explicit_config.release).to_equal("Oakhaven-custom-1.2.3")
+	Expect.that(explicit_config.environment).to_equal("staging")
+	Expect.that(explicit_config.dist).to_equal("ios")
+
+	var environment := ObservabilityStartupSettings.from_sources(
+			{},
+			{
+				"SENTRY_DSN": "https://environment@example/2",
+				"SENTRY_RELEASE": "environment-release",
+				"SENTRY_ENVIRONMENT": "environment-name",
+			},
+			{"app_name": "Oakhaven", "app_version": "1.2.3"},
+		)
+	var environment_config: ObservabilityConfig = environment.observability_config()
+	Expect.that(environment_config.provider_options().get("dsn")).to_equal(
+			"https://environment@example/2",
+		)
+	Expect.that(environment_config.release).to_equal("environment-release")
+	Expect.that(environment_config.environment).to_equal("environment-name")
+
+	var defaults := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{
+				"app_name": "Oakhaven",
+				"app_version": "1.2.3",
+				"debug_build": false,
+			},
+		)
+	var default_config: ObservabilityConfig = defaults.observability_config()
+	Expect.that(default_config.release).to_equal("Oakhaven@1.2.3")
+	Expect.that(default_config.environment).to_equal("export_release")
+
+
+func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
+	var dedicated := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{"dedicated_server": true, "editor_hint": true, "debug_build": true},
+		)
+	Expect.that(dedicated.observability_config().environment).to_equal(
+			"dedicated_server",
+		)
+	Expect.that(dedicated.skip_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_EDITOR,
+		)
+
+	var editor_play := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.SKIP_EDITOR_PLAY: true},
+			{},
+			{"editor_feature": true, "debug_build": true},
+		)
+	Expect.that(editor_play.skip_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_EDITOR_PLAY,
+		)
+	Expect.that(editor_play.observability_config().environment).to_equal(
+			"editor_dev_run",
+		)
+
+	var debug_export := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.SKIP_DEBUG_EXPORTS: true},
+			{},
+			{"debug_build": true},
+		)
+	Expect.that(debug_export.skip_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_DEBUG,
+		)
+	Expect.that(debug_export.observability_config().environment).to_equal(
+			"export_debug",
+		)
+
+	var disabled := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.AUTO_INIT: false},
+			{},
+			{"editor_hint": true},
+		)
+	Expect.that(disabled.skip_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+
+
+func test_startup_settings_validate_and_merge_provider_options() -> void:
+	var options := {"dsn": "wrong", "debug": false, "send_default_pii": true}
+	var settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+				ObservabilityStartupSettings.DEBUG_DIAGNOSTICS:
+						ObservabilityStartupSettings.DEBUG_ON,
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: options,
+			},
+			{},
+			{"debug_build": false},
+		)
+	options["send_default_pii"] = false
+	var resolved: Dictionary = settings.observability_config().provider_options()
+
+	Expect.that(settings.validation_error()).to_equal(Error.OK)
+	Expect.that(settings.has_dsn()).to_be_true()
+	Expect.that(settings.debug_enabled()).to_be_true()
+	Expect.that(resolved.get("dsn")).to_equal("https://public@example/1")
+	Expect.that(resolved.get("debug")).to_be_true()
+	Expect.that(resolved.get("send_default_pii")).to_be_true()
+
+	var invalid_mode := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.DEBUG_DIAGNOSTICS: 99},
+		)
+	Expect.that(invalid_mode.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+	var invalid_options := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.PROVIDER_OPTIONS: Callable()},
+		)
+	Expect.that(invalid_options.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+	var nested_callable := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.PROVIDER_OPTIONS: {
+				"nested": {"callback": Callable()},
+			}},
+		)
+	Expect.that(nested_callable.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+
+func test_startup_settings_register_project_defaults_idempotently() -> void:
+	ObservabilityStartupSettings.register_project_settings()
+	ObservabilityStartupSettings.register_project_settings()
+	var defaults: Dictionary = ObservabilityStartupSettings.project_setting_defaults()
+
+	for setting_name: String in defaults:
+		Expect.that(ProjectSettings.has_setting(setting_name)).to_be_true()
+	Expect.that(ProjectSettings.get_setting(
+			ObservabilityStartupSettings.AUTO_INIT)).to_be_true()
+	Expect.that(ProjectSettings.get_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)).to_equal(
+					ObservabilityStartupSettings.DEBUG_AUTO,
+				)
+
+
 func _service() -> FoundryObservability:
 	var tree: SceneTree = Engine.get_main_loop() as SceneTree
 	return tree.root.get_node("FoundryObservability") as FoundryObservability
