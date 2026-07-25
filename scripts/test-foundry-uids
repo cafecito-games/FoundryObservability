@@ -22,6 +22,8 @@ for source_root in "${source_roots[@]}"; do
 		relative_resource=${resource#"$repo_root/"}
 		git -C "$repo_root" ls-files --error-unmatch "$relative_resource" >/dev/null 2>&1 \
 			|| fail "$relative_resource is not tracked by Git"
+		git -C "$repo_root" check-ignore --no-index -q "$relative_resource" \
+			&& fail "$relative_resource is ignored by Git"
 
 		uid_file="$resource.uid"
 		[[ -f "$uid_file" ]] || fail "missing UID companion for $relative_resource"
@@ -29,7 +31,7 @@ for source_root in "${source_roots[@]}"; do
 		[[ "$uid" =~ ^uid://[a-z0-9]+$ ]] \
 			|| fail "invalid UID in ${uid_file#"$repo_root/"}"
 		relative_uid=${uid_file#"$repo_root/"}
-		git -C "$repo_root" check-ignore -q "$relative_uid" \
+		git -C "$repo_root" check-ignore --no-index -q "$relative_uid" \
 			&& fail "$relative_uid is ignored by Git"
 		git -C "$repo_root" ls-files --error-unmatch "$relative_uid" >/dev/null 2>&1 \
 			|| fail "$relative_uid is not tracked by Git"
