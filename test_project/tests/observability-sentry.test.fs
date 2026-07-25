@@ -116,6 +116,49 @@ func test_routes_log_events_to_native_structured_log_method() -> void:
 	provider.shutdown()
 
 
+func test_forwards_normalized_breadcrumbs_to_native_bridge() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "entered arena",
+			p_level = ObservabilityLevel.INFO,
+			p_category = &"navigation",
+			p_timestamp_msec = 1234,
+			p_attributes = {"scene": "arena"},
+		))).to_be_true()
+	Expect.that(bridge.captured_breadcrumb_payloads).to_equal([{
+			"message": "entered arena",
+			"level": ObservabilityLevel.INFO,
+			"category": "navigation",
+			"timestamp_msec": 1234,
+			"attributes": {"scene": "arena"},
+		}])
+	provider.shutdown()
+
+
+func test_missing_native_breadcrumb_capability_preserves_event_capture() -> void:
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = BreadcrumblessSentryBridge.new())
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		))).to_equal(Error.OK)
+
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "unsupported breadcrumb",
+		))).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "ordinary event remains supported",
+		))).to_equal("sentry:1")
+	provider.shutdown()
+
+
 func test_captures_feedback_with_only_explicit_optional_fields() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
