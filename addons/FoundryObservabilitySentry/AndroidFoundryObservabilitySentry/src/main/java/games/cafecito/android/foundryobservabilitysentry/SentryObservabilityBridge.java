@@ -75,6 +75,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
             options.setSendDefaultPii(booleanValue(providerOptions.get("send_default_pii")));
             options.getLogs().setEnabled(logsEnabled);
             options.getMetrics().setEnabled(metricsEnabled);
+            applyAndroidAnrDiagnostics(options, payload);
             options.setDebug(booleanValue(providerOptions.get("debug")));
             setIfNotEmpty(options::setEnvironment, payload.get("environment"));
             setIfNotEmpty(options::setRelease, payload.get("release"));
@@ -230,6 +231,22 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     configured = false;
     logsEnabled = false;
     metricsEnabled = false;
+  }
+
+  static void applyAndroidAnrDiagnostics(
+      SentryAndroidOptions options,
+      Map<?, ?> payload) {
+    if (payload.containsKey("android_anr_detection_enabled")) {
+      options.setAnrEnabled(booleanValue(payload.get("android_anr_detection_enabled")));
+    }
+    if (payload.containsKey("android_anr_timeout_msec")) {
+      options.setAnrTimeoutIntervalMillis(
+          longValue(payload.get("android_anr_timeout_msec"), 5000L));
+    }
+    if (payload.containsKey("android_anr_attach_thread_dump")) {
+      options.setAttachAnrThreadDump(
+          booleanValue(payload.get("android_anr_attach_thread_dump")));
+    }
   }
 
   static String eventIdString(SentryId eventId) {

@@ -40,6 +40,12 @@ done
 rg -q 'io\.sentry:sentry-android:8\.50\.1' "$repo_root/addons/FoundryObservabilitySentry/android-dependencies.txt" \
 	|| fail "Sentry Android dependency is not pinned to 8.50.1"
 rg -q 'SentryAndroid\.init' "$bridge_source" || fail "bridge must initialize Sentry Android"
+rg -q 'setAnrEnabled' "$bridge_source" \
+	|| fail "Android bridge must configure native ANR detection"
+rg -q 'setAnrTimeoutIntervalMillis' "$bridge_source" \
+	|| fail "Android bridge must configure the native ANR timeout"
+rg -q 'setAttachAnrThreadDump' "$bridge_source" \
+	|| fail "Android bridge must configure ANR thread-dump attachment"
 rg -q 'Sentry\.captureEvent' "$bridge_source" || fail "bridge must capture Sentry events"
 rg -q 'Sentry\.logger\(\)' "$bridge_source" || fail "bridge must capture structured Sentry logs"
 rg -q 'Sentry\.addBreadcrumb' "$bridge_source" || fail "bridge must capture Sentry breadcrumbs"
