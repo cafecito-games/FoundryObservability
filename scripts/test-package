@@ -105,6 +105,10 @@ rg -q 'metric_filter' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing metric_filter"
 rg -q 'Apple.*Android|Android.*Apple' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing Apple and Android provider behavior"
+rg -q 'Automatic runtime context' "$repo_root/docs/API.md" \
+	|| fail "API docs are missing automatic runtime context"
+rg -q 'send_default_pii' "$repo_root/docs/API.md" \
+	|| fail "API docs are missing runtime context privacy behavior"
 
 command -v unzip >/dev/null 2>&1 || fail "unzip is required"
 default_dist="$probe_root/default"
@@ -155,6 +159,11 @@ grep -qx 'addons/FoundryObservabilitySentry/plugin.cfg' <<<"$sentry_listing" \
 	|| fail "Sentry package is missing plugin.cfg"
 grep -qx 'addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs' <<<"$sentry_listing" \
 	|| fail "Sentry package is missing the FoundryScript provider"
+for context_resource in SentryRuntimeContextProbe SentryRuntimeContextCollector; do
+	grep -qx "addons/FoundryObservabilitySentry/${context_resource}.fs" \
+		<<<"$sentry_listing" \
+		|| fail "Sentry package is missing ${context_resource}.fs"
+done
 grep -qx 'addons/FoundryObservabilitySentry/FoundryObservabilitySentry.foundryextension' <<<"$sentry_listing" \
 	|| fail "Sentry package is missing the FoundryExtension descriptor"
 grep -qx 'addons/FoundryObservabilitySentry/bin/ios/.gitkeep' <<<"$sentry_listing" \

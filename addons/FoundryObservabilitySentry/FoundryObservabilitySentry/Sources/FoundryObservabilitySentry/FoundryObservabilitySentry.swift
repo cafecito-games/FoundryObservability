@@ -141,6 +141,7 @@ class SentryObservabilityBridge: RefCounted {
             release: stringValue(values["release"]),
             dist: stringValue(values["dist"]),
             globalAttributes: dictionaryValue(values["global_attributes"]),
+            stableContexts: dictionaryValue(values["stable_contexts"]),
             providerOptions: dictionaryValue(values["provider_options"]),
             logsEnabled: boolValue(values["logs_enabled"]),
             metricsEnabled: boolValue(values["metrics_enabled"]),
@@ -187,7 +188,10 @@ class SentryObservabilityBridge: RefCounted {
             eventAttributes: dictionaryValue(values["attributes"]),
             exception: exception
         )
-        let eventID = SentrySDK.capture(event: event)
+        let contexts = foundrySentryContexts(values["contexts"])
+        let eventID = SentrySDK.capture(event: event) { scope in
+            applySentryContexts(contexts, to: scope)
+        }
         let eventIDString = eventID.sentryIdString
         return eventIDString == SentryId.empty.sentryIdString ? "" : eventIDString
     }

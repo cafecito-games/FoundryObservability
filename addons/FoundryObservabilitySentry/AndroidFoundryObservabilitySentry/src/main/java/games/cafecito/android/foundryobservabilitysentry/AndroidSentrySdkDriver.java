@@ -1,5 +1,6 @@
 package games.cafecito.android.foundryobservabilitysentry;
 
+import io.sentry.IScope;
 import io.sentry.Sentry;
 import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
@@ -25,9 +26,14 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
       if (!Sentry.isEnabled()) {
         return false;
       }
-      Sentry.configureScope(scope -> scope.setContexts(
-          "foundry",
-          foundryCrashContext(configuration)));
+      Sentry.configureScope(scope -> {
+        scope.setContexts(
+            "foundry",
+            foundryCrashContext(configuration));
+        applyContexts(
+            scope,
+            SentryEventMapper.contexts(configuration.stableContexts));
+      });
       return true;
     } catch (RuntimeException exception) {
       if (Sentry.isEnabled()) {
@@ -71,6 +77,14 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
   static Map<String, Object> foundryCrashContext(
       SentryLifecycleConfiguration configuration) {
     return Map.of("global_attributes", configuration.globalAttributes);
+  }
+
+  static void applyContexts(
+      IScope scope,
+      Map<String, Map<String, Object>> contexts) {
+    for (Map.Entry<String, Map<String, Object>> entry : contexts.entrySet()) {
+      scope.setContexts(entry.getKey(), entry.getValue());
+    }
   }
 
   private static void setIfNotEmpty(

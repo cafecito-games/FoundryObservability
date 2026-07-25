@@ -78,6 +78,28 @@ final class SentryEventMapper {
     return result;
   }
 
+  static Map<String, Map<String, Object>> contexts(Object value) {
+    Map<String, Map<String, Object>> result = new HashMap<>();
+    if (!(value instanceof Map)) {
+      return result;
+    }
+    for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+      if (!(entry.getKey() instanceof String)
+          || ((String) entry.getKey()).isEmpty()
+          || !(entry.getValue() instanceof Map)) {
+        continue;
+      }
+      Map<String, Object> context = sanitizeVariableMap(
+          (Map<?, ?>) entry.getValue(),
+          0,
+          new VariableCopyState());
+      if (context != null && !context.isEmpty()) {
+        result.put((String) entry.getKey(), context);
+      }
+    }
+    return result;
+  }
+
   static Map<String, Object> mergedExtras(
       Map<String, Object> global,
       Map<String, Object> event,

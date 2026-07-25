@@ -5,8 +5,11 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import io.sentry.Scope;
+import io.sentry.SentryOptions;
 import io.sentry.android.core.SentryAndroidOptions;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.Test;
@@ -57,6 +60,49 @@ public class SentryLifecycleCoordinatorTest {
         List.of("start:1.0.0", "close", "start:2.0.0"),
         driver.operations);
     assertEquals("second", coordinator.activeOwner());
+  }
+
+  @Test
+  public void changedStableContextsCloseThenStart() {
+    FakeDriver driver = new FakeDriver();
+    SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
+
+    assertTrue(coordinator.configure(
+        "first",
+        configuration("1.0.0", Map.of("foundry_engine", Map.of("version", "4.5")))));
+    assertTrue(coordinator.configure(
+        "second",
+        configuration("1.0.0", Map.of("foundry_engine", Map.of("version", "4.6")))));
+
+    assertEquals(
+        List.of("start:1.0.0", "close", "start:1.0.0"),
+        driver.operations);
+    assertEquals("second", coordinator.activeOwner());
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void stableContextsAreImmutableNestedSnapshots() {
+    Map<String, Object> engine = new HashMap<>();
+    engine.put("version", "4.5");
+    Map<String, Object> stableContexts = new HashMap<>();
+    stableContexts.put("foundry_engine", engine);
+
+    SentryLifecycleConfiguration configuration =
+        configuration("1.0.0", stableContexts);
+    engine.put("version", "mutated");
+    stableContexts.put("display", Map.of("screen_count", 2));
+
+    Map<String, Object> capturedEngine =
+        (Map<String, Object>) configuration.stableContexts.get("foundry_engine");
+    assertEquals("4.5", capturedEngine.get("version"));
+    assertFalse(configuration.stableContexts.containsKey("display"));
+    try {
+      capturedEngine.put("version", "mutated copy");
+    } catch (UnsupportedOperationException expected) {
+      return;
+    }
+    throw new AssertionError("nested stable context should be immutable");
   }
 
   @Test
@@ -117,6 +163,7 @@ public class SentryLifecycleCoordinatorTest {
         "game@1.2.3",
         "android",
         Map.of("build", 42),
+        Map.of("foundry_engine", Map.of("version", "4.5")),
         Map.of(),
         true,
         true,
@@ -137,9 +184,28 @@ public class SentryLifecycleCoordinatorTest {
     assertEquals(
         Map.of("global_attributes", Map.of("build", 42)),
         AndroidSentrySdkDriver.foundryCrashContext(configuration));
+    Scope scope = new Scope(new SentryOptions());
+    scope.setContexts(
+        "foundry",
+        AndroidSentrySdkDriver.foundryCrashContext(configuration));
+    AndroidSentrySdkDriver.applyContexts(
+        scope,
+        SentryEventMapper.contexts(configuration.stableContexts));
+    assertEquals(
+        Map.of("global_attributes", Map.of("build", 42)),
+        scope.getContexts().get("foundry"));
+    assertEquals(
+        Map.of("version", "4.5"),
+        scope.getContexts().get("foundry_engine"));
   }
 
   private static SentryLifecycleConfiguration configuration(String release) {
+    return configuration(release, Map.of());
+  }
+
+  private static SentryLifecycleConfiguration configuration(
+      String release,
+      Map<String, Object> stableContexts) {
     return new SentryLifecycleConfiguration(
         null,
         "https://public@example.com/1",
@@ -147,6 +213,7 @@ public class SentryLifecycleCoordinatorTest {
         release,
         "android",
         Map.of(),
+        stableContexts,
         Map.of(),
         true,
         true,

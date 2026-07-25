@@ -52,6 +52,30 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.activeOwner, "second")
     }
 
+    func testChangedStableContextsCloseThenStart() {
+        let driver = FakeSentryLifecycleDriver()
+        let coordinator = SentryLifecycleCoordinator(driver: driver)
+
+        XCTAssertTrue(coordinator.configure(
+            owner: "first",
+            configuration: configuration(
+                stableContexts: ["foundry_engine": ["version": "4.5"]]
+            )
+        ))
+        XCTAssertTrue(coordinator.configure(
+            owner: "second",
+            configuration: configuration(
+                stableContexts: ["foundry_engine": ["version": "4.6"]]
+            )
+        ))
+
+        XCTAssertEqual(
+            driver.operations,
+            ["start:1.0.0", "close", "start:1.0.0"]
+        )
+        XCTAssertEqual(coordinator.activeOwner, "second")
+    }
+
     func testStaleOwnerCannotFlushOrShutdown() {
         let driver = FakeSentryLifecycleDriver()
         let coordinator = SentryLifecycleCoordinator(driver: driver)
@@ -107,7 +131,10 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
             release: "game@1.2.3",
             environment: "qa",
             dist: "macos",
-            globalAttributes: ["build": 42]
+            globalAttributes: ["build": 42],
+            stableContexts: [
+                "foundry_engine": ["version": "4.5", "debug_build": true],
+            ]
         )
 
         let options = makeAppleSentryOptions(config)
@@ -127,13 +154,18 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
             contexts?["foundry"] as? NSDictionary,
             ["global_attributes": ["build": 42]] as NSDictionary
         )
+        XCTAssertEqual(
+            contexts?["foundry_engine"] as? NSDictionary,
+            ["version": "4.5", "debug_build": true] as NSDictionary
+        )
     }
 
     private func configuration(
         release: String = "1.0.0",
         environment: String = "test",
         dist: String = "macos",
-        globalAttributes: [String: Any] = [:]
+        globalAttributes: [String: Any] = [:],
+        stableContexts: [String: Any] = [:]
     ) -> SentryLifecycleConfiguration {
         SentryLifecycleConfiguration(
             dsn: "https://public@example.com/1",
@@ -141,6 +173,7 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
             release: release,
             dist: dist,
             globalAttributes: globalAttributes,
+            stableContexts: stableContexts,
             providerOptions: [:],
             logsEnabled: true,
             metricsEnabled: true,

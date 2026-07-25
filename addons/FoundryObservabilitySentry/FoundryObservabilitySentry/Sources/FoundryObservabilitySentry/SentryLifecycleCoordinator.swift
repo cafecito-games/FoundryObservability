@@ -10,6 +10,7 @@ struct SentryLifecycleConfiguration: Equatable {
     let release: String
     let dist: String
     let globalAttributes: [String: Any]
+    let stableContexts: [String: Any]
     let providerOptions: [String: Any]
     let logsEnabled: Bool
     let metricsEnabled: Bool
@@ -26,6 +27,8 @@ struct SentryLifecycleConfiguration: Equatable {
             && lhs.dist == rhs.dist
             && NSDictionary(dictionary: lhs.globalAttributes)
                 .isEqual(to: rhs.globalAttributes)
+            && NSDictionary(dictionary: lhs.stableContexts)
+                .isEqual(to: rhs.stableContexts)
             && NSDictionary(dictionary: lhs.providerOptions)
                 .isEqual(to: rhs.providerOptions)
             && lhs.logsEnabled == rhs.logsEnabled
@@ -202,6 +205,10 @@ func makeAppleSentryOptions(
         scope.setContext(
             value: foundryCrashContext(configuration),
             key: "foundry"
+        )
+        applySentryContexts(
+            foundrySentryContexts(configuration.stableContexts),
+            to: scope
         )
         return scope
     }

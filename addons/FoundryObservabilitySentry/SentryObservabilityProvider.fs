@@ -11,14 +11,25 @@ const _NATIVE_CLASS: String = "SentryObservabilityBridge"
 const _LIFECYCLE_VERSION: int = 1
 
 var _bridge: Object? = null
+var _context_collector: SentryRuntimeContextCollector
+var _stable_contexts: Dictionary = {}
 var _enabled: bool = false
 var _owner: String = ""
 var _shutdown: bool = false
 
 
 ## Creates a provider with an optional bridge seam used by deterministic tests.
-func _init(p_bridge: Object? = null) -> void:
+func _init(
+		p_bridge: Object? = null,
+		p_runtime_context_probe: Object? = null,
+) -> void:
 	_bridge = p_bridge
+	var runtime_context_probe: Object = (
+			p_runtime_context_probe
+			if p_runtime_context_probe != null
+			else SentryRuntimeContextProbe.new()
+		)
+	_context_collector = SentryRuntimeContextCollector.new(runtime_context_probe)
 	_owner = str(get_instance_id())
 
 
@@ -51,6 +62,7 @@ func configure(config: ObservabilityConfig) -> int:
 		if config.enabled or _enabled:
 			return Error.ERR_UNAVAILABLE
 		_enabled = false
+		_stable_contexts = {}
 		_shutdown = false
 		return Error.OK
 	if config.enabled and config.logs_enabled and (bridge == null or not bridge.has_method("captureLog")):
@@ -59,8 +71,19 @@ func configure(config: ObservabilityConfig) -> int:
 	_shutdown = false
 	if bridge == null:
 		_enabled = false
+		_stable_contexts = {}
 		return Error.OK
 
+	var candidate_stable_contexts: Dictionary = {}
+	if config.enabled:
+		var send_default_pii: bool = false
+		var send_default_pii_value: Variant = options.get("send_default_pii")
+		if send_default_pii_value is bool:
+			send_default_pii = send_default_pii_value
+		candidate_stable_contexts = _context_collector.stable_contexts(
+				config.environment,
+				send_default_pii,
+			)
 	var payload: Dictionary = {
 			"enabled": config.enabled,
 			"dsn": dsn,
@@ -82,12 +105,15 @@ func configure(config: ObservabilityConfig) -> int:
 			"android_anr_attach_thread_dump": config.android_anr_attach_thread_dump,
 			"lifecycle_owner": _owner,
 		}
+	if config.enabled:
+		payload["stable_contexts"] = candidate_stable_contexts
 	var result: Variant = bridge.call("configure", payload)
 	if not (result is int):
 		return Error.FAILED
 	var result_code: int = result
 	if result_code == Error.OK:
 		_enabled = config.enabled
+		_stable_contexts = candidate_stable_contexts
 	return result_code
 
 
@@ -109,6 +135,9 @@ func capture(event: ObservabilityEvent) -> String:
 			"engine_ticks_msec": event.engine_ticks_msec(),
 			"attributes": event.attributes(),
 		}
+	var contexts: Dictionary = _context_collector.contexts_for_capture(_stable_contexts)
+	if not contexts.is_empty():
+		payload["contexts"] = contexts
 	var exception: ObservabilityException? = event.exception()
 	if exception != null:
 		var exception_payload: Dictionary = {
@@ -211,6 +240,7 @@ func shutdown() -> void:
 		return
 	_shutdown = true
 	_enabled = false
+	_stable_contexts = {}
 	var bridge: Object? = _resolve_bridge()
 	if bridge != null and _has_lifecycle_contract(bridge):
 		bridge.call("shutdown", _owner)

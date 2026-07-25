@@ -1235,6 +1235,58 @@ The repository does not ship a callable production crash helper. Follow
 Android tooling plus LLDB/Xcode steps for iOS. Perform that procedure only
 against a non-production Sentry project and disposable test data.
 
+## Automatic runtime context
+
+Enabled `SentryObservabilityProvider` configuration automatically enriches
+macOS, iOS, and Android Sentry data with provider-private runtime
+contexts. This does not add fields or methods to the provider-neutral API and
+does not modify caller-supplied event attributes or global attributes.
+
+The addon uses six custom context names:
+
+| Context | Field families |
+| --- | --- |
+| `foundry_app` | Project name and version, process start time, and architecture |
+| `foundry_engine` | Engine version and commit, architecture, runtime mode, and editor/debug/headless flags |
+| `foundry_device` | Model and device type, architecture, processor, memory, storage, and opt-in identifying values |
+| `display` | Display server, screen/touch availability, primary dimensions, DPI, refresh rate, and orientation |
+| `gpu` | Adapter and vendor, API and device type, driver, and rendering method |
+| `foundry_runtime` | Deployment environment, classified runtime mode, sandbox state, and user-storage persistence |
+
+Configuration collects a stable snapshot and installs it on the native Sentry
+scope before capture begins. This makes the snapshot available to native crash
+handling. Ordinary event capture copies that snapshot and refreshes current
+free memory, usable memory, free user-storage space, and primary orientation
+for that event only. A failed reconfiguration retains the last successful
+snapshot; successful disable and shutdown clear it.
+
+Runtime mode uses deterministic precedence: headless or dedicated-server
+execution is `headless`, otherwise editor execution is `editor`, otherwise a
+debug build is `debug_export`, and the remaining case is `release_export`.
+Empty strings, `GenericDevice`, nonpositive dimensions and counts, negative
+capacities, missing platform values, unsupported objects, nonfinite numbers,
+invalid keys, cycles, and empty contexts are omitted rather than guessed.
+
+The runtime memory-information API is not called on iOS. Consequently
+`memory_size`, `free_memory`, and `usable_memory` are omitted there; supported
+storage, display, GPU, and runtime values continue to be collected. The addon
+uses only the safe cross-platform engine APIs exposed for each target.
+
+Identifying values are opt-in. By default, the automatic device context omits
+the operating-system unique identifier, locale, and timezone. Set
+`provider_options["send_default_pii"] = true` only after the project has made
+the corresponding privacy disclosure and obtained any required consent. This
+also enables the pinned native Sentry SDK's default-PII behavior. Invalid or
+non-boolean option values do not opt in.
+
+These custom names do not replace Sentry's native `app`, `device`, or
+operating-system contexts. The existing `foundry.global_attributes` crash
+context also remains separate. Native fatal reports can include the stable
+configuration-time snapshot, but the addon deliberately does not attempt to
+query volatile runtime values while recovering a previous-launch crash. Such a
+report therefore has no capture-time refresh beyond the stable snapshot that
+was installed before the crash.
+
 ## Sentry structured-log delivery
 
 The optional `FoundryObservabilitySentry` addon maps `kind = log` records to

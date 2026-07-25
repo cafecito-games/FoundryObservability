@@ -154,6 +154,50 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(sentryMetricUnit(for: "player"), .generic("player"))
     }
 
+    func testSanitizesRuntimeContexts() {
+        let cycle = NSMutableDictionary()
+        cycle["self"] = cycle
+        let contexts = foundrySentryContexts([
+            "foundry_engine": [
+                "version": "4.5",
+                "debug_build": true,
+                "nested": [
+                    "kept": 1,
+                    "infinite": Double.infinity,
+                ],
+                "unsupported": NSObject(),
+                "cycle": cycle,
+            ],
+            "": ["invalid": true],
+            "empty": [:],
+        ])
+
+        XCTAssertEqual(contexts["foundry_engine"]?["version"] as? String, "4.5")
+        XCTAssertEqual(contexts["foundry_engine"]?["debug_build"] as? Bool, true)
+        let nested = contexts["foundry_engine"]?["nested"] as? [String: Any]
+        XCTAssertEqual(nested?["kept"] as? Int, 1)
+        XCTAssertNil(nested?["infinite"])
+        XCTAssertNil(contexts["foundry_engine"]?["unsupported"])
+        XCTAssertNil((contexts["foundry_engine"]?["cycle"] as? [String: Any])?["self"])
+        XCTAssertNil(contexts[""])
+        XCTAssertNil(contexts["empty"])
+    }
+
+    func testAppliesRuntimeContextsToScope() {
+        let contexts = foundrySentryContexts([
+            "foundry_engine": ["version": "4.5"],
+        ])
+        let scope = Scope()
+
+        applySentryContexts(contexts, to: scope)
+
+        let serialized = scope.serialize()["context"] as? [String: Any]
+        XCTAssertEqual(
+            (serialized?["foundry_engine"] as? [String: Any])?["version"] as? String,
+            "4.5"
+        )
+    }
+
     func testConvertsTimeoutMillisecondsToSeconds() {
         XCTAssertEqual(sentryTimeoutSeconds(milliseconds: 321), 0.321, accuracy: 0.0001)
     }
