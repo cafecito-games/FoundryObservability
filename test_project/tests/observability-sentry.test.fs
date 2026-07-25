@@ -9,6 +9,241 @@ extends RefCounted
 uses Test
 
 
+class FakeRuntimeContextProbe extends RefCounted:
+	var platform: String = "macOS"
+	var app_name: String = "Oakhaven"
+	var app_version: String = "1.2.3"
+	var engine_editor: bool = false
+	var engine_debug_build: bool = true
+	var engine_headless: bool = false
+	var engine_dedicated_server: bool = false
+	var device_model: String = "Mac16,1"
+	var processor_count: int = 10
+	var memory_size: int = 17179869184
+	var memory_call_count: int = 0
+	var volatile_free_memory: int = 2048
+	var volatile_usable_memory: int = 4096
+	var volatile_free_storage: int = 8192
+	var display_screen_count: int = 1
+	var display_width: int = 3024
+	var display_height: int = 1964
+	var display_dpi: int = 254
+	var display_refresh_rate: float = 120.0
+	var volatile_orientation: String = "landscape"
+	var gpu_name: String = "Apple M4"
+	var unique_identifier: String = "private-device-id"
+	var locale: String = "en_US"
+	var timezone: String = "America/New_York"
+
+	func platform_name() -> String:
+		return platform
+
+	func application_values() -> Dictionary:
+		return {
+				"name": app_name,
+				"version": app_version,
+				"start_time": "2026-07-25T12:00:00Z",
+				"architecture": "arm64",
+			}
+
+	func engine_values() -> Dictionary:
+		return {
+				"version": "4.5.stable",
+				"version_commit": "abc123",
+				"architecture": "arm64",
+				"editor": engine_editor,
+				"debug_build": engine_debug_build,
+				"headless": engine_headless,
+				"dedicated_server": engine_dedicated_server,
+			}
+
+	func device_values() -> Dictionary:
+		return {
+				"model": device_model,
+				"processor_name": "Apple M4",
+				"processor_count": processor_count,
+			}
+
+	func memory_values() -> Dictionary:
+		memory_call_count += 1
+		return {
+				"physical": memory_size,
+				"free": volatile_free_memory,
+				"available": volatile_usable_memory,
+			}
+
+	func free_storage() -> int:
+		return volatile_free_storage
+
+	func display_values() -> Dictionary:
+		return {
+				"server": "macOS",
+				"screen_count": display_screen_count,
+				"touchscreen_available": false,
+				"primary_width_pixels": display_width,
+				"primary_height_pixels": display_height,
+				"primary_dpi": display_dpi,
+				"primary_refresh_rate": display_refresh_rate,
+				"primary_orientation": volatile_orientation,
+			}
+
+	func primary_orientation() -> String:
+		return volatile_orientation
+
+	func gpu_values() -> Dictionary:
+		return {
+				"name": gpu_name,
+				"vendor_name": "Apple",
+				"api_version": "Metal 3",
+				"device_type": "integrated_gpu",
+				"driver_name": "Metal",
+				"driver_version": "1",
+				"rendering_method": "gl_compatibility",
+			}
+
+	func runtime_values() -> Dictionary:
+		return {"sandboxed": true, "userfs_persistent": true}
+
+	func privacy_values() -> Dictionary:
+		return {
+				"unique_identifier": unique_identifier,
+				"locale": locale,
+				"timezone": timezone,
+			}
+
+
+func test_runtime_context_collector_builds_stable_context_without_pii() -> void:
+	var probe := FakeRuntimeContextProbe.new()
+	var collector := SentryRuntimeContextCollector.new(probe)
+
+	var stable: Dictionary = collector.stable_contexts("production", false)
+	var device: Dictionary = stable["foundry_device"]
+
+	Expect.that(stable["foundry_app"]["name"]).to_equal("Oakhaven")
+	Expect.that(stable["foundry_app"]["version"]).to_equal("1.2.3")
+	Expect.that(stable["godot_engine"]["runtime_mode"]).to_equal("debug_export")
+	Expect.that(stable["foundry_device"]["type"]).to_equal("desktop")
+	Expect.that(stable["foundry_device"]["memory_size"]).to_equal(17179869184)
+	Expect.that(stable["display"]["primary_width_pixels"]).to_equal(3024)
+	Expect.that(stable["gpu"]["name"]).to_equal("Apple M4")
+	Expect.that(stable["foundry_runtime"]["environment"]).to_equal("production")
+	Expect.that(device.has("unique_identifier")).to_be_false()
+	Expect.that(device.has("locale")).to_be_false()
+	Expect.that(device.has("timezone")).to_be_false()
+
+
+func test_runtime_context_collector_includes_identifying_values_only_when_opted_in() -> void:
+	var probe := FakeRuntimeContextProbe.new()
+	var collector := SentryRuntimeContextCollector.new(probe)
+
+	var stable: Dictionary = collector.stable_contexts("production", true)
+
+	Expect.that(stable["foundry_device"]["unique_identifier"]).to_equal(
+			"private-device-id",
+		)
+	Expect.that(stable["foundry_device"]["locale"]).to_equal("en_US")
+	Expect.that(stable["foundry_device"]["timezone"]).to_equal("America/New_York")
+
+
+func test_runtime_context_collector_skips_memory_api_on_ios() -> void:
+	var probe := FakeRuntimeContextProbe.new()
+	probe.platform = "iOS"
+	var collector := SentryRuntimeContextCollector.new(probe)
+
+	var stable: Dictionary = collector.stable_contexts("production", true)
+	var volatile: Dictionary = collector.volatile_contexts()
+	var stable_device: Dictionary = stable["foundry_device"]
+	var volatile_device: Dictionary = volatile["foundry_device"]
+
+	Expect.that(probe.memory_call_count).to_equal(0)
+	Expect.that(stable_device.has("memory_size")).to_be_false()
+	Expect.that(stable_device.has("free_memory")).to_be_false()
+	Expect.that(volatile_device.has("free_memory")).to_be_false()
+
+
+func test_runtime_context_collector_refreshes_volatile_values_without_mutating_stable() -> void:
+	var probe := FakeRuntimeContextProbe.new()
+	var collector := SentryRuntimeContextCollector.new(probe)
+	var stable: Dictionary = collector.stable_contexts("production", false)
+
+	probe.volatile_free_memory = 1024
+	probe.volatile_usable_memory = 3072
+	probe.volatile_free_storage = 4096
+	probe.volatile_orientation = "portrait"
+	var merged: Dictionary = collector.contexts_for_capture(stable)
+
+	Expect.that(merged["foundry_device"]["free_memory"]).to_equal(1024)
+	Expect.that(merged["foundry_device"]["usable_memory"]).to_equal(3072)
+	Expect.that(merged["foundry_device"]["free_storage"]).to_equal(4096)
+	Expect.that(merged["display"]["primary_orientation"]).to_equal("portrait")
+	Expect.that(stable["foundry_device"]["free_memory"]).to_equal(2048)
+	Expect.that(stable["display"]["primary_orientation"]).to_equal("landscape")
+
+
+func test_runtime_context_collector_classifies_runtime_modes_by_precedence() -> void:
+	var probe := FakeRuntimeContextProbe.new()
+	var collector := SentryRuntimeContextCollector.new(probe)
+
+	probe.engine_headless = true
+	probe.engine_editor = true
+	Expect.that(
+			collector.stable_contexts("", false)["godot_engine"]["runtime_mode"],
+		).to_equal("headless")
+
+	probe.engine_headless = false
+	Expect.that(
+			collector.stable_contexts("", false)["godot_engine"]["runtime_mode"],
+		).to_equal("editor")
+
+	probe.engine_editor = false
+	Expect.that(
+			collector.stable_contexts("", false)["godot_engine"]["runtime_mode"],
+		).to_equal("debug_export")
+
+	probe.engine_debug_build = false
+	Expect.that(
+			collector.stable_contexts("", false)["godot_engine"]["runtime_mode"],
+		).to_equal("release_export")
+
+
+func test_runtime_context_collector_omits_invalid_and_unsupported_values() -> void:
+	var probe := FakeRuntimeContextProbe.new()
+	probe.app_version = ""
+	probe.device_model = "GenericDevice"
+	probe.processor_count = 0
+	probe.memory_size = 0
+	probe.volatile_free_memory = -1
+	probe.volatile_usable_memory = -1
+	probe.volatile_free_storage = -1
+	probe.display_screen_count = 0
+	probe.display_width = 0
+	probe.display_height = -1
+	probe.display_dpi = 0
+	probe.display_refresh_rate = -1.0
+	probe.gpu_name = ""
+	probe.unique_identifier = ""
+	probe.locale = ""
+	probe.timezone = ""
+	var collector := SentryRuntimeContextCollector.new(probe)
+
+	var stable: Dictionary = collector.stable_contexts("", true)
+	var app: Dictionary = stable["foundry_app"]
+	var device: Dictionary = stable["foundry_device"]
+	var display: Dictionary = stable["display"]
+
+	Expect.that(app.has("version")).to_be_false()
+	Expect.that(device.has("model")).to_be_false()
+	Expect.that(device.has("processor_count")).to_be_false()
+	Expect.that(device.has("memory_size")).to_be_false()
+	Expect.that(device.has("free_memory")).to_be_false()
+	Expect.that(device.has("usable_memory")).to_be_false()
+	Expect.that(device.has("free_storage")).to_be_false()
+	Expect.that(display.has("screen_count")).to_be_false()
+	Expect.that(display.has("primary_width_pixels")).to_be_false()
+	Expect.that(stable.has("gpu")).to_be_false()
+	Expect.that(device.has("unique_identifier")).to_be_false()
+
+
 func test_provider_name_is_sentry() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = FakeSentryBridge.new())
 	Expect.that(provider.provider_name()).to_equal(&"sentry")

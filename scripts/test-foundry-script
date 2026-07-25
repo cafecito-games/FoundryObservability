@@ -45,6 +45,10 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/ObservabilityMetricsProvider.fs" ]] || fail "ObservabilityMetricsProvider.fs is missing"
 [[ -f "$addon/foundrylib/FoundryLibObservabilitySink.fs" ]] || fail "FoundryLib observability sink is missing"
 [[ -f "$sentry_addon/SentryObservabilityProvider.fs" ]] || fail "Sentry provider is missing"
+[[ -f "$sentry_addon/SentryRuntimeContextProbe.fs" ]] \
+	|| fail "Sentry runtime context probe is missing"
+[[ -f "$sentry_addon/SentryRuntimeContextCollector.fs" ]] \
+	|| fail "Sentry runtime context collector is missing"
 for field in _kind _level _message _source _timestamp_msec _attributes _exception _engine_ticks_msec; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityEvent.fs" \
 		|| fail "ObservabilityEvent field must be immutable: ${field}"
