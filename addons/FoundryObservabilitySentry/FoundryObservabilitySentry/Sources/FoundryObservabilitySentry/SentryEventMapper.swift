@@ -248,10 +248,11 @@ private func foundrySanitizedVariableDictionary(
     guard
         depth <= foundryVariableMaxContainerDepth,
         let dictionary = value as? NSDictionary,
-        state.visit(dictionary)
+        state.enter(dictionary)
     else {
         return nil
     }
+    defer { state.leave(dictionary) }
 
     var result: [String: Any] = [:]
     for (rawKey, rawValue) in dictionary {
@@ -281,10 +282,11 @@ private func foundrySanitizedVariableArray(
     guard
         depth <= foundryVariableMaxContainerDepth,
         let array = value as? NSArray,
-        state.visit(array)
+        state.enter(array)
     else {
         return nil
     }
+    defer { state.leave(array) }
 
     var result: [Any] = []
     for rawValue in array {
@@ -338,11 +340,15 @@ private func foundrySanitizedVariableValue(
 }
 
 private final class FoundryVariableCopyState {
-    private var visited: Set<ObjectIdentifier> = []
+    private var activeContainers: Set<ObjectIdentifier> = []
     private var itemCount = 0
 
-    func visit(_ container: AnyObject) -> Bool {
-        visited.insert(ObjectIdentifier(container)).inserted
+    func enter(_ container: AnyObject) -> Bool {
+        activeContainers.insert(ObjectIdentifier(container)).inserted
+    }
+
+    func leave(_ container: AnyObject) {
+        activeContainers.remove(ObjectIdentifier(container))
     }
 
     func consumeItem() -> Bool {

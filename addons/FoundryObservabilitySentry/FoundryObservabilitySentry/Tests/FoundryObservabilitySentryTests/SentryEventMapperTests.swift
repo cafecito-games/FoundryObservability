@@ -399,13 +399,23 @@ final class SentryEventMapperTests: XCTestCase {
         cycle["kept"] = "cycle value"
         cycle["self"] = cycle
 
-        let repeated = NSMutableArray(array: ["repeated value"])
+        let mutualCycle = NSMutableDictionary()
+        let mutualChild = NSMutableDictionary()
+        mutualCycle["child"] = mutualChild
+        mutualChild["kept"] = "mutual value"
+        mutualChild["parent"] = mutualCycle
+
+        let repeatedArray = NSMutableArray(array: ["repeated value"])
+        let repeatedDictionary = NSMutableDictionary(dictionary: ["kept": "repeated dictionary"])
         let variables = NSMutableDictionary()
         variables["nested"] = nested
         variables["list"] = list
         variables["cycle"] = cycle
-        variables["first_repeat"] = repeated
-        variables["second_repeat"] = repeated
+        variables["mutual_cycle"] = mutualCycle
+        variables["first_repeat"] = repeatedArray
+        variables["second_repeat"] = repeatedArray
+        variables["first_dictionary"] = repeatedDictionary
+        variables["second_dictionary"] = repeatedDictionary
         variables["finite_number"] = NSNumber(value: 2.5)
         variables["positive_infinity"] = Float.infinity
 
@@ -414,7 +424,9 @@ final class SentryEventMapperTests: XCTestCase {
         nested["kept"] = "mutated nested value"
         list[0] = "mutated list value"
         cycle["kept"] = "mutated cycle value"
-        repeated[0] = "mutated repeated value"
+        mutualChild["kept"] = "mutated mutual value"
+        repeatedArray[0] = "mutated repeated value"
+        repeatedDictionary["kept"] = "mutated repeated dictionary"
 
         guard let sanitized = event.exceptions?.first?.stacktrace?.frames.first?.vars else {
             XCTFail("Expected sanitized frame variables")
@@ -433,11 +445,47 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(cycleCopy?["kept"] as? String, "cycle value")
         XCTAssertFalse(cycleCopy?.keys.contains("self") ?? true)
 
-        let repeatedCopies = ["first_repeat", "second_repeat"].compactMap {
-            sanitized[$0] as? [Any]
+        let mutualCopy = sanitized["mutual_cycle"] as? [String: Any]
+        let mutualChildCopy = mutualCopy?["child"] as? [String: Any]
+        XCTAssertEqual(mutualChildCopy?["kept"] as? String, "mutual value")
+        XCTAssertFalse(mutualChildCopy?.keys.contains("parent") ?? true)
+
+        guard
+            var firstRepeat = sanitized["first_repeat"] as? [Any],
+            let secondRepeat = sanitized["second_repeat"] as? [Any],
+            var firstDictionary = sanitized["first_dictionary"] as? [String: Any],
+            let secondDictionary = sanitized["second_dictionary"] as? [String: Any]
+        else {
+            XCTFail("Expected both repeated acyclic containers")
+            return
         }
-        XCTAssertEqual(repeatedCopies.count, 1)
-        XCTAssertEqual(repeatedCopies.first?.first as? String, "repeated value")
+        XCTAssertEqual(firstRepeat.first as? String, "repeated value")
+        XCTAssertEqual(secondRepeat.first as? String, "repeated value")
+
+        firstRepeat[0] = "mutated first output copy"
+
+        XCTAssertEqual(secondRepeat.first as? String, "repeated value")
+        XCTAssertEqual(
+            (sanitized["first_repeat"] as? [Any])?.first as? String,
+            "repeated value"
+        )
+        XCTAssertEqual(
+            (sanitized["second_repeat"] as? [Any])?.first as? String,
+            "repeated value"
+        )
+
+        XCTAssertEqual(firstDictionary["kept"] as? String, "repeated dictionary")
+        XCTAssertEqual(secondDictionary["kept"] as? String, "repeated dictionary")
+        firstDictionary["kept"] = "mutated first dictionary copy"
+        XCTAssertEqual(secondDictionary["kept"] as? String, "repeated dictionary")
+        XCTAssertEqual(
+            (sanitized["first_dictionary"] as? [String: Any])?["kept"] as? String,
+            "repeated dictionary"
+        )
+        XCTAssertEqual(
+            (sanitized["second_dictionary"] as? [String: Any])?["kept"] as? String,
+            "repeated dictionary"
+        )
         XCTAssertEqual((sanitized["finite_number"] as? NSNumber)?.doubleValue, 2.5)
         XCTAssertNil(sanitized["positive_infinity"])
     }
