@@ -527,7 +527,8 @@ func test_automatic_logger_routes_error_metadata_by_independent_masks() -> void:
 	var exception_event: ObservabilityEvent = provider.events()[0]
 	Expect.that(exception_event.kind()).to_equal(&"exception")
 	Expect.that(exception_event.source()).to_equal(&"foundry.engine")
-	Expect.that(exception_event.timestamp_msec()).to_equal(1234)
+	Expect.that(exception_event.timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(exception_event.engine_ticks_msec()).to_equal(1234)
 	Expect.that(exception_event.exception().type_name()).to_equal("ERROR")
 	Expect.that(exception_event.exception().stack_trace()).to_contain("observability-core.test.fs")
 	Expect.that(exception_event.attributes()["error.function"]).to_equal("attack")
@@ -538,7 +539,10 @@ func test_automatic_logger_routes_error_metadata_by_independent_masks() -> void:
 	var serialized_backtraces: Array = exception_event.attributes()["error.script_backtraces"]
 	Expect.that(serialized_backtraces.size()).to_be_greater_than(0)
 	Expect.that(provider.breadcrumbs()).to_have_size(1)
+	Expect.that(provider.breadcrumbs()[0].timestamp_msec()).to_equal(1234)
 	Expect.that(provider.events()[1].kind()).to_equal(&"log")
+	Expect.that(provider.events()[1].timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(provider.events()[1].engine_ticks_msec()).to_equal(1234)
 	service.shutdown()
 
 
@@ -598,6 +602,8 @@ func test_automatic_logger_filters_and_routes_messages_without_events() -> void:
 	Expect.that(provider.events()).to_have_size(1)
 	Expect.that(provider.events()[0].kind()).to_equal(&"log")
 	Expect.that(provider.events()[0].level()).to_equal(ObservabilityLevel.INFO)
+	Expect.that(provider.events()[0].timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(provider.events()[0].engine_ticks_msec()).to_equal(1234)
 	service.shutdown()
 
 

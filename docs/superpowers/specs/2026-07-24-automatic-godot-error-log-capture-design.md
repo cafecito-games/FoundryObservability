@@ -153,6 +153,13 @@ Provider event IDs are not injected into the parallel breadcrumb or structured
 log. This keeps the three destinations independent and avoids making automatic
 logs depend on event delivery success.
 
+The logger's injected clock supplies monotonic engine ticks for throttling.
+Automatic exception events and structured logs pass those ticks through
+`engine_ticks_msec` and leave the Unix timestamp unassigned so the core capture
+boundary derives occurrence time using its contemporaneous clock pair.
+Breadcrumbs retain the engine tick as their provider-neutral timestamp; native
+Sentry breadcrumbs use wall-clock receipt time.
+
 ## Message normalization
 
 `Logger._log_message(message, error)` receives ordinary engine output. The

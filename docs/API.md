@@ -265,6 +265,11 @@ backtraces. These fields use `error.*` attribute names. Exception events also
 carry a printable stack trace; every automatic record includes
 `observability.origin = "auto.log.foundry"` and uses source
 `foundry.engine`. Ordinary output includes its error-stream flag.
+Automatic throttling uses the diagnostic's monotonic engine tick. Exception
+events and structured logs pass that value as `engine_ticks_msec`, allowing the
+core capture boundary to derive the Unix occurrence timestamp. Breadcrumbs
+retain the engine tick in their provider-neutral `timestamp_msec`; native
+Sentry breadcrumbs use wall-clock receipt time.
 
 Duplicate identity is `(message, file, line, diagnostic type)`. A duplicate
 inside automatic_repeated_error_window_msec is suppressed from every

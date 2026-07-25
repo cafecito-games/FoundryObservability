@@ -77,7 +77,7 @@ func _capture_error(
 	var level: int = _error_level(error_type)
 	var type_name: String = _error_type_name(error_type)
 	var message: String = rationale if not rationale.is_empty() else code
-	var timestamp_msec: int = _now_msec()
+	var engine_ticks_msec: int = _now_msec()
 	var frame_index: int = _frame_index()
 	var as_event: bool = (_config.automatic_event_mask & category_mask) != 0
 	var as_breadcrumb: bool = (_config.automatic_breadcrumb_mask & category_mask) != 0
@@ -92,8 +92,8 @@ func _capture_error(
 	var previous_timestamp: Variant = _error_timepoints.get(error_key, null)
 	if _config.automatic_repeated_error_window_msec > 0 \
 			and previous_timestamp is int:
-		var previous_timestamp_msec: int = previous_timestamp
-		if timestamp_msec - previous_timestamp_msec \
+		var previous_engine_ticks_msec: int = previous_timestamp
+		if engine_ticks_msec - previous_engine_ticks_msec \
 				< _config.automatic_repeated_error_window_msec:
 			_state_mutex.unlock()
 			return
@@ -101,7 +101,7 @@ func _capture_error(
 	if frame_index != _current_frame:
 		_current_frame = frame_index
 		_frame_event_count = 0
-	_prune_event_timepoints(timestamp_msec)
+	_prune_event_timepoints(engine_ticks_msec)
 	if as_event and _config.automatic_events_per_frame > 0 \
 			and _frame_event_count >= _config.automatic_events_per_frame:
 		as_event = false
@@ -133,7 +133,6 @@ func _capture_error(
 				p_level = level,
 				p_message = message,
 				p_source = &"foundry.engine",
-				p_timestamp_msec = timestamp_msec,
 				p_attributes = attributes,
 				p_exception = ObservabilityException.new(
 						p_type_name = type_name,
@@ -141,6 +140,7 @@ func _capture_error(
 						p_stack_trace = str(backtrace_payload["stack_trace"]),
 						p_attributes = attributes,
 					),
+				p_engine_ticks_msec = engine_ticks_msec,
 			)).is_empty()
 	if as_breadcrumb:
 		breadcrumb_accepted = _service._capture_automatic_breadcrumb(
@@ -148,7 +148,7 @@ func _capture_error(
 						p_message = message,
 						p_level = level,
 						p_category = &"error",
-						p_timestamp_msec = timestamp_msec,
+						p_timestamp_msec = engine_ticks_msec,
 						p_attributes = attributes,
 					),
 			)
@@ -157,8 +157,9 @@ func _capture_error(
 				message,
 				level,
 				&"foundry.engine",
-				timestamp_msec,
+				ObservabilityEvent.UNASSIGNED_TIMESTAMP,
 				attributes,
+				engine_ticks_msec,
 			).is_empty()
 
 	if not event_accepted and not breadcrumb_accepted and not log_accepted:
@@ -166,8 +167,8 @@ func _capture_error(
 	_state_mutex.lock()
 	if event_accepted:
 		_frame_event_count += 1
-		_event_timepoints.append(timestamp_msec)
-	_error_timepoints[error_key] = timestamp_msec
+		_event_timepoints.append(engine_ticks_msec)
+	_error_timepoints[error_key] = engine_ticks_msec
 	_state_mutex.unlock()
 
 
@@ -189,7 +190,7 @@ func _capture_message(message: String, error: bool) -> void:
 		return
 
 	var level: int = ObservabilityLevel.ERROR if error else ObservabilityLevel.INFO
-	var timestamp_msec: int = _now_msec()
+	var engine_ticks_msec: int = _now_msec()
 	var attributes: Dictionary = {
 		"log.error_stream": error,
 		"observability.origin": _ORIGIN,
@@ -199,7 +200,7 @@ func _capture_message(message: String, error: bool) -> void:
 				p_message = processed_message,
 				p_level = level,
 				p_category = &"log",
-				p_timestamp_msec = timestamp_msec,
+				p_timestamp_msec = engine_ticks_msec,
 				p_attributes = attributes,
 			))
 	if (_config.automatic_log_mask & ObservabilityCaptureMask.MESSAGE) != 0:
@@ -207,8 +208,9 @@ func _capture_message(message: String, error: bool) -> void:
 				processed_message,
 				level,
 				&"foundry.engine",
-				timestamp_msec,
+				ObservabilityEvent.UNASSIGNED_TIMESTAMP,
 				attributes,
+				engine_ticks_msec,
 			)
 
 
@@ -260,12 +262,12 @@ func _frame_index() -> int:
 	return Engine.get_process_frames()
 
 
-func _prune_event_timepoints(timestamp_msec: int) -> void:
+func _prune_event_timepoints(engine_ticks_msec: int) -> void:
 	if _config.automatic_event_throttle_window_msec <= 0:
 		_event_timepoints.clear()
 		return
 	while not _event_timepoints.is_empty() \
-			and timestamp_msec - _event_timepoints[0] \
+			and engine_ticks_msec - _event_timepoints[0] \
 				>= _config.automatic_event_throttle_window_msec:
 		_event_timepoints.pop_front()
 
