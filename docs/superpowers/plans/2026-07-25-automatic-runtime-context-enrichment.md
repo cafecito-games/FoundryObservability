@@ -38,7 +38,7 @@
 - Modify: `test_project/tests/observability-sentry.test.fs`
 - Modify: `scripts/test-foundry-script`
 
-- [ ] **Step 1: Add failing resource and collector tests**
+- [x] **Step 1: Add failing resource and collector tests**
 
 Add resource assertions to `scripts/test-foundry-script`:
 
@@ -180,7 +180,7 @@ Runtime-mode cases must assert the exact precedence `headless`, `editor`,
 of `GenericDevice`, empty GPU names, nonpositive dimensions/counts, negative
 capacities, and empty privacy values.
 
-- [ ] **Step 2: Run the red checks**
+- [x] **Step 2: Run the red checks**
 
 Run:
 
@@ -198,7 +198,7 @@ scripts/test-project
 Expected: assertion failures because the shell collectors return empty
 dictionaries.
 
-- [ ] **Step 3: Implement the probe**
+- [x] **Step 3: Implement the probe**
 
 Implement `SentryRuntimeContextProbe` with these production methods:
 
@@ -227,7 +227,7 @@ orientation and GPU device type inside the probe. Return empty strings,
 negative capacities, or empty dictionaries when a singleton value is
 unavailable; do not emit diagnostics.
 
-- [ ] **Step 4: Implement the collector**
+- [x] **Step 4: Implement the collector**
 
 Implement:
 
@@ -252,7 +252,7 @@ before deep-merging only present volatile fields. Filter values through small
 private helpers for nonempty strings, positive numbers, nonnegative
 capacities, valid booleans, and nonempty context dictionaries.
 
-- [ ] **Step 5: Generate UIDs and verify green**
+- [x] **Step 5: Generate UIDs and verify green**
 
 Run:
 
@@ -267,7 +267,7 @@ scripts/test-foundry-uids
 Expected: collector tests pass; strict FoundryScript lint and UID contracts
 pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add addons/FoundryObservabilitySentry/SentryRuntimeContextProbe.fs \
@@ -285,7 +285,7 @@ git commit -m "feat: collect automatic runtime context"
 - Modify: `test_project/tests/observability-sentry.test.fs`
 - Test: `test_project/tests/observability-sentry.test.fs`
 
-- [ ] **Step 1: Add failing provider tests**
+- [x] **Step 1: Add failing provider tests**
 
 Add tests that inject `p_runtime_context_probe` and verify:
 
@@ -317,7 +317,7 @@ name, forces `bridge.configure_result = Error.FAILED`, and verifies the next
 capture still uses the original cached stable context. Add disabled and
 shutdown tests verifying no stale context is captured.
 
-- [ ] **Step 2: Verify red**
+- [x] **Step 2: Verify red**
 
 Run:
 
@@ -328,7 +328,7 @@ scripts/test-project
 Expected: failures because the provider constructor rejects
 `p_runtime_context_probe` or payloads omit `stable_contexts` and `contexts`.
 
-- [ ] **Step 3: Implement provider forwarding**
+- [x] **Step 3: Implement provider forwarding**
 
 Extend the provider with:
 
@@ -350,7 +350,7 @@ shutdown. During ordinary capture, add a nonempty
 `_context_collector.contexts_for_capture(_stable_contexts)` as `contexts`
 without modifying attributes.
 
-- [ ] **Step 4: Verify green and commit**
+- [x] **Step 4: Verify green and commit**
 
 Run:
 
@@ -376,7 +376,7 @@ git commit -m "feat: forward runtime context through Sentry provider"
 - Modify: `addons/FoundryObservabilitySentry/FoundryObservabilitySentry/Tests/FoundryObservabilitySentryTests/SentryEventMapperTests.swift`
 - Modify: `addons/FoundryObservabilitySentry/FoundryObservabilitySentry/Tests/FoundryObservabilitySentryTests/SentryLifecycleCoordinatorTests.swift`
 
-- [ ] **Step 1: Add failing Swift tests**
+- [x] **Step 1: Add failing Swift tests**
 
 Add mapper tests for:
 
@@ -412,7 +412,7 @@ Extend lifecycle tests so two configurations differing only in
 `stableContexts` restart, and initial scope serialization contains both the
 existing `foundry` crash context and the automatic contexts.
 
-- [ ] **Step 2: Verify red**
+- [x] **Step 2: Verify red**
 
 Run:
 
@@ -424,7 +424,7 @@ swift test --package-path \
 Expected: compile failures for missing `foundrySentryContexts`,
 `applySentryContexts`, and `stableContexts`.
 
-- [ ] **Step 3: Implement Swift conversion and lifecycle**
+- [x] **Step 3: Implement Swift conversion and lifecycle**
 
 Add:
 
@@ -450,7 +450,7 @@ let eventID = SentrySDK.capture(event: event) { scope in
 This capture-local scope must be used instead of assigning `Event.context`,
 because Cocoa scope enrichment overwrites raw event context.
 
-- [ ] **Step 4: Verify green and commit**
+- [x] **Step 4: Verify green and commit**
 
 Run:
 
@@ -476,7 +476,7 @@ git commit -m "feat: attach runtime context on Apple"
 - Modify: `addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/src/test/java/games/cafecito/android/foundryobservabilitysentry/SentryEventMapperTest.java`
 - Modify: `addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry/src/test/java/games/cafecito/android/foundryobservabilitysentry/SentryLifecycleCoordinatorTest.java`
 
-- [ ] **Step 1: Add failing Java tests**
+- [x] **Step 1: Add failing Java tests**
 
 Add mapper tests:
 
@@ -498,7 +498,7 @@ Extend lifecycle tests so `stableContexts` participates in equality and the
 existing `foundryCrashContext` is installed beside the automatic contexts on
 scope.
 
-- [ ] **Step 2: Verify red**
+- [x] **Step 2: Verify red**
 
 Run:
 
@@ -511,7 +511,7 @@ ANDROID_HOME=/Users/christian/Library/Android/sdk \
 Expected: compile failures for missing `contexts`, `applyContexts`, and the
 `stableContexts` configuration member.
 
-- [ ] **Step 3: Implement Java conversion and lifecycle**
+- [x] **Step 3: Implement Java conversion and lifecycle**
 
 Add a bounded `contexts(Object)` outer-map sanitizer that reuses the existing
 cycle-safe variable sanitizer. Add immutable `stableContexts` to lifecycle
@@ -535,7 +535,7 @@ return eventIdString(Sentry.captureEvent(
     scope -> AndroidSentrySdkDriver.applyContexts(scope, contexts)));
 ```
 
-- [ ] **Step 4: Verify green and commit**
+- [x] **Step 4: Verify green and commit**
 
 Run:
 
@@ -560,7 +560,7 @@ git commit -m "feat: attach runtime context on Android"
 - Modify: `docs/superpowers/specs/2026-07-25-automatic-runtime-context-enrichment-design.md`
 - Modify: `docs/superpowers/plans/2026-07-25-automatic-runtime-context-enrichment.md`
 
-- [ ] **Step 1: Add failing package/documentation assertions**
+- [x] **Step 1: Add failing package/documentation assertions**
 
 Before changing documentation, add:
 
@@ -584,7 +584,7 @@ scripts/test-package
 
 Expected: failure because the API documentation section is missing.
 
-- [ ] **Step 2: Document the behavior**
+- [x] **Step 2: Document the behavior**
 
 Add an `Automatic runtime context` subsection to `docs/API.md` containing:
 
@@ -600,7 +600,7 @@ Add an `Automatic runtime context` subsection to `docs/API.md` containing:
 
 Keep the corrected design language explaining capture-local scope callbacks.
 
-- [ ] **Step 3: Verify package and focused suites**
+- [x] **Step 3: Verify package and focused suites**
 
 Run:
 
@@ -618,7 +618,7 @@ ANDROID_HOME=/Users/christian/Library/Android/sdk \
 
 Expected: every command exits 0.
 
-- [ ] **Step 4: Run the complete validation gate**
+- [x] **Step 4: Run the complete validation gate**
 
 Run:
 
@@ -629,7 +629,7 @@ ANDROID_HOME=/Users/christian/Library/Android/sdk task test
 Expected: lint, package, CI contracts, Foundry tests, Swift tests, Android
 tests, and platform build contracts all exit 0.
 
-- [ ] **Step 5: Review requirements and commit**
+- [x] **Step 5: Review requirements and commit**
 
 Compare the implementation with every acceptance criterion in the design,
 inspect `git diff --check`, and confirm no provider-neutral API file changed.
