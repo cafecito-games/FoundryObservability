@@ -4,14 +4,14 @@ namespace foundry.observability
 class_name ObservabilityEvent
 extends RefCounted
 
-var _kind: StringName = &"message"
-var _level: int = ObservabilityLevel.INFO
-var _message: String = ""
-var _source: StringName = &""
-var _timestamp_msec: int = -1
-var _attributes: Dictionary = {}
-var _exception: ObservabilityException? = null
-var _engine_ticks_msec: int = -1
+final var _kind: StringName
+final var _level: int
+final var _message: String
+final var _source: StringName
+final var _timestamp_msec: int
+final var _attributes: Dictionary
+final var _exception: ObservabilityException?
+final var _engine_ticks_msec: int
 
 
 ## Creates an event with kind, severity, source, timestamp, copied attributes, and optional exception data.

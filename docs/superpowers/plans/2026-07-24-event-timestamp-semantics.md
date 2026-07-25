@@ -15,6 +15,7 @@
 **Files:**
 - Modify: `test_project/tests/observability-core.test.fs`
 - Modify: `addons/FoundryObservability/ObservabilityEvent.fs`
+- Modify: `scripts/test-foundry-script`
 
 - [ ] **Step 1: Write the failing event value test**
 
@@ -51,8 +52,14 @@ Expected: FAIL because `p_engine_ticks_msec` and `engine_ticks_msec()` do not ex
 Change `ObservabilityEvent.fs` to:
 
 ```foundryscript
-var _timestamp_msec: int = -1
-var _engine_ticks_msec: int = -1
+final var _kind: StringName
+final var _level: int
+final var _message: String
+final var _source: StringName
+final var _timestamp_msec: int
+final var _attributes: Dictionary
+final var _exception: ObservabilityException?
+final var _engine_ticks_msec: int
 ```
 
 Keep the existing argument order, change the timestamp default, and append the new argument:
@@ -91,16 +98,30 @@ func engine_ticks_msec() -> int:
 	return _engine_ticks_msec
 ```
 
+Add a source-contract guard to `scripts/test-foundry-script`:
+
+```bash
+for field in _kind _level _message _source _timestamp_msec _attributes _exception _engine_ticks_msec; do
+	rg -q "^final var ${field}:" "$addon/ObservabilityEvent.fs" \
+		|| fail "ObservabilityEvent field must be immutable: ${field}"
+done
+```
+
 - [ ] **Step 4: Run the focused suite and verify GREEN**
 
-Run `scripts/test-project`.
+Run:
+
+```bash
+scripts/test-foundry-script
+scripts/test-project
+```
 
 Expected: all FoundryScript tests pass.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add addons/FoundryObservability/ObservabilityEvent.fs test_project/tests/observability-core.test.fs
+git add addons/FoundryObservability/ObservabilityEvent.fs test_project/tests/observability-core.test.fs scripts/test-foundry-script
 git commit -m "feat: separate event wall time and engine ticks"
 ```
 

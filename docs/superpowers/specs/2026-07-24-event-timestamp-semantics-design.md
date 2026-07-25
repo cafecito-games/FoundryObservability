@@ -69,6 +69,10 @@ The argument is appended after the existing arguments so positional callers
 keep their current parameter order. A negative engine tick means the original
 monotonic timestamp is unavailable.
 
+All `ObservabilityEvent` backing fields are `final var` values assigned exactly
+once by the constructor. The accessor-only event surface therefore has
+compile-time-enforced immutability in addition to defensive dictionary copies.
+
 ### `capture_log`
 
 Keep the existing `timestamp_msec` parameter name and position, but define it as
