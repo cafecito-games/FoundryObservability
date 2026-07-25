@@ -121,7 +121,7 @@ func test_runtime_context_collector_builds_stable_context_without_pii() -> void:
 
 	Expect.that(stable["foundry_app"]["name"]).to_equal("Oakhaven")
 	Expect.that(stable["foundry_app"]["version"]).to_equal("1.2.3")
-	Expect.that(stable["godot_engine"]["runtime_mode"]).to_equal("debug_export")
+	Expect.that(stable["foundry_engine"]["runtime_mode"]).to_equal("debug_export")
 	Expect.that(stable["foundry_device"]["type"]).to_equal("desktop")
 	Expect.that(stable["foundry_device"]["memory_size"]).to_equal(17179869184)
 	Expect.that(stable["display"]["primary_width_pixels"]).to_equal(3024)
@@ -187,22 +187,22 @@ func test_runtime_context_collector_classifies_runtime_modes_by_precedence() -> 
 	probe.engine_headless = true
 	probe.engine_editor = true
 	Expect.that(
-			collector.stable_contexts("", false)["godot_engine"]["runtime_mode"],
+			collector.stable_contexts("", false)["foundry_engine"]["runtime_mode"],
 		).to_equal("headless")
 
 	probe.engine_headless = false
 	Expect.that(
-			collector.stable_contexts("", false)["godot_engine"]["runtime_mode"],
+			collector.stable_contexts("", false)["foundry_engine"]["runtime_mode"],
 		).to_equal("editor")
 
 	probe.engine_editor = false
 	Expect.that(
-			collector.stable_contexts("", false)["godot_engine"]["runtime_mode"],
+			collector.stable_contexts("", false)["foundry_engine"]["runtime_mode"],
 		).to_equal("debug_export")
 
 	probe.engine_debug_build = false
 	Expect.that(
-			collector.stable_contexts("", false)["godot_engine"]["runtime_mode"],
+			collector.stable_contexts("", false)["foundry_engine"]["runtime_mode"],
 		).to_equal("release_export")
 
 

@@ -59,13 +59,13 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.configure(
             owner: "first",
             configuration: configuration(
-                stableContexts: ["godot_engine": ["version": "4.5"]]
+                stableContexts: ["foundry_engine": ["version": "4.5"]]
             )
         ))
         XCTAssertTrue(coordinator.configure(
             owner: "second",
             configuration: configuration(
-                stableContexts: ["godot_engine": ["version": "4.6"]]
+                stableContexts: ["foundry_engine": ["version": "4.6"]]
             )
         ))
 
@@ -133,7 +133,7 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
             dist: "macos",
             globalAttributes: ["build": 42],
             stableContexts: [
-                "godot_engine": ["version": "4.5", "debug_build": true],
+                "foundry_engine": ["version": "4.5", "debug_build": true],
             ]
         )
 
@@ -155,7 +155,7 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
             ["global_attributes": ["build": 42]] as NSDictionary
         )
         XCTAssertEqual(
-            contexts?["godot_engine"] as? NSDictionary,
+            contexts?["foundry_engine"] as? NSDictionary,
             ["version": "4.5", "debug_build": true] as NSDictionary
         )
     }

@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Enrich macOS, iOS, and Android Sentry events with safe stable and capture-time Godot runtime context without changing the provider-neutral API.
+**Goal:** Enrich macOS, iOS, and Android Sentry events with safe stable and capture-time runtime context without changing the provider-neutral API.
 
-**Architecture:** A FoundryScript probe reads Godot singletons and a collector normalizes stable and volatile custom contexts. `SentryObservabilityProvider` forwards stable context during configuration and a merged snapshot during capture; Swift and Java install stable context globally for crashes and use capture-local scope callbacks for refreshed ordinary-event context.
+**Architecture:** A FoundryScript probe reads runtime services and a collector normalizes stable and volatile custom contexts. `SentryObservabilityProvider` forwards stable context during configuration and a merged snapshot during capture; Swift and Java install stable context globally for crashes and use capture-local scope callbacks for refreshed ordinary-event context.
 
 **Tech Stack:** FoundryScript, Foundry testlib, Swift 6/XCTest, Sentry Cocoa 9.23.0, Java 17/JUnit, Sentry Android 8.50.1, Bash contract tests, Task.
 
@@ -13,7 +13,7 @@
 ## File structure
 
 - Create `addons/FoundryObservabilitySentry/SentryRuntimeContextProbe.fs`:
-  production-only adapter around Godot singletons.
+  production-only adapter around runtime services.
 - Create `addons/FoundryObservabilitySentry/SentryRuntimeContextCollector.fs`:
   provider-private normalization, privacy filtering, runtime classification,
   and stable/volatile merge behavior.
@@ -144,7 +144,7 @@ assert:
 ```gdscript
 var stable := collector.stable_contexts("production", false)
 Expect.that(stable["foundry_app"]["name"]).to_equal("Oakhaven")
-Expect.that(stable["godot_engine"]["runtime_mode"]).to_equal("debug_export")
+Expect.that(stable["foundry_engine"]["runtime_mode"]).to_equal("debug_export")
 Expect.that(stable["foundry_device"]["memory_size"]).to_equal(17179869184)
 Expect.that(stable["display"]["primary_width_pixels"]).to_equal(3024)
 Expect.that(stable["gpu"]["name"]).to_equal("Apple M4")
@@ -245,7 +245,7 @@ func volatile_contexts() -> Dictionary
 func contexts_for_capture(stable_contexts: Dictionary) -> Dictionary
 ```
 
-Build `foundry_app`, `godot_engine`, `foundry_device`, `display`, `gpu`, and
+Build `foundry_app`, `foundry_engine`, `foundry_device`, `display`, `gpu`, and
 `foundry_runtime` exactly as specified in the design. Skip
 `_probe.memory_values()` when `platform_name() == "iOS"`. Copy stable input
 before deep-merging only present volatile fields. Filter values through small
@@ -382,7 +382,7 @@ Add mapper tests for:
 
 ```swift
 let contexts = foundrySentryContexts([
-    "godot_engine": [
+    "foundry_engine": [
         "version": "4.5",
         "debug_build": true,
         "nested": ["kept": 1, "infinite": Double.infinity],
@@ -390,9 +390,9 @@ let contexts = foundrySentryContexts([
     ],
     "empty": [:],
 ])
-XCTAssertEqual(contexts["godot_engine"]?["version"] as? String, "4.5")
-XCTAssertNil((contexts["godot_engine"]?["nested"] as? [String: Any])?["infinite"])
-XCTAssertNil(contexts["godot_engine"]?["unsupported"])
+XCTAssertEqual(contexts["foundry_engine"]?["version"] as? String, "4.5")
+XCTAssertNil((contexts["foundry_engine"]?["nested"] as? [String: Any])?["infinite"])
+XCTAssertNil(contexts["foundry_engine"]?["unsupported"])
 XCTAssertNil(contexts["empty"])
 ```
 
@@ -403,7 +403,7 @@ let scope = Scope()
 applySentryContexts(contexts, to: scope)
 let serialized = scope.serialize()["context"] as? [String: Any]
 XCTAssertEqual(
-    (serialized?["godot_engine"] as? [String: Any])?["version"] as? String,
+    (serialized?["foundry_engine"] as? [String: Any])?["version"] as? String,
     "4.5"
 )
 ```
@@ -482,9 +482,9 @@ Add mapper tests:
 
 ```java
 Map<String, Map<String, Object>> contexts = SentryEventMapper.contexts(Map.of(
-    "godot_engine", Map.of("version", "4.5", "debug_build", true),
+    "foundry_engine", Map.of("version", "4.5", "debug_build", true),
     "empty", Map.of()));
-assertEquals("4.5", contexts.get("godot_engine").get("version"));
+assertEquals("4.5", contexts.get("foundry_engine").get("version"));
 assertFalse(contexts.containsKey("empty"));
 ```
 

@@ -1,6 +1,6 @@
 namespace foundry.observability.sentry
 
-## Reads raw Godot runtime values for automatic Sentry context collection.
+## Reads raw runtime values for automatic Sentry context collection.
 class_name SentryRuntimeContextProbe
 extends RefCounted
 

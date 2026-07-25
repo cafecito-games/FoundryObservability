@@ -113,6 +113,8 @@ done
 if rg -n --glob '*.fs' 'GDScript|GDscript|Godot|\.gdextension|\.godot' "$addon"; then
 	fail "addon sources contain legacy engine names"
 fi
+rg -Fq '"foundry_engine"' "$sentry_addon/SentryRuntimeContextCollector.fs" \
+	|| fail "Sentry runtime context must use Foundry engine naming"
 
 materialize_sentry_addon() {
 	destination=$1

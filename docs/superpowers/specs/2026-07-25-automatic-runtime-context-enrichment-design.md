@@ -3,21 +3,18 @@
 ## Summary
 
 FoundryObservability will automatically enrich Sentry events with stable
-application, Godot engine, device, display, graphics, and runtime context on
+application, engine, device, display, graphics, and runtime context on
 macOS, iOS, and Android. Stable values will be collected when an enabled
 Sentry provider is configured and attached to the native Sentry scope so they
 are available to ordinary events and native crash reports. Volatile values
 will be refreshed immediately before ordinary event capture.
 
-The implementation will follow Sentry Godot's split between initialization
-context and capture-time context while preserving the existing
-provider-neutral Foundry Observability API. Collection will happen in
-FoundryScript, where the same Godot APIs and field semantics are available on
-all target platforms. The Swift and Java bridges will only sanitize and attach
-the resulting dictionaries to native Sentry scopes.
-
-Reference:
-[Sentry Godot context collection](https://github.com/getsentry/sentry-godot/blob/main/src/sentry/contexts.cpp).
+The implementation separates initialization context from capture-time context
+while preserving the existing provider-neutral Foundry Observability API.
+Collection will happen in FoundryScript, where the same runtime APIs and field
+semantics are available on all target platforms. The Swift and Java bridges
+will only sanitize and attach the resulting dictionaries to native Sentry
+scopes.
 
 ## Goals
 
@@ -28,7 +25,7 @@ Reference:
   GPU, renderer, and runtime-mode information.
 - Refresh free memory, usable memory, free storage, and display orientation
   close to ordinary event capture.
-- Avoid Godot memory-information APIs on iOS.
+- Avoid runtime memory-information APIs on iOS.
 - Omit unavailable, empty, generic, or invalid values rather than publishing
   misleading placeholders.
 - Keep personally identifying or stable identifying values disabled by
@@ -49,7 +46,7 @@ Reference:
   Cocoa and Android SDKs.
 - Collect command-line arguments, IP addresses, granted permissions, user
   paths, hostnames, or environment variables.
-- Refresh volatile Godot context while handling a native crash. Cocoa and
+- Refresh volatile runtime context while handling a native crash. Cocoa and
   Android crash events continue to use the stable scope context and the
   platform SDK's crash-safe device and OS collection.
 - Add performance tracing, frame profiling, or continuous telemetry.
@@ -93,8 +90,8 @@ and `os` names, so native default context is not replaced.
 
 ### Runtime context probe
 
-Add a private FoundryScript probe in the Sentry addon that wraps the Godot
-singletons used for collection:
+Add a private FoundryScript probe in the Sentry addon that wraps the runtime
+services used for collection:
 
 - `ProjectSettings`
 - `Engine`
@@ -170,7 +167,7 @@ Collected at configuration:
 | `start_time` | Unix system time minus monotonic engine uptime, formatted as UTC | Unavailable or invalid |
 | `architecture` | Engine architecture name | Empty |
 
-### `godot_engine`
+### `foundry_engine`
 
 Collected at configuration:
 
@@ -216,7 +213,7 @@ When `send_default_pii` is true, the collector may also include:
 
 | Field | Source | Omission rule |
 | --- | --- | --- |
-| `unique_identifier` | Godot OS unique identifier | Empty |
+| `unique_identifier` | Operating-system unique identifier | Empty |
 | `locale` | OS locale | Empty |
 | `timezone` | System time-zone name | Empty |
 
@@ -240,7 +237,7 @@ Collected at configuration:
 
 `primary_orientation` is refreshed before ordinary event capture. When the
 display server is headless, unsupported physical display values are omitted;
-the `godot_engine.headless` field remains the authoritative mode signal.
+the `foundry_engine.headless` field remains the authoritative mode signal.
 
 ### `gpu`
 
@@ -265,7 +262,7 @@ Collected at configuration:
 | Field | Source | Omission rule |
 | --- | --- | --- |
 | `environment` | Explicit `ObservabilityConfig.environment` | Empty |
-| `mode` | Same classifier as `godot_engine.runtime_mode` | Collection unavailable |
+| `mode` | Same classifier as `foundry_engine.runtime_mode` | Collection unavailable |
 | `sandboxed` | OS sandbox flag | Collection unavailable |
 | `userfs_persistent` | OS user-filesystem flag | Collection unavailable |
 
@@ -364,7 +361,7 @@ avoiding stale memory, storage, or orientation data.
   on orderly shutdown.
 - Free memory, usable memory, free storage, and orientation are refreshed near
   ordinary event capture.
-- iOS never calls the unsafe Godot memory-information API.
+- iOS never calls the unsafe runtime memory-information API.
 - Unsupported or invalid fields are absent rather than populated with
   placeholders.
 - Automatic context does not replace native app/device/OS context or modify

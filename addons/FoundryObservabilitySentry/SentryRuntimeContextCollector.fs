@@ -1,6 +1,6 @@
 namespace foundry.observability.sentry
 
-## Normalizes stable and capture-time Godot values into Sentry contexts.
+## Normalizes stable and capture-time runtime values into Sentry contexts.
 class_name SentryRuntimeContextCollector
 extends RefCounted
 
@@ -44,7 +44,7 @@ func stable_contexts(environment: String, send_default_pii: bool) -> Dictionary:
 
 	var contexts: Dictionary = {}
 	_add_nonempty_context(contexts, "foundry_app", app)
-	_add_nonempty_context(contexts, "godot_engine", engine)
+	_add_nonempty_context(contexts, "foundry_engine", engine)
 	_add_nonempty_context(contexts, "foundry_device", device)
 	_add_nonempty_context(contexts, "display", display)
 	_add_nonempty_context(contexts, "gpu", gpu)

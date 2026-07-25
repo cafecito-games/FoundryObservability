@@ -158,7 +158,7 @@ final class SentryEventMapperTests: XCTestCase {
         let cycle = NSMutableDictionary()
         cycle["self"] = cycle
         let contexts = foundrySentryContexts([
-            "godot_engine": [
+            "foundry_engine": [
                 "version": "4.5",
                 "debug_build": true,
                 "nested": [
@@ -172,20 +172,20 @@ final class SentryEventMapperTests: XCTestCase {
             "empty": [:],
         ])
 
-        XCTAssertEqual(contexts["godot_engine"]?["version"] as? String, "4.5")
-        XCTAssertEqual(contexts["godot_engine"]?["debug_build"] as? Bool, true)
-        let nested = contexts["godot_engine"]?["nested"] as? [String: Any]
+        XCTAssertEqual(contexts["foundry_engine"]?["version"] as? String, "4.5")
+        XCTAssertEqual(contexts["foundry_engine"]?["debug_build"] as? Bool, true)
+        let nested = contexts["foundry_engine"]?["nested"] as? [String: Any]
         XCTAssertEqual(nested?["kept"] as? Int, 1)
         XCTAssertNil(nested?["infinite"])
-        XCTAssertNil(contexts["godot_engine"]?["unsupported"])
-        XCTAssertNil((contexts["godot_engine"]?["cycle"] as? [String: Any])?["self"])
+        XCTAssertNil(contexts["foundry_engine"]?["unsupported"])
+        XCTAssertNil((contexts["foundry_engine"]?["cycle"] as? [String: Any])?["self"])
         XCTAssertNil(contexts[""])
         XCTAssertNil(contexts["empty"])
     }
 
     func testAppliesRuntimeContextsToScope() {
         let contexts = foundrySentryContexts([
-            "godot_engine": ["version": "4.5"],
+            "foundry_engine": ["version": "4.5"],
         ])
         let scope = Scope()
 
@@ -193,7 +193,7 @@ final class SentryEventMapperTests: XCTestCase {
 
         let serialized = scope.serialize()["context"] as? [String: Any]
         XCTAssertEqual(
-            (serialized?["godot_engine"] as? [String: Any])?["version"] as? String,
+            (serialized?["foundry_engine"] as? [String: Any])?["version"] as? String,
             "4.5"
         )
     }

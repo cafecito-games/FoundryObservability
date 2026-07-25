@@ -69,10 +69,10 @@ public class SentryLifecycleCoordinatorTest {
 
     assertTrue(coordinator.configure(
         "first",
-        configuration("1.0.0", Map.of("godot_engine", Map.of("version", "4.5")))));
+        configuration("1.0.0", Map.of("foundry_engine", Map.of("version", "4.5")))));
     assertTrue(coordinator.configure(
         "second",
-        configuration("1.0.0", Map.of("godot_engine", Map.of("version", "4.6")))));
+        configuration("1.0.0", Map.of("foundry_engine", Map.of("version", "4.6")))));
 
     assertEquals(
         List.of("start:1.0.0", "close", "start:1.0.0"),
@@ -86,7 +86,7 @@ public class SentryLifecycleCoordinatorTest {
     Map<String, Object> engine = new HashMap<>();
     engine.put("version", "4.5");
     Map<String, Object> stableContexts = new HashMap<>();
-    stableContexts.put("godot_engine", engine);
+    stableContexts.put("foundry_engine", engine);
 
     SentryLifecycleConfiguration configuration =
         configuration("1.0.0", stableContexts);
@@ -94,7 +94,7 @@ public class SentryLifecycleCoordinatorTest {
     stableContexts.put("display", Map.of("screen_count", 2));
 
     Map<String, Object> capturedEngine =
-        (Map<String, Object>) configuration.stableContexts.get("godot_engine");
+        (Map<String, Object>) configuration.stableContexts.get("foundry_engine");
     assertEquals("4.5", capturedEngine.get("version"));
     assertFalse(configuration.stableContexts.containsKey("display"));
     try {
@@ -163,7 +163,7 @@ public class SentryLifecycleCoordinatorTest {
         "game@1.2.3",
         "android",
         Map.of("build", 42),
-        Map.of("godot_engine", Map.of("version", "4.5")),
+        Map.of("foundry_engine", Map.of("version", "4.5")),
         Map.of(),
         true,
         true,
@@ -196,7 +196,7 @@ public class SentryLifecycleCoordinatorTest {
         scope.getContexts().get("foundry"));
     assertEquals(
         Map.of("version", "4.5"),
-        scope.getContexts().get("godot_engine"));
+        scope.getContexts().get("foundry_engine"));
   }
 
   private static SentryLifecycleConfiguration configuration(String release) {

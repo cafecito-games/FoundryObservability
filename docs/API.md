@@ -1238,7 +1238,7 @@ against a non-production Sentry project and disposable test data.
 ## Automatic runtime context
 
 Enabled `SentryObservabilityProvider` configuration automatically enriches
-macOS, iOS, and Android Sentry data with provider-private Godot runtime
+macOS, iOS, and Android Sentry data with provider-private runtime
 contexts. This does not add fields or methods to the provider-neutral API and
 does not modify caller-supplied event attributes or global attributes.
 
@@ -1247,7 +1247,7 @@ The addon uses six custom context names:
 | Context | Field families |
 | --- | --- |
 | `foundry_app` | Project name and version, process start time, and architecture |
-| `godot_engine` | Engine version and commit, architecture, runtime mode, and editor/debug/headless flags |
+| `foundry_engine` | Engine version and commit, architecture, runtime mode, and editor/debug/headless flags |
 | `foundry_device` | Model and device type, architecture, processor, memory, storage, and opt-in identifying values |
 | `display` | Display server, screen/touch availability, primary dimensions, DPI, refresh rate, and orientation |
 | `gpu` | Adapter and vendor, API and device type, driver, and rendering method |
@@ -1267,7 +1267,7 @@ Empty strings, `GenericDevice`, nonpositive dimensions and counts, negative
 capacities, missing platform values, unsupported objects, nonfinite numbers,
 invalid keys, cycles, and empty contexts are omitted rather than guessed.
 
-Godot's memory-information API is not called on iOS. Consequently
+The runtime memory-information API is not called on iOS. Consequently
 `memory_size`, `free_memory`, and `usable_memory` are omitted there; supported
 storage, display, GPU, and runtime values continue to be collected. The addon
 uses only the safe cross-platform engine APIs exposed for each target.
@@ -1283,7 +1283,7 @@ These custom names do not replace Sentry's native `app`, `device`, or
 operating-system contexts. The existing `foundry.global_attributes` crash
 context also remains separate. Native fatal reports can include the stable
 configuration-time snapshot, but the addon deliberately does not attempt to
-query volatile Godot values while recovering a previous-launch crash. Such a
+query volatile runtime values while recovering a previous-launch crash. Such a
 report therefore has no capture-time refresh beyond the stable snapshot that
 was installed before the crash.
 
