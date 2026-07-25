@@ -164,6 +164,22 @@ rg -q 'captureMetric' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose custom metric capture"
 rg -q 'enableMetrics' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must configure Sentry Metrics"
+diagnostics_configurator="$swift_sources/SentryDiagnosticsConfigurator.swift"
+[[ -f "$diagnostics_configurator" ]] \
+	|| fail "Apple diagnostics configurator is missing"
+rg -q '^[[:space:]]*options\.enableAppHangTracking[[:space:]]*=[[:space:]]*enabled[[:space:]]*$' "$diagnostics_configurator" \
+	|| fail "Apple diagnostics must actively assign native app-hang tracking"
+rg -q '^[[:space:]]*options\.appHangTimeoutInterval[[:space:]]*=[[:space:]]*Double\(timeoutMsec\)[[:space:]]*/[[:space:]]*1000\.0[[:space:]]*$' "$diagnostics_configurator" \
+	|| fail "Apple diagnostics must actively assign the native app-hang timeout"
+bridge_source="$swift_sources/FoundryObservabilitySentry.swift"
+apply_line=$(awk '/^[[:space:]]*applyAppleHangDiagnostics\(from: values, to: options\)[[:space:]]*$/ { print NR; exit }' "$bridge_source")
+start_line=$(awk '/^[[:space:]]*SentrySDK\.start\(options: options\)[[:space:]]*$/ { print NR; exit }' "$bridge_source")
+[[ -n "$apply_line" ]] \
+	|| fail "Apple bridge must actively apply mobile diagnostics"
+[[ -n "$start_line" ]] \
+	|| fail "Apple bridge must actively start Sentry"
+(( apply_line < start_line )) \
+	|| fail "Apple bridge must apply mobile diagnostics before Sentry startup"
 for metric in count gauge distribution; do
 	rg -q "SentrySDK\\.metrics\\.${metric}" "$swift_sources/FoundryObservabilitySentry.swift" \
 		|| fail "bridge source is missing the ${metric} mapping"

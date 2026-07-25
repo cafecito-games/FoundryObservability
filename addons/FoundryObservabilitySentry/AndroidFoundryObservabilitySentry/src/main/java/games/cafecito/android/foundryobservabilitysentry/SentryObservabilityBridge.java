@@ -13,6 +13,8 @@ import io.sentry.logger.SentryLogParameters;
 import io.sentry.metrics.SentryMetricsParameters;
 import io.sentry.protocol.Feedback;
 import io.sentry.protocol.SentryId;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.Collections;
 import java.util.Map;
 import java.util.UUID;
@@ -75,6 +77,7 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
             options.setSendDefaultPii(booleanValue(providerOptions.get("send_default_pii")));
             options.getLogs().setEnabled(logsEnabled);
             options.getMetrics().setEnabled(metricsEnabled);
+            applyAndroidAnrDiagnostics(options, payload);
             options.setDebug(booleanValue(providerOptions.get("debug")));
             setIfNotEmpty(options::setEnvironment, payload.get("environment"));
             setIfNotEmpty(options::setRelease, payload.get("release"));
@@ -232,6 +235,29 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     metricsEnabled = false;
   }
 
+  static void applyAndroidAnrDiagnostics(
+      SentryAndroidOptions options,
+      Map<?, ?> payload) {
+    if (payload.containsKey("android_anr_detection_enabled")) {
+      Object anrDetectionEnabled = payload.get("android_anr_detection_enabled");
+      if (anrDetectionEnabled instanceof Boolean) {
+        options.setAnrEnabled((Boolean) anrDetectionEnabled);
+      }
+    }
+    if (payload.containsKey("android_anr_timeout_msec")) {
+      Long anrTimeoutMsec = exactDiagnosticLong(payload.get("android_anr_timeout_msec"));
+      if (anrTimeoutMsec != null && anrTimeoutMsec >= 1000L) {
+        options.setAnrTimeoutIntervalMillis(anrTimeoutMsec);
+      }
+    }
+    if (payload.containsKey("android_anr_attach_thread_dump")) {
+      Object attachAnrThreadDump = payload.get("android_anr_attach_thread_dump");
+      if (attachAnrThreadDump instanceof Boolean) {
+        options.setAttachAnrThreadDump((Boolean) attachAnrThreadDump);
+      }
+    }
+  }
+
   static String eventIdString(SentryId eventId) {
     return eventId == null || SentryId.EMPTY_ID.equals(eventId) ? "" : eventId.toString();
   }
@@ -265,6 +291,32 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       }
     }
     return fallback;
+  }
+
+  private static Long exactDiagnosticLong(Object value) {
+    try {
+      if (value instanceof Byte
+          || value instanceof Short
+          || value instanceof Integer
+          || value instanceof Long) {
+        return ((Number) value).longValue();
+      }
+      if (value instanceof BigInteger) {
+        return new BigDecimal((BigInteger) value).longValueExact();
+      }
+      if (value instanceof BigDecimal) {
+        return ((BigDecimal) value).longValueExact();
+      }
+      if (value instanceof Float || value instanceof Double) {
+        double doubleValue = ((Number) value).doubleValue();
+        return Double.isFinite(doubleValue)
+            ? BigDecimal.valueOf(doubleValue).longValueExact()
+            : null;
+      }
+    } catch (ArithmeticException ignored) {
+      return null;
+    }
+    return null;
   }
 
   private static long longValue(Object value, long fallback) {

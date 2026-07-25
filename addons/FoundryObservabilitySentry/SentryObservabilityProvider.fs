@@ -64,6 +64,13 @@ func configure(config: ObservabilityConfig) -> int:
 			"log_minimum_level": config.log_minimum_level,
 			"log_rate_limit_per_second": config.log_rate_limit_per_second,
 			"metrics_enabled": config.metrics_enabled,
+			"application_hang_detection_enabled":
+					config.application_hang_detection_enabled,
+			"application_hang_timeout_msec":
+					maxi(1000, config.application_hang_timeout_msec),
+			"android_anr_detection_enabled": config.android_anr_detection_enabled,
+			"android_anr_timeout_msec": maxi(1000, config.android_anr_timeout_msec),
+			"android_anr_attach_thread_dump": config.android_anr_attach_thread_dump,
 		}
 	var result: Variant = bridge.call("configure", payload)
 	if not (result is int):

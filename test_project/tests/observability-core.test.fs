@@ -777,6 +777,79 @@ func test_automatic_capture_masks_and_config_defaults() -> void:
 	Expect.that(config.automatic_event_throttle_window_msec).to_equal(10000)
 
 
+func test_mobile_diagnostic_config_defaults_match_native_integrations() -> void:
+	var config := ObservabilityConfig.new()
+
+	Expect.that(config.application_hang_detection_enabled).to_be_true()
+	Expect.that(config.application_hang_timeout_msec).to_equal(5000)
+	Expect.that(config.android_anr_detection_enabled).to_be_true()
+	Expect.that(config.android_anr_timeout_msec).to_equal(5000)
+	Expect.that(config.android_anr_attach_thread_dump).to_be_false()
+
+
+func test_mobile_diagnostic_timeouts_have_a_safe_minimum() -> void:
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(["FoundryObservability: "]),
+			p_application_hang_timeout_msec = 25,
+			p_android_anr_timeout_msec = -1,
+		)
+
+	Expect.that(config.application_hang_timeout_msec).to_equal(1000)
+	Expect.that(config.android_anr_timeout_msec).to_equal(1000)
+
+
+func test_config_legacy_positional_prefix_argument_is_preserved() -> void:
+	var prefixes := PackedStringArray(["Legacy: "])
+	var config := ObservabilityConfig.new(
+			true,
+			"production",
+			"1.2.3",
+			"arm64",
+			{},
+			{},
+			true,
+			ObservabilityLevel.TRACE,
+			0,
+			true,
+			1.0,
+			Callable(),
+			true,
+			ObservabilityCaptureMask.DEFAULT_EVENTS,
+			ObservabilityCaptureMask.DEFAULT_BREADCRUMBS,
+			ObservabilityCaptureMask.NONE,
+			5,
+			1000,
+			20,
+			10000,
+			true,
+			false,
+			prefixes,
+		)
+
+	Expect.that(config.automatic_message_filter_prefixes()).to_equal(prefixes)
+
+
+func test_mobile_diagnostic_config_preserves_explicit_values() -> void:
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(["FoundryObservability: "]),
+			p_application_hang_detection_enabled = false,
+			p_application_hang_timeout_msec = 3200,
+			p_android_anr_detection_enabled = false,
+			p_android_anr_timeout_msec = 6400,
+			p_android_anr_attach_thread_dump = true,
+		)
+
+	Expect.that(config.application_hang_detection_enabled).to_be_false()
+	Expect.that(config.application_hang_timeout_msec).to_equal(3200)
+	Expect.that(config.android_anr_detection_enabled).to_be_false()
+	Expect.that(config.android_anr_timeout_msec).to_equal(6400)
+	Expect.that(config.android_anr_attach_thread_dump).to_be_true()
+
+
 func test_automatic_capture_config_and_breadcrumb_copy_inputs() -> void:
 	var prefixes := PackedStringArray(["Internal: "])
 	var attributes := {"file": "res://player.fs"}

@@ -8,7 +8,13 @@ import static org.junit.Assert.assertTrue;
 import games.cafecito.foundry.Dictionary;
 import games.cafecito.foundry.Foundry;
 import io.sentry.Sentry;
+import io.sentry.android.core.SentryAndroidOptions;
 import io.sentry.protocol.SentryId;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import org.junit.After;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -178,6 +184,100 @@ public class SentryObservabilityBridgeTest {
 
     assertEquals("", bridge.captureFeedback(feedback));
     bridge.shutdown();
+  }
+
+  @Test
+  public void appliesAndroidAnrOptionsFromPayload() {
+    SentryAndroidOptions options = new SentryAndroidOptions();
+
+    SentryObservabilityBridge.applyAndroidAnrDiagnostics(
+        options,
+        Map.of(
+            "android_anr_detection_enabled", false,
+            "android_anr_timeout_msec", 6400L,
+            "android_anr_attach_thread_dump", true));
+
+    assertFalse(options.isAnrEnabled());
+    assertEquals(6400L, options.getAnrTimeoutIntervalMillis());
+    assertTrue(options.isAttachAnrThreadDump());
+  }
+
+  @Test
+  public void missingAndroidAnrKeysPreserveNativeDefaults() {
+    SentryAndroidOptions options = new SentryAndroidOptions();
+    options.setAnrEnabled(false);
+    options.setAnrTimeoutIntervalMillis(7300L);
+    options.setAttachAnrThreadDump(true);
+
+    SentryObservabilityBridge.applyAndroidAnrDiagnostics(
+        options,
+        Collections.emptyMap());
+
+    assertFalse(options.isAnrEnabled());
+    assertEquals(7300L, options.getAnrTimeoutIntervalMillis());
+    assertTrue(options.isAttachAnrThreadDump());
+  }
+
+  @Test
+  public void malformedAndroidAnrBooleanValuesPreserveExistingOptions() {
+    Object[] malformedValues = {"false", 0, null};
+    Map<String, Object> payload = new HashMap<>();
+
+    for (Object malformedValue : malformedValues) {
+      SentryAndroidOptions options = new SentryAndroidOptions();
+      options.setAnrEnabled(true);
+      options.setAttachAnrThreadDump(true);
+      payload.put("android_anr_detection_enabled", malformedValue);
+      payload.put("android_anr_attach_thread_dump", malformedValue);
+
+      SentryObservabilityBridge.applyAndroidAnrDiagnostics(options, payload);
+
+      assertTrue(options.isAnrEnabled());
+      assertTrue(options.isAttachAnrThreadDump());
+    }
+  }
+
+  @Test
+  public void malformedAndroidAnrTimeoutValuesPreserveExistingOption() {
+    Object[] malformedValues = {
+        "6400",
+        null,
+        Double.NaN,
+        Double.POSITIVE_INFINITY,
+        Double.NEGATIVE_INFINITY,
+        6400.5,
+        Double.MAX_VALUE,
+        BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE),
+        new BigDecimal("6400.5"),
+        new BigDecimal(BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE))
+    };
+    Map<String, Object> payload = new HashMap<>();
+
+    for (Object malformedValue : malformedValues) {
+      SentryAndroidOptions options = new SentryAndroidOptions();
+      options.setAnrTimeoutIntervalMillis(7300L);
+      payload.put("android_anr_timeout_msec", malformedValue);
+
+      SentryObservabilityBridge.applyAndroidAnrDiagnostics(options, payload);
+
+      assertEquals(7300L, options.getAnrTimeoutIntervalMillis());
+    }
+  }
+
+  @Test
+  public void belowMinimumAndroidAnrTimeoutValuesPreserveExistingOption() {
+    Object[] belowMinimumValues = {0, -1L, 999.0};
+    Map<String, Object> payload = new HashMap<>();
+
+    for (Object belowMinimumValue : belowMinimumValues) {
+      SentryAndroidOptions options = new SentryAndroidOptions();
+      options.setAnrTimeoutIntervalMillis(7300L);
+      payload.put("android_anr_timeout_msec", belowMinimumValue);
+
+      SentryObservabilityBridge.applyAndroidAnrDiagnostics(options, payload);
+
+      assertEquals(7300L, options.getAnrTimeoutIntervalMillis());
+    }
   }
 
   private static SentryObservabilityBridge newBridge() {

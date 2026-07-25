@@ -140,6 +140,7 @@ class SentryObservabilityBridge: RefCounted {
         if !dist.isEmpty {
             options.dist = dist
         }
+        applyAppleHangDiagnostics(from: values, to: options)
         options.debug = boolValue(dictionaryValue(values["provider_options"])["debug"])
         options.sendDefaultPii = boolValue(dictionaryValue(values["provider_options"])["send_default_pii"])
         options.enableLogs = logsEnabled

@@ -177,6 +177,11 @@ ObservabilityConfig.new(
 		p_automatic_message_filter_prefixes: PackedStringArray = PackedStringArray(
 				["FoundryObservability: "],
 		),
+		p_application_hang_detection_enabled: bool = true,
+		p_application_hang_timeout_msec: int = 5000,
+		p_android_anr_detection_enabled: bool = true,
+		p_android_anr_timeout_msec: int = 5000,
+		p_android_anr_attach_thread_dump: bool = false,
 )
 ~~~
 
@@ -204,6 +209,11 @@ Public fields:
 | automatic_event_throttle_window_msec | int | Sliding-window duration; zero disables that limit |
 | stack_trace_source_context_enabled | bool | Retain bounded stack-frame source context; enabled by default |
 | stack_trace_variables_enabled | bool | Retain a bounded, type-filtered copy of stack-frame variables; disabled by default and requires explicit opt-in |
+| application_hang_detection_enabled | bool | Enable native main-thread hang detection on macOS and iOS; enabled by default |
+| application_hang_timeout_msec | int | Apple hang threshold in milliseconds; defaults to 5000 and normalizes to at least 1000 |
+| android_anr_detection_enabled | bool | Enable native Android ANR detection; enabled by default |
+| android_anr_timeout_msec | int | Pre-Android-11 watchdog threshold in milliseconds; defaults to 5000 and normalizes to at least 1000 |
+| android_anr_attach_thread_dump | bool | Request an Android 11+ ANR thread dump when available; disabled by default |
 
 Accessors:
 
@@ -1122,6 +1132,63 @@ Level mapping:
 flush forwards to FoundryObservability.flush() with its default timeout.
 Provider failures are stored in the service status API and are not emitted
 through FoundryLib, preventing recursive error reporting.
+
+## Mobile hang and ANR diagnostics
+
+ObservabilityConfig exposes provider-neutral controls for native main-thread
+hang diagnostics. `application_hang_detection_enabled` and
+`application_hang_timeout_msec` apply to macOS and iOS.
+`android_anr_detection_enabled`, `android_anr_timeout_msec`, and
+`android_anr_attach_thread_dump` apply only to Android. Both detectors are
+enabled by default with a 5000 ms timeout; Android thread-dump attachment is
+disabled by default. Timeout values below 1000 ms normalize to 1000 ms.
+
+The Sentry provider applies these values before native SDK startup. Apple uses
+native app-hang tracking. Android versions before 11 use watchdog-based ANR
+detection and honor the configured timeout. Android 11 and later use historical
+process-exit information, so the operating system determines the ANR threshold
+and delivery may occur on the next launch. Thread-dump attachment applies only
+when the native Android implementation provides a dump.
+
+Android 11 and later historical ANR reporting requires usable operating-system
+`ApplicationExitInfo` and trace data. If the operating system provides no
+actionable, readable trace, no diagnostic event may be produced. Parsed thread
+data is present only when trace parsing succeeds. A raw thread-dump attachment
+is present only when requested and readable and available from the native
+implementation.
+
+FoundryObservability does not synthesize these events. The native SDK therefore
+retains severity, mechanism, blocked-thread state, attachments, lifecycle
+handling, and platform diagnostic metadata. Native lifecycle integrations own
+startup, shutdown, and suspension handling. A genuine main-thread block longer
+than the applicable threshold is expected to report; intentional long work
+should run off the main thread or the detector should be disabled before
+provider configuration.
+
+Providers without these capabilities may ignore the neutral settings.
+Platforms without the native Sentry bridge retain the existing configuration
+failure and `is_available()` behavior.
+
+Manual release validation:
+
+Use a test-only controlled trigger in a non-production build. Launch detached
+from the debugger: Apple app-hang tracking and pre-Android-11 ANR reporting may
+be disabled or ignored while a debugger is attached. Block the main thread with
+a deliberate margin beyond the configured threshold, rather than only barely
+exceeding it. After the controlled stall and recovery, allow capture to
+finalize and transport to complete on every platform. After a recovered Apple
+hang, also allow time for native app-hang capture to finalize. On Android 10 or
+earlier, the configured timeout is the SDK watchdog threshold, but reporting
+also requires ActivityManager to consider the process actually not responding.
+On Android 11 or later, relaunch the app and wait for historical processing and
+transport.
+
+| Target | Trigger | Expected |
+| --- | --- | --- |
+| macOS | Block the main thread for longer than 5 seconds in a controlled test build. | Enabled: one native event after recovery; disabled: no event. Inspect severity, mechanism, blocked thread, stack, release, environment, device, and OS data. |
+| iOS | Block the main thread for longer than 5 seconds on a physical test device. | Enabled: one native event after recovery; disabled: no event. Inspect severity, mechanism, blocked thread, stack, release, environment, device, and OS data. |
+| Android 10 or earlier | Block the main thread beyond the configured watchdog timeout. | Enabled: one watchdog ANR event only when ActivityManager considers the process not responding; native severity is ERROR. Disabled: no event. Inspect mechanism, threads, release, environment, device, and OS data. |
+| Android 11 or later | Trigger a controlled system ANR, then relaunch the app. | Enabled: when usable `ApplicationExitInfo` and readable trace data produce the native V2 ANR diagnostic, its severity is FATAL; parsed threads appear only after successful trace parsing, and a raw thread dump only when requested and readable and available. If no actionable trace is available, no event may be produced. Disabled: no event. Inspect mechanism, threads when parsed, release, environment, device, and OS data. |
 
 ## Sentry structured-log delivery
 
