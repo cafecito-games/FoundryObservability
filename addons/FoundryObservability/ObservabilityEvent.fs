@@ -8,9 +8,10 @@ var _kind: StringName = &"message"
 var _level: int = ObservabilityLevel.INFO
 var _message: String = ""
 var _source: StringName = &""
-var _timestamp_msec: int = 0
+var _timestamp_msec: int = -1
 var _attributes: Dictionary = {}
 var _exception: ObservabilityException? = null
+var _engine_ticks_msec: int = -1
 
 
 ## Creates an event with kind, severity, source, timestamp, copied attributes, and optional exception data.
@@ -19,9 +20,10 @@ func _init(
 		p_level: int = ObservabilityLevel.INFO,
 		p_message: String = "",
 		p_source: StringName = &"",
-		p_timestamp_msec: int = 0,
+		p_timestamp_msec: int = -1,
 		p_attributes: Dictionary = {},
-		p_exception: ObservabilityException? = null
+		p_exception: ObservabilityException? = null,
+		p_engine_ticks_msec: int = -1,
 ) -> void:
 	_kind = p_kind
 	_level = p_level
@@ -30,6 +32,7 @@ func _init(
 	_timestamp_msec = p_timestamp_msec
 	_attributes = p_attributes.duplicate(true)
 	_exception = p_exception
+	_engine_ticks_msec = p_engine_ticks_msec
 
 
 ## Returns the event kind, normally message, exception, or log.
@@ -52,9 +55,14 @@ func source() -> StringName:
 	return _source
 
 
-## Returns the event timestamp in engine milliseconds.
+## Returns the wall-clock occurrence time in Unix epoch milliseconds, or -1 when unspecified.
 func timestamp_msec() -> int:
 	return _timestamp_msec
+
+
+## Returns the original monotonic engine tick in milliseconds, or -1 when unavailable.
+func engine_ticks_msec() -> int:
+	return _engine_ticks_msec
 
 
 ## Returns a deep copy of structured event attributes.

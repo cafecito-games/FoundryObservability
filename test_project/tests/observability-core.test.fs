@@ -49,6 +49,23 @@ func test_exception_and_event_copy_attributes() -> void:
 	Expect.that(event.attributes()).to_equal({"scene": "battle"})
 
 
+func test_event_separates_wall_clock_timestamp_and_engine_ticks() -> void:
+	var event := ObservabilityEvent.new(
+			p_timestamp_msec = 1721865600123,
+			p_attributes = {},
+			p_exception = null,
+			p_engine_ticks_msec = 4567,
+		)
+	var epoch := ObservabilityEvent.new(p_timestamp_msec = 0)
+	var missing := ObservabilityEvent.new()
+
+	Expect.that(event.timestamp_msec()).to_equal(1721865600123)
+	Expect.that(event.engine_ticks_msec()).to_equal(4567)
+	Expect.that(epoch.timestamp_msec()).to_equal(0)
+	Expect.that(missing.timestamp_msec()).to_equal(-1)
+	Expect.that(missing.engine_ticks_msec()).to_equal(-1)
+
+
 func test_config_copies_attributes_and_options() -> void:
 	var attributes := {"build": 42}
 	var options := {"provider_key": "value"}
