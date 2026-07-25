@@ -83,13 +83,13 @@ func _init(
 		p_automatic_event_throttle_window_msec: int = 10000,
 		p_stack_trace_source_context_enabled: bool = true,
 		p_stack_trace_variables_enabled: bool = false,
+		p_automatic_message_filter_prefixes: PackedStringArray = PackedStringArray(
+				["FoundryObservability: "]),
 		p_application_hang_detection_enabled: bool = true,
 		p_application_hang_timeout_msec: int = 5000,
 		p_android_anr_detection_enabled: bool = true,
 		p_android_anr_timeout_msec: int = 5000,
 		p_android_anr_attach_thread_dump: bool = false,
-		p_automatic_message_filter_prefixes: PackedStringArray = PackedStringArray(
-				["FoundryObservability: "]),
 ) -> void:
 	enabled = p_enabled
 	environment = p_environment
