@@ -612,6 +612,31 @@ func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> 
 	service.shutdown()
 
 
+func test_successful_automatic_breadcrumb_does_not_clear_event_failure() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RejectingObservabilityProvider.new()
+	provider.breadcrumb_capture_result = true
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_repeated_error_window_msec = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("rejected event")).to_equal("")
+	Expect.that(service._capture_automatic_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "accepted breadcrumb"))).to_be_true()
+
+	Expect.that(provider.capture_count).to_equal(1)
+	Expect.that(provider.breadcrumb_count).to_equal(1)
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	service.shutdown()
+
+
 func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()

@@ -111,6 +111,8 @@ leaves event, log, feedback, and metric capture operational.
 The automatic logger silently skips an absent breadcrumb capability so default
 automatic masks do not overwrite the status of a successfully accepted event;
 explicit breadcrumb calls retain the observable unavailable result.
+Successful automatic breadcrumbs likewise do not clear a failure reported by
+an earlier automatic event destination.
 
 ## Error normalization
 

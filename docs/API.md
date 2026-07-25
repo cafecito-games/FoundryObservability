@@ -713,6 +713,8 @@ Automatic capture silently skips this optional destination when the provider
 does not implement it, so a successfully accepted exception event does not
 leave `last_error()` in an unrelated unavailable state. Explicit
 `capture_breadcrumb()` calls retain the observable `ERR_UNAVAILABLE` behavior.
+A successful automatic breadcrumb also does not clear a failure from an earlier
+automatic event destination in the same callback.
 
 ### capture_feedback
 
