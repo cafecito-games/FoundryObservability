@@ -107,6 +107,26 @@ public class SentryObservabilityBridgeTest {
   }
 
   @Test
+  public void configuredBridgeCapturesBreadcrumbs() {
+    SentryObservabilityBridge bridge = newBridge();
+
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    assertEquals(0, bridge.configure(configuration));
+
+    Dictionary breadcrumb = new Dictionary();
+    breadcrumb.put("message", "warning");
+    breadcrumb.put("category", "error");
+    breadcrumb.put("level", 40);
+    breadcrumb.put("timestamp_msec", 1234L);
+    breadcrumb.put("attributes", java.util.Map.of("error.file", "res://player.fs"));
+
+    assertTrue(bridge.captureBreadcrumb(breadcrumb));
+    bridge.shutdown();
+  }
+
+  @Test
   public void configuredBridgeCapturesFeedbackWithOptionalAssociation() {
     SentryObservabilityBridge bridge = newBridge();
 

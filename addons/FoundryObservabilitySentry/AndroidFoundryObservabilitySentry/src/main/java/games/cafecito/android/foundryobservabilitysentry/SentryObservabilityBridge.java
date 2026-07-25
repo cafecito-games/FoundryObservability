@@ -128,6 +128,20 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
   }
 
   @UsedByFoundry
+  public boolean captureBreadcrumb(Dictionary payload) {
+    if (!isAvailable() || payload == null) {
+      return false;
+    }
+
+    try {
+      Sentry.addBreadcrumb(SentryBreadcrumbMapper.makeBreadcrumb(payload, globalAttributes));
+      return true;
+    } catch (RuntimeException exception) {
+      return false;
+    }
+  }
+
+  @UsedByFoundry
   public boolean captureMetric(Dictionary payload) {
     if (!isAvailable() || !metricsEnabled) {
       return false;

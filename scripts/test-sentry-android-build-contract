@@ -19,17 +19,21 @@ rg -q 'ClassDB\.class_exists\(_NATIVE_CLASS\)' "$provider" \
 
 android_source="$repo_root/addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry"
 bridge_source="$android_source/src/main/java/games/cafecito/android/foundryobservabilitysentry/SentryObservabilityBridge.java"
+breadcrumb_mapper="$android_source/src/main/java/games/cafecito/android/foundryobservabilitysentry/SentryBreadcrumbMapper.java"
+breadcrumb_tests="$android_source/src/test/java/games/cafecito/android/foundryobservabilitysentry/SentryBreadcrumbMapperTest.java"
 manifest="$android_source/src/main/AndroidManifest.xml"
 gradle_file="$android_source/build.gradle"
 
 [[ -d "$android_source" ]] || fail "Android source module is missing"
 [[ -f "$bridge_source" ]] || fail "Android bridge source is missing"
+[[ -f "$breadcrumb_mapper" ]] || fail "Android breadcrumb mapper is missing"
+[[ -f "$breadcrumb_tests" ]] || fail "Android breadcrumb mapper tests are missing"
 [[ -f "$manifest" ]] || fail "Android manifest is missing"
 [[ -f "$gradle_file" ]] || fail "Android Gradle file is missing"
 rg -q 'extends FoundryPlugin' "$bridge_source" || fail "bridge must extend FoundryPlugin"
 rg -q 'return "SentryObservabilityBridge"' "$bridge_source" \
 	|| fail "bridge must use the shared plugin name"
-for method in configure isAvailable capture captureLog captureMetric flush shutdown; do
+for method in configure isAvailable capture captureLog captureBreadcrumb captureMetric flush shutdown; do
 	rg -q "[[:space:]]$method\\(" "$bridge_source" \
 		|| fail "bridge is missing $method"
 done
@@ -38,6 +42,8 @@ rg -q 'io\.sentry:sentry-android:8\.50\.1' "$repo_root/addons/FoundryObservabili
 rg -q 'SentryAndroid\.init' "$bridge_source" || fail "bridge must initialize Sentry Android"
 rg -q 'Sentry\.captureEvent' "$bridge_source" || fail "bridge must capture Sentry events"
 rg -q 'Sentry\.logger\(\)' "$bridge_source" || fail "bridge must capture structured Sentry logs"
+rg -q 'Sentry\.addBreadcrumb' "$bridge_source" || fail "bridge must capture Sentry breadcrumbs"
+rg -q 'new Breadcrumb' "$breadcrumb_mapper" || fail "mapper must construct Sentry breadcrumbs"
 rg -q 'SentryLogParameters' "$bridge_source" || fail "bridge must use Sentry log parameters"
 rg -q 'SentryAttributes\.fromMap' "$bridge_source" || fail "bridge must preserve structured attributes"
 rg -q 'getLogs\(\)\.setEnabled' "$bridge_source" || fail "bridge must configure Sentry logs"
