@@ -15,6 +15,8 @@ var _context_collector: SentryRuntimeContextCollector
 var _stable_contexts: Dictionary = {}
 var _scope: ObservabilityScope = ObservabilityScope.new()
 var _user: ObservabilityUser? = null
+var _last_config_payload: Dictionary = {}
+var _has_last_config_payload: bool = false
 var _enabled: bool = false
 var _owner: String = ""
 var _shutdown: bool = false
@@ -67,6 +69,7 @@ func configure(config: ObservabilityConfig) -> int:
 		_stable_contexts = {}
 		_scope = ObservabilityScope.new()
 		_user = null
+		_clear_last_config_payload()
 		_shutdown = false
 		return Error.OK
 	if config.enabled and config.logs_enabled and (bridge == null or not bridge.has_method("captureLog")):
@@ -77,6 +80,7 @@ func configure(config: ObservabilityConfig) -> int:
 		_stable_contexts = {}
 		_scope = ObservabilityScope.new()
 		_user = null
+		_clear_last_config_payload()
 		_shutdown = false
 		return Error.OK
 
@@ -114,9 +118,13 @@ func configure(config: ObservabilityConfig) -> int:
 		}
 	if config.enabled:
 		payload["stable_contexts"] = candidate_stable_contexts
+	var candidate_config_payload: Dictionary = payload.duplicate(true)
 	var retained_scope_payload: Dictionary = _scope_payload(_scope, _user)
 	var retained_scope_was_enabled: bool = _enabled and not _shutdown
-	var result: Variant = bridge.call("configure", payload)
+	var result: Variant = bridge.call(
+			"configure",
+			candidate_config_payload.duplicate(true),
+		)
 	if not (result is int):
 		_restore_retained_scope(
 				bridge,
@@ -138,7 +146,7 @@ func configure(config: ObservabilityConfig) -> int:
 				null,
 			)
 		if not _apply_scope_payload(bridge, empty_scope_payload):
-			_restore_retained_scope(
+			_rollback_after_scope_reset_failure(
 					bridge,
 					retained_scope_was_enabled,
 					retained_scope_payload,
@@ -148,6 +156,8 @@ func configure(config: ObservabilityConfig) -> int:
 	_stable_contexts = candidate_stable_contexts
 	_scope = ObservabilityScope.new()
 	_user = null
+	_last_config_payload = candidate_config_payload.duplicate(true)
+	_has_last_config_payload = true
 	_shutdown = false
 	return Error.OK
 
@@ -394,6 +404,7 @@ func shutdown() -> void:
 	_stable_contexts = {}
 	_scope = ObservabilityScope.new()
 	_user = null
+	_clear_last_config_payload()
 	var bridge: Object? = _resolve_bridge()
 	if bridge != null and _has_lifecycle_contract(bridge):
 		bridge.call("shutdown", _owner)
@@ -466,6 +477,31 @@ func _restore_retained_scope(
 ) -> void:
 	if retained_scope_was_enabled:
 		_apply_scope_payload(bridge, retained_scope_payload)
+
+
+func _rollback_after_scope_reset_failure(
+		bridge: Object,
+		retained_scope_was_enabled: bool,
+		retained_scope_payload: Dictionary,
+) -> void:
+	if not _has_last_config_payload:
+		bridge.call("shutdown", _owner)
+		return
+	var rollback_result: Variant = bridge.call(
+			"configure",
+			_last_config_payload.duplicate(true),
+		)
+	if rollback_result is int and rollback_result == Error.OK:
+		_restore_retained_scope(
+				bridge,
+				retained_scope_was_enabled,
+				retained_scope_payload,
+			)
+
+
+func _clear_last_config_payload() -> void:
+	_last_config_payload = {}
+	_has_last_config_payload = false
 
 
 func _scope_payload(
