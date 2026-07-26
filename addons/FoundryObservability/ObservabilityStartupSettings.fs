@@ -226,8 +226,6 @@ static func _detected_environment(runtime: Dictionary) -> String:
 
 
 static func _is_valid_provider_option(value: Variant, depth: int) -> bool:
-	if depth > _MAX_PROVIDER_OPTION_DEPTH:
-		return false
 	match typeof(value):
 		TYPE_NIL, TYPE_BOOL, TYPE_INT, TYPE_STRING, TYPE_STRING_NAME:
 			return true
@@ -235,9 +233,13 @@ static func _is_valid_provider_option(value: Variant, depth: int) -> bool:
 			@warning_ignore("unsafe_call_argument")
 			return is_finite(value)
 		TYPE_ARRAY:
+			if depth > _MAX_PROVIDER_OPTION_DEPTH:
+				return false
 			@warning_ignore("unsafe_call_argument")
 			return _is_valid_provider_option_array(value, depth)
 		TYPE_DICTIONARY:
+			if depth > _MAX_PROVIDER_OPTION_DEPTH:
+				return false
 			@warning_ignore("unsafe_call_argument")
 			return _is_valid_provider_option_dictionary(value, depth)
 		_:

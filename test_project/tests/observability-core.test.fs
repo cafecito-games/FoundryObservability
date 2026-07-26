@@ -1963,8 +1963,28 @@ func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
 			ObservabilityStartupStatus.SKIPPED_EDITOR,
 		)
 
+	var editor := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.SKIP_EDITOR_PLAY: true,
+				ObservabilityStartupSettings.SKIP_DEBUG_EXPORTS: true,
+			},
+			{},
+			{
+				"editor_hint": true,
+				"editor_feature": true,
+				"debug_build": true,
+			},
+		)
+	Expect.that(editor.observability_config().environment).to_equal("editor_dev")
+	Expect.that(editor.skip_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_EDITOR,
+		)
+
 	var editor_play := ObservabilityStartupSettings.from_sources(
-			{ObservabilityStartupSettings.SKIP_EDITOR_PLAY: true},
+			{
+				ObservabilityStartupSettings.SKIP_EDITOR_PLAY: true,
+				ObservabilityStartupSettings.SKIP_DEBUG_EXPORTS: true,
+			},
 			{},
 			{"editor_feature": true, "debug_build": true},
 		)
@@ -1987,6 +2007,15 @@ func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
 			"export_debug",
 		)
 
+	var not_started := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{"debug_build": true},
+		)
+	Expect.that(not_started.skip_status()).to_equal(
+			ObservabilityStartupStatus.NOT_STARTED,
+		)
+
 	var disabled := ObservabilityStartupSettings.from_sources(
 			{ObservabilityStartupSettings.AUTO_INIT: false},
 			{},
@@ -1998,7 +2027,13 @@ func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
 
 
 func test_startup_settings_validate_and_merge_provider_options() -> void:
-	var options := {"dsn": "wrong", "debug": false, "send_default_pii": true}
+	var nested_options := {"sample_rate": 0.5}
+	var options := {
+		"dsn": "wrong",
+		"debug": false,
+		"send_default_pii": true,
+		"nested": nested_options,
+	}
 	var settings := ObservabilityStartupSettings.from_sources(
 			{
 				ObservabilityStartupSettings.DSN: "https://public@example/1",
@@ -2010,6 +2045,7 @@ func test_startup_settings_validate_and_merge_provider_options() -> void:
 			{"debug_build": false},
 		)
 	options["send_default_pii"] = false
+	nested_options["sample_rate"] = 0.1
 	var resolved: Dictionary = settings.observability_config().provider_options()
 
 	Expect.that(settings.validation_error()).to_equal(Error.OK)
@@ -2018,6 +2054,32 @@ func test_startup_settings_validate_and_merge_provider_options() -> void:
 	Expect.that(resolved.get("dsn")).to_equal("https://public@example/1")
 	Expect.that(resolved.get("debug")).to_be_true()
 	Expect.that(resolved.get("send_default_pii")).to_be_true()
+	Expect.that(resolved).to_equal({
+			"dsn": "https://public@example/1",
+			"debug": true,
+			"send_default_pii": true,
+			"nested": {"sample_rate": 0.5},
+		})
+
+	var auto_debug := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{"debug_build": true},
+		)
+	Expect.that(auto_debug.debug_enabled()).to_be_true()
+	Expect.that(
+			auto_debug.observability_config().provider_options().get("debug"),
+		).to_be_true()
+
+	var auto_release := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{"debug_build": false},
+		)
+	Expect.that(auto_release.debug_enabled()).to_be_false()
+	Expect.that(
+			auto_release.observability_config().provider_options().get("debug"),
+		).to_be_false()
 
 	var invalid_mode := ObservabilityStartupSettings.from_sources(
 			{ObservabilityStartupSettings.DEBUG_DIAGNOSTICS: 99},
@@ -2039,6 +2101,26 @@ func test_startup_settings_validate_and_merge_provider_options() -> void:
 			}},
 		)
 	Expect.that(nested_callable.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+
+func test_startup_settings_provider_option_depth_counts_containers() -> void:
+	var max_depth := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						_provider_options_with_container_depth(8),
+			},
+		)
+	Expect.that(max_depth.validation_error()).to_equal(Error.OK)
+
+	var too_deep := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						_provider_options_with_container_depth(9),
+			},
+		)
+	Expect.that(too_deep.validation_error()).to_equal(
 			Error.ERR_INVALID_PARAMETER,
 		)
 
@@ -2072,6 +2154,17 @@ func _repeated(value: String, count: int) -> String:
 	for _index in range(count):
 		result += value
 	return result
+
+
+func _provider_options_with_container_depth(depth: int) -> Dictionary:
+	var options: Dictionary = {}
+	var cursor: Dictionary = options
+	for _level: int in range(depth):
+		var nested: Dictionary = {}
+		cursor["nested"] = nested
+		cursor = nested
+	cursor["value"] = "leaf"
+	return options
 
 
 func _keep_combat_metric(metric: ObservabilityMetric) -> bool:
