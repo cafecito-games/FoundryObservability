@@ -24,6 +24,7 @@ var current_scope_payload: Dictionary = {
 		"contexts": {},
 	}
 var captured_payloads: Array[Dictionary] = []
+var captured_native_attachment_payloads: Array[Array] = []
 var captured_log_payloads: Array[Dictionary] = []
 var captured_breadcrumb_payloads: Array[Dictionary] = []
 var current_breadcrumb_payloads: Array[Dictionary] = []
@@ -110,6 +111,9 @@ func isAvailable(owner: String) -> Variant:
 
 func capture(payload: Dictionary) -> String:
 	captured_payloads.append(payload.duplicate(true))
+	captured_native_attachment_payloads.append(
+			current_attachment_payloads.duplicate(true),
+		)
 	var event_id: String = "sentry:%s" % next_event_id
 	next_event_id += 1
 	return event_id

@@ -2215,8 +2215,17 @@ func test_attachment_candidates_replace_native_snapshot_atomically() -> void:
 	bridge.replace_attachments_results = [false, "accepted"]
 	Expect.that(provider.clear_attachments()).to_be_false()
 	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+	var retained_payload: Array = bridge.current_attachment_payloads.duplicate(true)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "after rejected attachment mutation",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_native_attachment_payloads[0]).to_equal(retained_payload)
 	Expect.that(provider.clear_attachments()).to_be_false()
 	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "after malformed attachment mutation",
+		))).to_equal("sentry:2")
+	Expect.that(bridge.captured_native_attachment_payloads[1]).to_equal(retained_payload)
 	Expect.that(provider.remove_attachment(second_handle)).to_equal(Error.OK)
 
 
@@ -2314,6 +2323,54 @@ func test_attachment_preflight_failures_do_not_block_events_and_clear_on_success
 	Expect.that(provider.last_attachment_failures()).to_have_size(0)
 
 
+func test_oversized_global_path_failure_survives_logs_until_applicable_capture() -> void:
+	var file: FileAccess = FileAccess.open(
+			"user://sentry-oversized-global.log",
+			FileAccess.WRITE,
+		)
+	file.store_buffer(PackedByteArray([1, 2, 3]))
+	file.close()
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_logs_enabled = true,
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = 2,
+		))).to_equal(Error.OK)
+	var handle: String = provider.add_attachment(ObservabilityAttachment.from_path(
+			"user://sentry-oversized-global.log",
+			"oversized.log",
+			"text/plain",
+		))
+	Expect.that(handle.is_empty()).to_be_false()
+
+	Expect.that(provider.capture(ObservabilityEvent.new(p_message = "oversized"))).to_equal(
+			"sentry:1",
+		)
+	var oversized_failures: Array = provider.last_attachment_failures()
+	Expect.that(oversized_failures).to_have_size(1)
+	var oversized_failure: ObservabilityAttachmentFailure = oversized_failures[0]
+	Expect.that(oversized_failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.OVERSIZED,
+		)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_kind = &"log",
+			p_message = "non-applicable",
+		))).to_equal("sentry-log:1")
+	Expect.that(provider.last_attachment_failures()[0]).not_().to_be_null()
+	Expect.that(provider.last_attachment_failures()).to_have_size(1)
+
+	file = FileAccess.open("user://sentry-oversized-global.log", FileAccess.WRITE)
+	file.store_buffer(PackedByteArray([1, 2]))
+	file.close()
+	Expect.that(provider.capture(ObservabilityEvent.new(p_message = "now valid"))).to_equal(
+			"sentry:2",
+		)
+	Expect.that(provider.last_attachment_failures()).to_have_size(0)
+
+
 func test_attachment_reconfigure_invalidates_handles_and_restores_equivalent_failures() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
@@ -2404,6 +2461,96 @@ func test_built_in_attachment_collection_is_independent_cached_and_bounded() -> 
 	var headless: Dictionary = collector.collect(ObservabilityEvent.new(), config)
 	Expect.that(headless["attachments"]).to_have_size(1)
 	Expect.that(headless["failures"]).to_have_size(1)
+	root.free()
+
+
+func test_built_in_attachment_toggles_and_size_limits_are_independent() -> void:
+	var probe := FakeAttachmentRuntimeProbe.new()
+	var root := Node.new()
+	root.name = "Root"
+	probe.tree = FakeAttachmentSceneTree.new(root)
+	var collector := SentryBuiltInAttachmentCollector.new(probe)
+	var screenshot_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_screenshot = true,
+		)
+	var screenshot_only: Dictionary = collector.collect(
+			ObservabilityEvent.new(),
+			screenshot_config,
+		)
+	Expect.that(screenshot_only["attachments"]).to_have_size(1)
+	Expect.that(screenshot_only["attachments"][0]["filename"]).to_equal(
+			"screenshot.png",
+		)
+
+	var scene_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_scene_tree = true,
+		)
+	var scene_only: Dictionary = collector.collect(
+			ObservabilityEvent.new(),
+			scene_config,
+		)
+	Expect.that(scene_only["attachments"]).to_have_size(1)
+	Expect.that(scene_only["attachments"][0]["filename"]).to_equal(
+			"view-hierarchy.json",
+		)
+
+	var oversized_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = 2,
+			p_attach_screenshot = true,
+		)
+	var oversized: Dictionary = collector.collect(
+			ObservabilityEvent.new(),
+			oversized_config,
+		)
+	Expect.that(oversized["attachments"]).to_have_size(0)
+	Expect.that(oversized["failures"]).to_have_size(1)
+	var failure: ObservabilityAttachmentFailure = oversized["failures"][0]
+	Expect.that(failure.reason()).to_equal(ObservabilityAttachmentFailure.OVERSIZED)
+	root.free()
+
+
+func test_scene_hierarchy_respects_maximum_depth() -> void:
+	var probe := FakeAttachmentRuntimeProbe.new()
+	var root := Node.new()
+	root.name = "Depth0"
+	var parent: Node = root
+	for depth: int in range(SentryBuiltInAttachmentCollector.MAX_SCENE_DEPTH + 10):
+		var child := Node.new()
+		child.name = "Depth%s" % (depth + 1)
+		parent.add_child(child)
+		parent = child
+	probe.tree = FakeAttachmentSceneTree.new(root)
+	var collector := SentryBuiltInAttachmentCollector.new(probe)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = 1024 * 1024,
+			p_attach_scene_tree = true,
+		)
+
+	var result: Dictionary = collector.collect(ObservabilityEvent.new(), config)
+	var hierarchy_payload: Dictionary = result["attachments"][0]
+	var hierarchy_bytes: PackedByteArray = hierarchy_payload["bytes"]
+	var cursor: Dictionary = JSON.parse_string(hierarchy_bytes.get_string_from_utf8())
+	var captured_depth: int = 0
+	var children: Array = cursor["children"]
+	while not children.is_empty():
+		captured_depth += 1
+		cursor = children[0]
+		children = cursor["children"]
+	Expect.that(captured_depth).to_equal(
+			SentryBuiltInAttachmentCollector.MAX_SCENE_DEPTH,
+		)
 	root.free()
 
 
