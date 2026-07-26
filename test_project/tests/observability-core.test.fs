@@ -38,6 +38,7 @@ var _state_reentry_diagnostic_error: int = Error.OK
 var _automatic_nested_service: FoundryObservability
 var _automatic_nested_capture_result: String = ""
 var _automatic_nested_reason: StringName = &""
+var _processor_exception_snapshot: Dictionary = {}
 
 class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/ObservabilityStackFrame.fs":
 	var public_variables_calls: int = 0
@@ -803,9 +804,94 @@ func test_exception_and_event_copy_attributes() -> void:
 			"request_id": "abc", "nested": {"attempt": 1}
 		})
 	Expect.that(event.kind()).to_equal(&"exception")
-	Expect.that(event.exception()).to_equal(exception)
+	Expect.that(event.exception()).to_not_equal(exception)
 	Expect.that(event.timestamp_msec()).to_equal(1234)
 	Expect.that(event.attributes()).to_equal({"scene": "battle"})
+
+
+func test_event_snapshots_original_exception_before_processing_and_capture() -> void:
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://stable.fs",
+			p_function = "run",
+		)
+	var original_exception := ObservabilityException.new(
+			p_type_name = "StableError",
+			p_message = "stable message",
+			p_stack_trace = "stable stack",
+			p_attributes = {"nested": {"attempt": 1}},
+			p_frames = [frame],
+		)
+	var event := ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_level = ObservabilityLevel.ERROR,
+			p_message = "stable message",
+			p_source = &"game",
+			p_timestamp_msec = 1234,
+			p_attributes = {},
+			p_exception = original_exception,
+		)
+
+	original_exception._attributes["nested"]["attempt"] = 2
+	original_exception._attributes["original_only"] = true
+	original_exception._frames.clear()
+
+	var expected: Dictionary = {
+		"type_name": "StableError",
+		"message": "stable message",
+		"stack_trace": "stable stack",
+		"attributes": {"nested": {"attempt": 1}},
+		"frame_files": ["res://stable.fs"],
+	}
+	Expect.that(_exception_snapshot(event)).to_equal(expected)
+
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	_processor_exception_snapshot = {}
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_record_exception_snapshot")],
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_event(event)).to_equal("memory:1")
+	Expect.that(_processor_exception_snapshot).to_equal(expected)
+	Expect.that(_exception_snapshot(provider.events()[0])).to_equal(expected)
+	service.shutdown()
+
+
+func test_event_exception_accessor_returns_isolated_duplicates() -> void:
+	var exception := ObservabilityException.new(
+			p_type_name = "AccessorError",
+			p_message = "stable",
+			p_attributes = {"nested": {"attempt": 1}},
+			p_frames = [ObservabilityStackFrame.new(p_file = "res://accessor.fs")],
+		)
+	var event := ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_attributes = {},
+			p_exception = exception,
+		)
+	var exposed_exception: ObservabilityException = event.exception()
+	var exposed_attributes: Dictionary = exposed_exception.attributes()
+	var exposed_frames: Array[ObservabilityStackFrame] = exposed_exception.frames()
+
+	exposed_attributes["nested"]["attempt"] = 2
+	exposed_frames.clear()
+	exposed_exception._attributes["nested"]["attempt"] = 3
+	exposed_exception._attributes["accessor_only"] = true
+	exposed_exception._frames.clear()
+
+	var expected: Dictionary = {
+		"type_name": "AccessorError",
+		"message": "stable",
+		"stack_trace": "",
+		"attributes": {"nested": {"attempt": 1}},
+		"frame_files": ["res://accessor.fs"],
+	}
+	Expect.that(_exception_snapshot(event)).to_equal(expected)
+	Expect.that(event.exception()).to_not_equal(exposed_exception)
+	Expect.that(event.exception()).to_not_equal(event.exception())
 
 
 func test_stack_frame_and_exception_defensively_copy_structured_data() -> void:
@@ -7405,6 +7491,27 @@ func _processing_repeated_pipeline() -> ObservabilityProcessingPipeline:
 
 func _processing_owner() -> int:
 	return _processing_owner_id
+
+
+func _record_exception_snapshot(event: ObservabilityEvent) -> ObservabilityEvent:
+	_processor_exception_snapshot = _exception_snapshot(event)
+	return event
+
+
+func _exception_snapshot(event: ObservabilityEvent) -> Dictionary:
+	var exception: ObservabilityException? = event.exception()
+	if exception == null:
+		return {}
+	var frame_files: Array[String] = []
+	for frame: ObservabilityStackFrame in exception.frames():
+		frame_files.append("" if frame == null else frame.file())
+	return {
+		"type_name": exception.type_name(),
+		"message": exception.message(),
+		"stack_trace": exception.stack_trace(),
+		"attributes": exception.attributes(),
+		"frame_files": frame_files,
+	}
 
 
 func _processing_config(processors: Array[Callable]) -> ObservabilityConfig:

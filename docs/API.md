@@ -841,13 +841,17 @@ func message() -> String
 func stack_trace() -> String
 func attributes() -> Dictionary
 func frames() -> Array[ObservabilityStackFrame]
+func duplicate() -> ObservabilityException
 ~~~
 
-attributes are deep-copied on construction and access. The constructor copies
-the containing frame array and `frames()` returns a copy, so callers cannot
-replace stored entries through either array. `stack_trace()` remains the
-supported formatted-string fallback: structured frames are additive and never
-synthesize or overwrite it. The core does not interpret the type or formatted
+Every exception field is final after construction. attributes are deep-copied
+on construction and access. The constructor copies the containing frame array,
+`frames()` returns another array copy, and `duplicate()` returns a distinct
+exception with its own attribute and frame containers. The immutable
+ObservabilityStackFrame values may be shared between those isolated arrays.
+`stack_trace()` remains the supported formatted-string fallback: structured
+frames are additive and never synthesize or overwrite it. The core does not
+interpret the type or formatted
 stack string; providers decide how to map them.
 
 ## ObservabilityStackFrame
@@ -956,13 +960,15 @@ func exception() -> ObservabilityException?
 func scope() -> ObservabilityScope?
 ~~~
 
-attributes are deep-copied on construction and access. exception is optional and
-is returned as the original payload object. The optional scope parameter was
-appended to preserve every legacy positional constructor call. It is duplicated
-on construction, and `scope()` returns another duplicate, so later caller
-mutation cannot alter a queued or captured event. Every event field is final
-after construction; timestamp resolution creates a new normalized event rather
-than mutating the caller's event.
+attributes are deep-copied on construction and access. exception is optional;
+the event snapshots it on construction, and `exception()` returns a fresh
+duplicate, so later mutation of either the caller's payload or an accessor
+result cannot alter a queued, processed, or captured event. The optional scope
+parameter was appended to preserve every legacy positional constructor call.
+It is duplicated on construction, and `scope()` returns another duplicate, so
+later caller mutation cannot alter a queued or captured event. Every event
+field is final after construction; timestamp resolution creates a new
+normalized event rather than mutating the caller's event.
 
 ## ObservabilityUser
 

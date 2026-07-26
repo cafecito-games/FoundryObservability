@@ -196,6 +196,23 @@ for field in _kind _level _message _source _timestamp_msec _attributes _exceptio
 	rg -q "^final var ${field}:" "$addon/ObservabilityEvent.fs" \
 		|| fail "ObservabilityEvent field must be immutable: ${field}"
 done
+for field in _type_name _message _stack_trace _attributes _frames; do
+	rg -q "^final var ${field}:" "$addon/ObservabilityException.fs" \
+		|| fail "ObservabilityException field must be immutable: ${field}"
+done
+rg -q '^func duplicate\(\) -> ObservabilityException:$' \
+	"$addon/ObservabilityException.fs" \
+	|| fail "ObservabilityException must expose an isolated duplicate()"
+event_constructor_contract=$(
+	sed -n '/^func _init($/,/^$/p' "$addon/ObservabilityEvent.fs"
+)
+grep -Fq 'p_exception.duplicate()' <<<"$event_constructor_contract" \
+	|| fail "ObservabilityEvent construction must snapshot its exception"
+event_exception_accessor_contract=$(
+	sed -n '/^func exception()/,/^$/p' "$addon/ObservabilityEvent.fs"
+)
+grep -Fq '_exception.duplicate()' <<<"$event_exception_accessor_contract" \
+	|| fail "ObservabilityEvent.exception() must return an isolated exception"
 for field in _message _level _category _timestamp_msec _attributes _type; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityBreadcrumb.fs" \
 		|| fail "ObservabilityBreadcrumb field must be immutable: ${field}"

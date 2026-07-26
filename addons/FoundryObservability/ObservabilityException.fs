@@ -4,11 +4,11 @@ namespace foundry.observability
 class_name ObservabilityException
 extends RefCounted
 
-var _type_name: String = "Error"
-var _message: String = ""
-var _stack_trace: String = ""
-var _attributes: Dictionary = {}
-var _frames: Array[ObservabilityStackFrame] = []
+final var _type_name: String
+final var _message: String
+final var _stack_trace: String
+final var _attributes: Dictionary
+final var _frames: Array[ObservabilityStackFrame]
 
 
 ## Creates an exception payload from type, message, stack, copied attributes, and copied structured frames.
@@ -49,3 +49,14 @@ func attributes() -> Dictionary:
 ## Returns a copy of the structured stack frames, ordered oldest-to-newest.
 func frames() -> Array[ObservabilityStackFrame]:
 	return _frames.duplicate()
+
+
+## Returns an isolated exception payload with copied attributes and frame storage.
+func duplicate() -> ObservabilityException:
+	return ObservabilityException.new(
+			p_type_name = _type_name,
+			p_message = _message,
+			p_stack_trace = _stack_trace,
+			p_attributes = _attributes,
+			p_frames = _frames,
+		)
