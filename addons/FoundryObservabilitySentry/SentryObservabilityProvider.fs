@@ -126,6 +126,21 @@ func configure(config: ObservabilityConfig) -> int:
 	var candidate_config_payload: Dictionary = payload.duplicate(true)
 	var retained_scope_payload: Dictionary = _scope_payload(_scope, _user)
 	var retained_scope_was_enabled: bool = _enabled and not _shutdown
+	var candidate_matches_committed_config: bool = (
+			_has_last_config_payload
+			and _config_payloads_are_equivalent(candidate_config_payload)
+		)
+	var prior_breadcrumb_session_was_enabled: bool = (
+			retained_scope_was_enabled
+			and bridge.has_method("captureBreadcrumb")
+			and bridge.has_method("clearBreadcrumbs")
+		)
+	# Every post-configure failure may retain the prior session only when no live
+	# breadcrumb trail existed or the complete candidate cannot restart that session.
+	var can_preserve_prior_session_after_configuration_attempt: bool = (
+			not prior_breadcrumb_session_was_enabled
+			or candidate_matches_committed_config
+		)
 	# Local candidate state commits only after configure, scope, and breadcrumb resets;
 	# otherwise the prior session must be fully restored or the provider fails closed.
 	var result: Variant = bridge.call(
@@ -133,7 +148,8 @@ func configure(config: ObservabilityConfig) -> int:
 			candidate_config_payload.duplicate(true),
 		)
 	if not (result is int):
-		if not _restore_retained_scope(
+		if not can_preserve_prior_session_after_configuration_attempt \
+				or not _restore_retained_scope(
 				bridge,
 				retained_scope_was_enabled,
 				retained_scope_payload,
@@ -142,7 +158,8 @@ func configure(config: ObservabilityConfig) -> int:
 		return Error.FAILED
 	var result_code: int = result
 	if result_code != Error.OK:
-		if not _restore_retained_scope(
+		if not can_preserve_prior_session_after_configuration_attempt \
+				or not _restore_retained_scope(
 				bridge,
 				retained_scope_was_enabled,
 				retained_scope_payload,
@@ -155,7 +172,8 @@ func configure(config: ObservabilityConfig) -> int:
 				null,
 			)
 		if not _apply_scope_payload(bridge, empty_scope_payload):
-			if not _rollback_after_session_reset_failure(
+			if not can_preserve_prior_session_after_configuration_attempt \
+					or not _rollback_after_session_reset_failure(
 					bridge,
 					retained_scope_was_enabled,
 					retained_scope_payload,
@@ -167,7 +185,7 @@ func configure(config: ObservabilityConfig) -> int:
 		if not (clear_result is bool) or clear_result != true:
 			if not _can_preserve_breadcrumb_trail_after_clear_failure(
 					clear_result,
-					candidate_config_payload,
+					can_preserve_prior_session_after_configuration_attempt,
 					retained_scope_was_enabled,
 			) or not _rollback_after_session_reset_failure(
 				bridge,
@@ -527,17 +545,19 @@ func _rollback_after_session_reset_failure(
 
 func _can_preserve_breadcrumb_trail_after_clear_failure(
 		clear_result: Variant,
-		candidate_config_payload: Dictionary,
+		can_preserve_prior_session_after_configuration_attempt: bool,
 		retained_scope_was_enabled: bool,
 ) -> bool:
 	if not (clear_result is bool) or clear_result != false:
+		return false
+	if not can_preserve_prior_session_after_configuration_attempt:
 		return false
 	if not retained_scope_was_enabled or not _has_last_config_payload:
 		return false
 	var committed_enabled: Variant = _last_config_payload.get("enabled")
 	if not (committed_enabled is bool) or committed_enabled != true:
 		return false
-	return _config_payloads_are_equivalent(candidate_config_payload)
+	return true
 
 
 func _config_payloads_are_equivalent(candidate_config_payload: Dictionary) -> bool:

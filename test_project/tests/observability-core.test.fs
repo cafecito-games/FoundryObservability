@@ -3829,7 +3829,7 @@ func test_startup_failure_preserves_working_provider_and_diagnostics() -> void:
 	var first_owner: String = bridge.active_owner
 	bridge.configure_result = Error.FAILED
 	var failed := ObservabilityStartupSettings.from_sources({
-		ObservabilityStartupSettings.DSN: "https://public@example/2",
+		ObservabilityStartupSettings.DSN: "https://public@example/1",
 	})
 
 	Expect.that(service._initialize_startup(failed)).to_equal(Error.FAILED)

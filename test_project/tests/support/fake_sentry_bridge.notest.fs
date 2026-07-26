@@ -5,8 +5,8 @@ extends RefCounted
 
 var available: bool = true
 var availability_result: Variant = true
-var configure_result: int = Error.OK
-var configure_results: Array[int] = []
+var configure_result: Variant = Error.OK
+var configure_results: Array[Variant] = []
 var flush_result: int = Error.OK
 var apply_scope_result: bool = true
 var apply_scope_results: Array[bool] = []
@@ -41,16 +41,20 @@ func lifecycleVersion() -> int:
 	return 1
 
 
-func configure(payload: Dictionary) -> int:
+func configure(payload: Dictionary) -> Variant:
 	configured_payload = payload.duplicate(true)
 	configured_payloads.append(configured_payload.duplicate(true))
-	var result: int = configure_result
+	var result: Variant = configure_result
 	if not configure_results.is_empty():
 		result = configure_results.pop_front()
-	if result == Error.OK:
+	var changed_configuration: bool = (
+			not active_owner.is_empty()
+			and configured_payload != _active_configuration
+		)
+	if result is int and result == Error.OK:
 		var owner: String = str(payload.get("lifecycle_owner", ""))
 		if payload.get("enabled", false):
-			if active_owner.is_empty() or configured_payload != _active_configuration:
+			if active_owner.is_empty() or changed_configuration:
 				current_scope_payload = {
 					"tags": {},
 					"contexts": {},
@@ -71,6 +75,8 @@ func configure(payload: Dictionary) -> int:
 			"tags": {},
 			"contexts": {},
 		}
+		if changed_configuration:
+			current_breadcrumb_payloads = []
 	return result
 
 
