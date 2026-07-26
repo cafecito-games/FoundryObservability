@@ -182,7 +182,53 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertNil(contexts["foundry_engine"]?["unsupported"])
         XCTAssertNil((contexts["foundry_engine"]?["cycle"] as? [String: Any])?["self"])
         XCTAssertNil(contexts[""])
-        XCTAssertNil(contexts["empty"])
+        XCTAssertEqual(contexts["empty"]?.count, 0)
+    }
+
+    func testBridgeConversionAndScopeMappingPreserveRecursiveNulls() {
+        let converted = foundryFoundationDictionary([
+            (
+                key: "nested",
+                value: FoundryFoundationValue(foundryFoundationDictionary([
+                    (key: "nullable", value: FoundryFoundationValue(NSNull())),
+                ]))
+            ),
+            (
+                key: "items",
+                value: FoundryFoundationValue(foundryFoundationArray([
+                    FoundryFoundationValue("first"),
+                    FoundryFoundationValue(NSNull()),
+                    FoundryFoundationValue("last"),
+                ]))
+            ),
+            (key: "unsupported", value: nil),
+        ])
+        let payload = foundryScopePayload([
+            "contexts": ["match": converted],
+        ])
+
+        XCTAssertTrue(payload.contexts["match"]?["nested"] is [String: Any])
+        XCTAssertTrue(
+            (payload.contexts["match"]?["nested"] as? [String: Any])?["nullable"]
+                is NSNull
+        )
+        let items = payload.contexts["match"]?["items"] as? [Any]
+        XCTAssertEqual(items?.count, 3)
+        XCTAssertEqual(items?[0] as? String, "first")
+        XCTAssertTrue(items?[1] is NSNull)
+        XCTAssertEqual(items?[2] as? String, "last")
+        XCTAssertNil(payload.contexts["match"]?["unsupported"])
+
+        let scope = Scope()
+        applyFoundryScope(payload, to: scope)
+        let serializedContexts = scope.serialize()["context"] as? [String: Any]
+        let serializedMatch = serializedContexts?["match"] as? [String: Any]
+        XCTAssertTrue(
+            (serializedMatch?["nested"] as? [String: Any])?["nullable"] is NSNull
+        )
+        let serializedItems = serializedMatch?["items"] as? [Any]
+        XCTAssertEqual(serializedItems?.count, 3)
+        XCTAssertTrue(serializedItems?[1] is NSNull)
     }
 
     func testAppliesRuntimeContextsToScope() {
@@ -345,7 +391,7 @@ final class SentryEventMapperTests: XCTestCase {
         applyFoundryScope(
             foundryScopePayload([
                 "tags": ["region": "fra"],
-                "contexts": ["match": ["id": "local"]],
+                "contexts": ["match": [:]],
                 "user": ["id": "local-player"],
             ]),
             to: captureScope
@@ -360,14 +406,9 @@ final class SentryEventMapperTests: XCTestCase {
             (captured["tags"] as? [String: String])?["mode"],
             "ranked"
         )
-        XCTAssertEqual(
-            ((captured["context"] as? [String: Any])?["match"] as? [String: Any])?["id"]
-                as? String,
-            "local"
-        )
-        XCTAssertNil(
-            ((captured["context"] as? [String: Any])?["match"] as? [String: Any])?["round"]
-        )
+        let capturedMatch =
+            (captured["context"] as? [String: Any])?["match"] as? [String: Any]
+        XCTAssertEqual(capturedMatch?.count, 0)
         XCTAssertEqual(
             ((captured["context"] as? [String: Any])?["device"] as? [String: Any])?["class"]
                 as? String,

@@ -11,47 +11,55 @@ private let bridgeErrorOK = 0
 private let bridgeErrorFailed = 1
 
 private func foundationDictionary(from dictionary: VariantDictionary) -> [String: Any] {
-    var result: [String: Any] = [:]
+    var entries: [(key: String, value: FoundryFoundationValue?)] = []
     let keys = dictionary.keys()
     for index in 0..<Int(keys.size()) {
         guard
             let keyVariant = keys[index],
-            let key = String(keyVariant),
-            let valueVariant = dictionary.get(key: keyVariant, default: nil),
-            let value = foundationValue(from: valueVariant)
+            let key = String(keyVariant)
         else {
             continue
         }
-        result[key] = value
+        let convertedValue: FoundryFoundationValue?
+        if let valueVariant = dictionary.get(key: keyVariant, default: nil) {
+            convertedValue = foundationValue(from: valueVariant)
+        } else {
+            convertedValue = FoundryFoundationValue(NSNull())
+        }
+        entries.append((key: key, value: convertedValue))
     }
-    return result
+    return foundryFoundationDictionary(entries)
 }
 
-private func foundationValue(from variant: Variant) -> Any? {
+private func foundationValue(from variant: Variant) -> FoundryFoundationValue? {
+    if variant.gtype == .nil {
+        return FoundryFoundationValue(NSNull())
+    }
     if let value = Bool(variant) {
-        return value
+        return FoundryFoundationValue(value)
     }
     if let value = Int64(variant) {
-        return value
+        return FoundryFoundationValue(value)
     }
     if let value = Double(variant) {
-        return value
+        return FoundryFoundationValue(value)
     }
     if let value = String(variant) {
-        return value
+        return FoundryFoundationValue(value)
     }
     if let dictionary = VariantDictionary(variant) {
-        return foundationDictionary(from: dictionary)
+        return FoundryFoundationValue(foundationDictionary(from: dictionary))
     }
     if let array = VariantArray(variant) {
-        var result: [Any] = []
+        var values: [FoundryFoundationValue?] = []
         for index in 0..<Int(array.size()) {
-            guard let valueVariant = array[index], let value = foundationValue(from: valueVariant) else {
-                continue
+            if let valueVariant = array[index] {
+                values.append(foundationValue(from: valueVariant))
+            } else {
+                values.append(FoundryFoundationValue(NSNull()))
             }
-            result.append(value)
         }
-        return result
+        return FoundryFoundationValue(foundryFoundationArray(values))
     }
     return nil
 }

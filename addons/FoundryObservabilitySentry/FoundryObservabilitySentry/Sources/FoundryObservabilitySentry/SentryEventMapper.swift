@@ -4,6 +4,33 @@ import Sentry
 private let foundryVariableMaxContainerDepth = 8
 private let foundryVariableMaxItemCount = 256
 
+struct FoundryFoundationValue {
+    let value: Any
+
+    init(_ value: Any) {
+        self.value = value
+    }
+}
+
+func foundryFoundationDictionary(
+    _ entries: [(key: String, value: FoundryFoundationValue?)]
+) -> [String: Any] {
+    var result: [String: Any] = [:]
+    for entry in entries {
+        guard let value = entry.value else {
+            continue
+        }
+        result[entry.key] = value.value
+    }
+    return result
+}
+
+func foundryFoundationArray(
+    _ values: [FoundryFoundationValue?]
+) -> [Any] {
+    values.compactMap { $0?.value }
+}
+
 func sentryLogLevel(for level: Int) -> SentryLog.Level {
     switch level {
     case 10:
@@ -256,8 +283,7 @@ func foundrySentryContexts(_ value: Any?) -> [String: [String: Any]] {
                 rawValue,
                 depth: 0,
                 state: FoundryVariableCopyState()
-            ),
-            !context.isEmpty
+            )
         else {
             continue
         }
@@ -443,6 +469,9 @@ private func foundrySanitizedVariableValue(
     parentDepth: Int,
     state: FoundryVariableCopyState
 ) -> Any? {
+    if value is NSNull {
+        return NSNull()
+    }
     if let value = value as? String {
         return value
     }
