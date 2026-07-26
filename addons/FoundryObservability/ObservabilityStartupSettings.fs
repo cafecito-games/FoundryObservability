@@ -36,6 +36,7 @@ var _editor_hint: bool = false
 var _editor_feature: bool = false
 var _provider_options: Dictionary = {}
 var _validation_error: int = Error.OK
+var _scalar_project_values_valid: bool = true
 
 
 func _init(
@@ -44,12 +45,25 @@ func _init(
 		runtime: Dictionary = {},
 ) -> void:
 	var defaults: Dictionary = project_setting_defaults()
-	_auto_init = values.get(AUTO_INIT, defaults[AUTO_INIT]) == true
-	_enabled = values.get(ENABLED, defaults[ENABLED]) == true
-	_skip_editor_play = values.get(
-			SKIP_EDITOR_PLAY, defaults[SKIP_EDITOR_PLAY]) == true
-	_skip_debug_exports = values.get(
-			SKIP_DEBUG_EXPORTS, defaults[SKIP_DEBUG_EXPORTS]) == true
+	_scalar_project_values_valid = _are_scalar_project_values_valid(
+			values,
+			defaults,
+		)
+	if not _scalar_project_values_valid:
+		_validation_error = Error.ERR_INVALID_PARAMETER
+
+	_auto_init = _project_bool_value(values, defaults, AUTO_INIT)
+	_enabled = _project_bool_value(values, defaults, ENABLED)
+	_skip_editor_play = _project_bool_value(
+			values,
+			defaults,
+			SKIP_EDITOR_PLAY,
+		)
+	_skip_debug_exports = _project_bool_value(
+			values,
+			defaults,
+			SKIP_DEBUG_EXPORTS,
+		)
 	_debug_build = runtime.get("debug_build", false) == true
 	_editor_hint = runtime.get("editor_hint", false) == true
 	_editor_feature = runtime.get("editor_feature", false) == true
@@ -62,7 +76,10 @@ func _init(
 	else:
 		_debug_mode = raw_debug_mode
 
-	var raw_options: Variant = values.get(PROVIDER_OPTIONS, defaults[PROVIDER_OPTIONS])
+	var raw_options: Variant = values.get(
+			PROVIDER_OPTIONS,
+			defaults[PROVIDER_OPTIONS],
+		)
 	var provider_option_budget: Dictionary = {
 		"remaining": _MAX_PROVIDER_OPTION_ITEMS,
 	}
@@ -80,11 +97,11 @@ func _init(
 		_provider_options = raw_options.duplicate(true)
 
 	_dsn = _first_nonempty(
-			str(values.get(DSN, defaults[DSN])),
+			_project_string_value(values, defaults, DSN),
 			str(environment_variables.get("SENTRY_DSN", "")),
 		)
 	_environment = _first_nonempty(
-			str(values.get(ENVIRONMENT, defaults[ENVIRONMENT])),
+			_project_string_value(values, defaults, ENVIRONMENT),
 			str(environment_variables.get("SENTRY_ENVIRONMENT", "")),
 		)
 	if _environment.is_empty():
@@ -98,13 +115,13 @@ func _init(
 	if app_version.is_empty():
 		app_version = "noversion"
 	var release_template: String = _first_nonempty(
-			str(values.get(RELEASE, defaults[RELEASE])),
+			_project_string_value(values, defaults, RELEASE),
 			str(environment_variables.get("SENTRY_RELEASE", "")),
 		)
 	if release_template.is_empty():
 		release_template = "{app_name}@{app_version}"
 	_release = _expand_release_template(release_template, app_name, app_version)
-	_dist = str(values.get(DIST, defaults[DIST])).strip_edges()
+	_dist = _project_string_value(values, defaults, DIST).strip_edges()
 
 	_provider_options["dsn"] = _dsn
 	_provider_options["debug"] = debug_enabled()
@@ -185,6 +202,8 @@ func validation_error() -> int:
 
 
 func skip_status() -> StringName:
+	if not _scalar_project_values_valid:
+		return ObservabilityStartupStatus.NOT_STARTED
 	if not _auto_init or not _enabled:
 		return ObservabilityStartupStatus.DISABLED
 	if _editor_hint:
@@ -253,6 +272,57 @@ static func _detected_environment(runtime: Dictionary) -> String:
 	if runtime.get("debug_build", false) == true:
 		return "export_debug"
 	return "export_release"
+
+
+static func _are_scalar_project_values_valid(
+		values: Dictionary,
+		defaults: Dictionary,
+) -> bool:
+	for setting_name: String in [
+		AUTO_INIT,
+		ENABLED,
+		SKIP_EDITOR_PLAY,
+		SKIP_DEBUG_EXPORTS,
+	]:
+		if not (values.get(setting_name, defaults[setting_name]) is bool):
+			return false
+	for setting_name: String in [
+		DSN,
+		ENVIRONMENT,
+		RELEASE,
+		DIST,
+	]:
+		if not (values.get(setting_name, defaults[setting_name]) is String):
+			return false
+	var debug_mode: Variant = values.get(
+			DEBUG_DIAGNOSTICS,
+			defaults[DEBUG_DIAGNOSTICS],
+		)
+	return debug_mode is int \
+			and debug_mode >= DEBUG_OFF \
+			and debug_mode <= DEBUG_AUTO
+
+
+static func _project_bool_value(
+		values: Dictionary,
+		defaults: Dictionary,
+		setting_name: String,
+) -> bool:
+	var value: Variant = values.get(setting_name, defaults[setting_name])
+	if value is bool:
+		return value == true
+	return defaults[setting_name] == true
+
+
+static func _project_string_value(
+		values: Dictionary,
+		defaults: Dictionary,
+		setting_name: String,
+) -> String:
+	var value: Variant = values.get(setting_name, defaults[setting_name])
+	if value is String:
+		return str(value)
+	return str(defaults[setting_name])
 
 
 static func _is_valid_provider_option(

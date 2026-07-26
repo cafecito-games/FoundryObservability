@@ -1951,6 +1951,59 @@ func test_startup_settings_resolve_project_environment_and_default_precedence() 
 	Expect.that(default_config.environment).to_equal("export_release")
 
 
+func test_startup_settings_reject_declared_project_setting_type_mismatches() -> void:
+	for invalid_values: Dictionary in _malformed_startup_project_values():
+		var settings := ObservabilityStartupSettings.from_sources(invalid_values)
+		Expect.that(settings.validation_error()).to_equal(
+				Error.ERR_INVALID_PARAMETER,
+			)
+		Expect.that(settings.skip_status()).to_equal(
+				ObservabilityStartupStatus.NOT_STARTED,
+			)
+
+	var numeric_dsn := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: 7,
+	})
+	Expect.that(numeric_dsn.has_dsn()).to_be_false()
+
+	var array_environment := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.ENVIRONMENT: ["production"],
+	})
+	Expect.that(array_environment.observability_config().environment).to_equal(
+			"export_release",
+		)
+
+	var numeric_release := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.RELEASE: 123,
+	})
+	Expect.that(numeric_release.observability_config().release).to_equal(
+			"Unknown Foundry project@noversion",
+		)
+
+	var array_dist := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DIST: ["ios"],
+	})
+	Expect.that(array_dist.observability_config().dist).to_equal("")
+
+	var provider_options: Dictionary = {"kept": true}
+	var mixed_values := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: 7,
+		ObservabilityStartupSettings.ENVIRONMENT: "production",
+		ObservabilityStartupSettings.RELEASE: "1.2.3",
+		ObservabilityStartupSettings.DIST: "ios",
+		ObservabilityStartupSettings.PROVIDER_OPTIONS: provider_options,
+	})
+	provider_options["kept"] = false
+	var mixed_config: ObservabilityConfig = mixed_values.observability_config()
+	Expect.that(mixed_values.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+	Expect.that(mixed_config.environment).to_equal("production")
+	Expect.that(mixed_config.release).to_equal("1.2.3")
+	Expect.that(mixed_config.dist).to_equal("ios")
+	Expect.that(mixed_config.provider_options().get("kept")).to_be_true()
+
+
 func test_startup_settings_expands_release_tokens_in_a_single_pass() -> void:
 	var settings := ObservabilityStartupSettings.from_sources(
 			{
@@ -2416,6 +2469,22 @@ func test_startup_reports_safe_disabled_missing_and_invalid_states() -> void:
 	disabled.shutdown()
 	disabled.free()
 
+	var auto_init_disabled: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.AUTO_INIT: false,
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: {
+					"invalid": Vector2.ONE,
+				},
+			}),
+		)
+	Expect.that(auto_init_disabled.startup_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+	Expect.that(auto_init_disabled.last_error()).to_equal(Error.OK)
+	Expect.that(auto_init_disabled.provider_name()).to_equal(&"null")
+	auto_init_disabled.shutdown()
+	auto_init_disabled.free()
+
 	var missing_dsn: FoundryObservability = _startup_service(
 			ObservabilityStartupSettings.from_sources(),
 		)
@@ -2458,6 +2527,28 @@ func test_startup_reports_safe_disabled_missing_and_invalid_states() -> void:
 	Expect.that(null_settings.startup_message()).to_contain("invalid")
 	null_settings.shutdown()
 	null_settings.free()
+
+
+func test_startup_rejects_malformed_project_values_before_skip_resolution() -> void:
+	for invalid_values: Dictionary in _malformed_startup_project_values():
+		var settings := ObservabilityStartupSettings.from_sources(
+				invalid_values,
+				{},
+				{"editor_feature": true, "debug_build": true},
+			)
+		var service: FoundryObservability = _startup_service(
+				settings,
+				"res://addons/FoundryObservability/ObservabilityProvider.fs",
+			)
+
+		Expect.that(service.startup_status()).to_equal(
+				ObservabilityStartupStatus.CONFIGURATION_FAILED,
+			)
+		Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+		Expect.that(service.provider_name()).to_equal(&"null")
+
+		service.shutdown()
+		service.free()
 
 
 func test_startup_reports_missing_noninstantiable_and_wrong_provider_scripts() -> void:
@@ -2659,6 +2750,55 @@ func _project_setting_property(setting_name: String) -> Dictionary:
 		if property_info.get("name") == setting_name:
 			return property_info
 	return {}
+
+
+func _malformed_startup_project_values() -> Array[Dictionary]:
+	var dsn: String = "https://public@example/1"
+	return [
+		{
+			ObservabilityStartupSettings.AUTO_INIT: 0,
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.ENABLED: "true",
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.SKIP_EDITOR_PLAY: "true",
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.SKIP_DEBUG_EXPORTS: "true",
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS:
+					ObservabilityStartupSettings.DEBUG_OFF,
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{ObservabilityStartupSettings.DSN: 7},
+		{
+			ObservabilityStartupSettings.ENVIRONMENT: ["production"],
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.RELEASE: 123,
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.DIST: ["ios"],
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.RELEASE: &"named-release",
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS: "Auto",
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.ENABLED: false,
+			ObservabilityStartupSettings.DSN: 7,
+		},
+	]
 
 
 func _restore_project_setting(
