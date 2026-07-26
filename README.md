@@ -168,6 +168,29 @@ FoundryObservability.capture_feedback(ObservabilityFeedback.new(
 FoundryObservability.clear_breadcrumbs()
 ```
 
+Persistent diagnostic attachments use provider-local handles:
+
+```foundryscript
+var attachment := ObservabilityAttachment.from_path(
+		"user://logs/foundry.log",
+		"foundry.log",
+		"text/plain",
+)
+if attachment != null:
+	var handle := FoundryObservability.add_attachment(attachment)
+	FoundryObservability.capture_message("save failed", ObservabilityLevel.ERROR)
+	for failure: ObservabilityAttachmentFailure in \
+			FoundryObservability.last_attachment_failures():
+		print("%s: %s" % [failure.filename(), failure.reason()])
+	if not handle.is_empty():
+		FoundryObservability.remove_attachment(handle)
+```
+
+`attach_game_log`, `attach_screenshot`, and `attach_scene_tree` are independent
+false-by-default configuration opt-ins. `max_attachment_bytes` defaults to
+20 MiB per attachment; setting it to zero disables attachment delivery while
+still allowing attachment management.
+
 See the [identity privacy guidance](docs/API.md#observabilityuser) before
 supplying optional identifying or contact fields.
 

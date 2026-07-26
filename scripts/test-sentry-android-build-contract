@@ -53,6 +53,8 @@ gradle_file="$android_source/build.gradle"
 rg -q 'extends FoundryPlugin' "$bridge_source" || fail "bridge must extend FoundryPlugin"
 rg -q 'return "SentryObservabilityBridge"' "$bridge_source" \
 	|| fail "bridge must use the shared plugin name"
+rg -q 'public String getPluginName\(\)' "$bridge_source" \
+	|| fail "Android bridge must expose the exact Foundry plugin-name method"
 for method in lifecycleVersion configure isAvailable capture captureLog captureBreadcrumb captureMetric flush shutdown; do
 	rg -q "[[:space:]]$method\\(" "$bridge_source" \
 		|| fail "bridge is missing $method"
@@ -67,6 +69,10 @@ rg -q 'public boolean replaceAttachments\(Object\[\] payloads\)' "$bridge_source
 	|| fail "Android attachment replacement must consume the Foundry Array representation"
 rg -q 'public String captureWithAttachments\(Dictionary payload\)' "$bridge_source" \
 	|| fail "Android attachment-aware capture method is missing"
+rg -q -U '@UsedByFoundry[[:space:]]+public String captureWithAttachments\(Dictionary payload\)' "$bridge_source" \
+	|| fail "attachment-aware Android capture must remain a Foundry export"
+rg -q -U '@UsedByFoundry[[:space:]]+public boolean replaceAttachments\(Object\[\] payloads\)' "$bridge_source" \
+	|| fail "Android attachment replacement must remain a Foundry export"
 rg -q 'static final SentryLifecycleCoordinator LIFECYCLE_COORDINATOR' "$bridge_source" \
 	|| fail "Android bridge instances must share a process-global lifecycle coordinator"
 rg -q 'lifecycle_owner' "$bridge_source" \
@@ -127,6 +133,8 @@ rg -q 'options\.setEnableScopeSync\(true\)' "$driver_source" \
 	|| fail "Android lifecycle must synchronize scope data to native crashes"
 rg -q 'options\.setMaxAttachmentSize\(configuration\.maxAttachmentBytes\)' "$driver_source" \
 	|| fail "Android lifecycle must configure the attachment size maximum"
+rg -q 'final long maxAttachmentBytes;' "$configuration_source" \
+	|| fail "Android lifecycle configuration must retain its typed attachment limit"
 rg -q 'options\.setShutdownTimeoutMillis\(SHUTDOWN_TIMEOUT_MSEC\)' "$driver_source" \
 	|| fail "Android lifecycle must use a bounded native shutdown"
 rg -q 'Sentry\.configureScope' "$driver_source" \
@@ -136,6 +144,10 @@ rg -q '"foundry"' "$driver_source" \
 rg -q 'Sentry\.captureEvent' "$bridge_source" || fail "bridge must capture Sentry events"
 rg -q 'new Attachment\(' "$attachment_mapper" \
 	|| fail "Android attachment mapper must construct native Sentry attachments"
+rg -q 'AndroidSentrySdkDriver\.applyCaptureScope\(' "$bridge_source" \
+	|| fail "Android attachment-aware capture must delegate to capture-local scope mapping"
+rg -q 'scope\.addAttachment\(attachment\)' "$driver_source" \
+	|| fail "Android native mapping must add attachments to the active scope"
 rg -q 'Sentry\.logger\(\)' "$bridge_source" || fail "bridge must capture structured Sentry logs"
 rg -q 'Sentry\.addBreadcrumb' "$bridge_source" || fail "bridge must capture Sentry breadcrumbs"
 rg -q 'new Breadcrumb' "$breadcrumb_mapper" || fail "mapper must construct Sentry breadcrumbs"

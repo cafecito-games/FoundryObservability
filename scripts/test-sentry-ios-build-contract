@@ -190,6 +190,8 @@ rg -q 'foundry_observability_sentry_entry_point' "$swift_sources/FoundryObservab
 	|| fail "bridge source has the wrong entry symbol"
 rg -q '@Foundry' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose a Foundry class"
+rg -q '^class[[:space:]]+SentryObservabilityBridge:[[:space:]]+RefCounted[[:space:]]*\{' "$bridge_source" \
+	|| fail "Apple bridge must retain the exact Foundry class name"
 rg -q '@Callable' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose callable bridge methods"
 rg -q 'func lifecycleVersion\(\) -> Int' "$swift_sources/FoundryObservabilitySentry.swift" \
@@ -204,6 +206,10 @@ rg -q 'func replaceAttachments\(payloads: VariantArray\) -> Bool' "$bridge_sourc
 	|| fail "bridge must expose owner-safe attachment replacement"
 rg -q 'func captureWithAttachments\(payload: VariantDictionary\) -> String' "$bridge_source" \
 	|| fail "bridge must expose capture-local attachment delivery"
+rg -q -U '@Callable[[:space:]]+func captureWithAttachments\(payload: VariantDictionary\) -> String' "$bridge_source" \
+	|| fail "attachment-aware Apple capture must remain a Foundry-callable export"
+rg -q -U '@Callable[[:space:]]+func replaceAttachments\(payloads: VariantArray\) -> Bool' "$bridge_source" \
+	|| fail "Apple attachment replacement must remain a Foundry-callable export"
 rg -q -U 'switch captureAttachmentCandidate\(from: payload\)[[:space:]]*\{(.|\n)*let values = foundationDictionary\(from: payload\)' "$bridge_source" \
 	|| fail "capture-local attachments must parse strictly before generic conversion"
 rg -q 'return strictFoundryAttachments\(from: values\)' "$bridge_source" \
@@ -242,8 +248,12 @@ rg -q 'options\.enableMetrics = configuration\.metricsEnabled' "$lifecycle_coord
 	|| fail "Apple lifecycle must configure Sentry Metrics"
 rg -q 'options\.maxAttachmentSize = configuration\.maxAttachmentBytes' "$lifecycle_coordinator" \
 	|| fail "Apple lifecycle must configure the attachment size limit"
+rg -q 'let maxAttachmentBytes: UInt' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle configuration must retain its typed attachment limit"
 rg -q 'scope\.clearAttachments\(\)' "$lifecycle_coordinator" \
 	|| fail "Apple attachment replacement must clear the owned SDK snapshot"
+rg -q 'scope\.addAttachment\(attachment\)' "$attachment_mapper" \
+	|| fail "Apple capture-local mapping must add attachments to the capture scope"
 rg -q 'event\.attachment' "$attachment_mapper" \
 	|| fail "Apple attachment mapper must support event attachments"
 rg -q 'event\.view_hierarchy' "$attachment_mapper" \

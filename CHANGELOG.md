@@ -2,6 +2,10 @@
 
 ## [Unreleased] - 2026-07-24
 
+- Added provider-neutral diagnostic attachment lifecycle support for issue #12,
+  with persistent path and byte attachments, Apple/Android Sentry delivery,
+  independent game-log/screenshot/scene-tree opt-ins, per-attachment limits,
+  and typed partial-delivery failures.
 - Added project-settings Sentry initialization during observability autoload
   construction, with deterministic deployment defaults, runtime skip controls,
   debug diagnostics, and idempotent reinitialization.

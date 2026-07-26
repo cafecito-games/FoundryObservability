@@ -223,6 +223,87 @@ provider_outline=$(sed -n '/^class_name MyProvider$/,/^~~~$/p' "$repo_root/docs/
 grep -qx 'func clear_breadcrumbs() -> bool:' <<<"$provider_outline" \
 	|| fail "custom provider example is missing clear_breadcrumbs"
 
+attachment_docs=$(
+	sed -n '/^## Diagnostic attachments$/,/^## FoundryLib integration$/p' \
+		"$repo_root/docs/API.md"
+)
+[[ -n "$attachment_docs" ]] \
+	|| fail "API docs are missing the bounded Diagnostic attachments section"
+attachment_docs_flat=$(tr '\n\t' '  ' <<<"$attachment_docs" | tr -s ' ')
+for attachment_signature in \
+	'static func from_path(path: String, filename: String = "", content_type: String = "", category: StringName = DEFAULT_CATEGORY) -> ObservabilityAttachment?' \
+	'static func from_bytes(bytes: PackedByteArray, filename: String, content_type: String = "", category: StringName = DEFAULT_CATEGORY) -> ObservabilityAttachment?' \
+	'func path() -> String' \
+	'func bytes() -> PackedByteArray' \
+	'func filename() -> String' \
+	'func effective_filename() -> String' \
+	'func content_type() -> String' \
+	'func category() -> StringName' \
+	'func is_path() -> bool' \
+	'func is_bytes() -> bool' \
+	'func duplicate() -> ObservabilityAttachment' \
+	'func is_valid() -> bool' \
+	'func handle() -> String' \
+	'func reason() -> StringName' \
+	'func error() -> int' \
+	'func duplicate() -> ObservabilityAttachmentFailure' \
+	'func add_attachment(attachment: ObservabilityAttachment) -> String' \
+	'func remove_attachment(handle: String) -> bool' \
+	'func clear_attachments() -> bool' \
+	'func last_attachment_failures() -> Array' \
+	'abstract func remove_attachment(handle: String) -> int'; do
+	rg -Fq "$attachment_signature" <<<"$attachment_docs_flat" \
+		|| fail "API docs are missing exact attachment signature: $attachment_signature"
+done
+for attachment_config_contract in \
+	'max_attachment_bytes | `20 * 1024 * 1024` (20 MiB)' \
+	'attach_game_log | `false`' \
+	'attach_screenshot | `false`' \
+	'attach_scene_tree | `false`' \
+	'Negative values normalize to zero.' \
+	'Zero disables all attachment delivery, while attachment management may continue.' \
+	'The limit applies independently to each attachment.'; do
+	rg -Fq "$attachment_config_contract" <<<"$attachment_docs_flat" \
+		|| fail "API docs are missing attachment configuration contract: $attachment_config_contract"
+done
+for attachment_lifecycle_contract in \
+	'Attachments persist for the configured provider session until removed or cleared.' \
+	'Successful reconfiguration, provider replacement, and shutdown invalidate every prior handle.' \
+	'Failed reconfiguration preserves attachments and their handles.' \
+	'Absolute paths and `user://` paths stay lazy until capture.' \
+	'Packaged `res://` paths are materialized only for the current Foundry-originated event.' \
+	'Byte attachments are copied on construction and access.' \
+	'Partial attachment failures never reject an accepted event.' \
+	'`last_error()` remains `Error.OK` after an accepted event with attachment failures.' \
+	'Only the latest event envelope replaces `last_attachment_failures()`.' \
+	'Non-event APIs and automatic structured logs do not replace the latest attachment failures.'; do
+	rg -Fq "$attachment_lifecycle_contract" <<<"$attachment_docs_flat" \
+		|| fail "API docs are missing attachment lifecycle contract: $attachment_lifecycle_contract"
+done
+for failure_reason in missing_file unreadable_file oversized platform_unavailable provider_rejected; do
+	rg -Fq "\`$failure_reason\`" <<<"$attachment_docs_flat" \
+		|| fail "API docs are missing stable attachment failure reason: $failure_reason"
+done
+for builtin_contract in \
+	'`attach_game_log`, `attach_screenshot`, and `attach_scene_tree` are independent, false-by-default opt-ins.' \
+	'The game log remains a lazy path attachment.' \
+	'Screenshot capture runs on the main thread, is unavailable headlessly, and may reuse the current frame.' \
+	'Scene-tree output is bounded and may contain game-authored names or text.' \
+	'Foundry preflight runs independently for each event.' \
+	'Apple and Android are the supported native attachment targets.' \
+	'The native SDK owns diagnostic timing and the final attachment race.'; do
+	rg -Fq "$builtin_contract" <<<"$attachment_docs_flat" \
+		|| fail "API docs are missing built-in attachment contract: $builtin_contract"
+done
+rg -Fq 'user://logs/foundry.log' "$repo_root/README.md" \
+	|| fail "README is missing the provider-neutral attachment example"
+rg -Fq 'FoundryObservability.last_attachment_failures()' "$repo_root/README.md" \
+	|| fail "README attachment example must inspect delivery failures"
+rg -Fq 'FoundryObservability.remove_attachment(handle)' "$repo_root/README.md" \
+	|| fail "README attachment example must remove its handle"
+rg -Fq 'issue #12' "$repo_root/CHANGELOG.md" \
+	|| fail "changelog is missing the diagnostic attachment entry for issue #12"
+
 command -v unzip >/dev/null 2>&1 || fail "unzip is required"
 default_dist="$probe_root/default"
 archive=$(DIST_DIR="$default_dist" "$repo_root/scripts/package-addon")
@@ -252,6 +333,16 @@ for scope_resource in \
 		|| fail "package is missing ${scope_resource}.fs"
 	grep -qx "$resource_path.uid" <<<"$listing" \
 		|| fail "package is missing ${scope_resource}.fs.uid"
+done
+for attachment_resource in \
+	ObservabilityAttachment \
+	ObservabilityAttachmentFailure \
+	ObservabilityAttachmentsProvider; do
+	resource_path="addons/FoundryObservability/${attachment_resource}.fs"
+	grep -qx "$resource_path" <<<"$listing" \
+		|| fail "package is missing ${attachment_resource}.fs"
+	grep -qx "$resource_path.uid" <<<"$listing" \
+		|| fail "package is missing ${attachment_resource}.fs.uid"
 done
 grep -qx 'addons/FoundryObservability/ObservabilityFeedback.fs' <<<"$listing" \
 	|| fail "package is missing the feedback value type"
@@ -288,6 +379,15 @@ for context_resource in SentryRuntimeContextProbe SentryRuntimeContextCollector;
 	grep -qx "addons/FoundryObservabilitySentry/${context_resource}.fs" \
 		<<<"$sentry_listing" \
 		|| fail "Sentry package is missing ${context_resource}.fs"
+done
+for attachment_resource in \
+	SentryAttachmentRuntimeProbe \
+	SentryBuiltInAttachmentCollector; do
+	resource_path="addons/FoundryObservabilitySentry/${attachment_resource}.fs"
+	grep -qx "$resource_path" <<<"$sentry_listing" \
+		|| fail "Sentry package is missing ${attachment_resource}.fs"
+	grep -qx "$resource_path.uid" <<<"$sentry_listing" \
+		|| fail "Sentry package is missing ${attachment_resource}.fs.uid"
 done
 grep -qx 'addons/FoundryObservabilitySentry/FoundryObservabilitySentry.foundryextension' <<<"$sentry_listing" \
 	|| fail "Sentry package is missing the FoundryExtension descriptor"

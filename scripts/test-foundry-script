@@ -142,6 +142,19 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 	|| fail "Sentry attachment runtime probe is missing"
 [[ -f "$sentry_addon/SentryBuiltInAttachmentCollector.fs" ]] \
 	|| fail "Sentry built-in attachment collector is missing"
+for attachment_resource in \
+	ObservabilityAttachment \
+	ObservabilityAttachmentFailure \
+	ObservabilityAttachmentsProvider; do
+	[[ -s "$addon/${attachment_resource}.fs.uid" ]] \
+		|| fail "${attachment_resource}.fs.uid is missing or empty"
+done
+for sentry_attachment_resource in \
+	SentryAttachmentRuntimeProbe \
+	SentryBuiltInAttachmentCollector; do
+	[[ -s "$sentry_addon/${sentry_attachment_resource}.fs.uid" ]] \
+		|| fail "${sentry_attachment_resource}.fs.uid is missing or empty"
+done
 rg -q '^class_name SentryAttachmentRuntimeProbe$' \
 	"$sentry_addon/SentryAttachmentRuntimeProbe.fs" \
 	|| fail "Sentry attachment runtime probe declaration is missing"
@@ -220,6 +233,22 @@ rg -q '^class_name ObservabilityAttachmentFailure$' \
 rg -q '^trait_name ObservabilityAttachmentsProvider$' \
 	"$addon/ObservabilityAttachmentsProvider.fs" \
 	|| fail "optional attachments provider contract is missing"
+for attachment_api in \
+	'abstract func add_attachment(attachment: ObservabilityAttachment) -> String' \
+	'abstract func remove_attachment(handle: String) -> bool' \
+	'abstract func clear_attachments() -> bool' \
+	'abstract func last_attachment_failures() -> Array'; do
+	rg -Fq "$attachment_api" "$addon/FoundryObservabilityApi.fs" \
+		|| fail "public contract is missing exact attachment API: $attachment_api"
+done
+for provider_attachment_api in \
+	'abstract func add_attachment(attachment: ObservabilityAttachment) -> String' \
+	'abstract func remove_attachment(handle: String) -> int' \
+	'abstract func clear_attachments() -> bool' \
+	'abstract func last_attachment_failures() -> Array'; do
+	rg -Fq "$provider_attachment_api" "$addon/ObservabilityAttachmentsProvider.fs" \
+		|| fail "optional provider contract is missing exact attachment API: $provider_attachment_api"
+done
 rg -q 'capture_feedback' "$addon/FoundryObservabilityApi.fs" \
 	|| fail "public contract is missing capture_feedback"
 for scope_api in \
