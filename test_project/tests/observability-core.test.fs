@@ -24,6 +24,10 @@ var _service_processing_clock_msec: int = 0
 var _service_processing_frame_index: int = 0
 var _service_processing_clock_calls: int = 0
 var _service_processing_frame_calls: int = 0
+var _service_lifecycle_service: FoundryObservability
+var _service_lifecycle_provider: ObservabilityProvider
+var _service_lifecycle_config: ObservabilityConfig
+var _service_lifecycle_configure_result: int = Error.OK
 
 class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/ObservabilityStackFrame.fs":
 	var public_variables_calls: int = 0
@@ -61,6 +65,36 @@ class ConfigureCountingMemoryProvider extends \
 	func configure(config: ObservabilityConfig) -> int:
 		configure_calls += 1
 		return super.configure(config)
+
+
+class ReconfiguringCaptureMemoryProvider extends \
+		"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var service: FoundryObservability
+	var replacement_provider: ObservabilityProvider
+	var replacement_config: ObservabilityConfig
+	var reconfigure_result: int = Error.OK
+	var reconfigure_on_capture: bool = true
+
+	func capture(event: ObservabilityEvent) -> String:
+		if reconfigure_on_capture:
+			reconfigure_on_capture = false
+			reconfigure_result = service.configure(
+					replacement_provider,
+					replacement_config,
+				)
+		return super.capture(event)
+
+
+class ReentrantConfigureMemoryProvider extends \
+		"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var service: FoundryObservability
+	var nested_flush_result: int = Error.OK
+
+	func configure(config: ObservabilityConfig) -> int:
+		var result: int = super.configure(config)
+		if service != null:
+			nested_flush_result = service.flush()
+		return result
 
 
 class RecordingScopeProvider extends RefCounted:
@@ -4170,6 +4204,223 @@ func test_service_constructor_preserves_positional_arguments_and_uses_processing
 	_shutdown_processing_service(service)
 
 
+func test_service_event_capture_does_not_cross_reconfigured_generation() -> void:
+	var service := _processing_service()
+	var original := MemoryObservabilityProvider.new()
+	var replacement := MemoryObservabilityProvider.new()
+	var replacement_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+		)
+	_service_lifecycle_service = service
+	_service_lifecycle_provider = replacement
+	_service_lifecycle_config = replacement_config
+	_service_lifecycle_configure_result = Error.FAILED
+	Expect.that(service.configure(original, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [
+				Callable(self, "_service_reconfigure_from_event_processor"),
+			],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("old generation")).to_equal("")
+	Expect.that(_service_lifecycle_configure_result).to_equal(Error.OK)
+	Expect.that(original.events()).to_have_size(0)
+	Expect.that(replacement.events()).to_have_size(0)
+	Expect.that(service.last_processing_diagnostic()).to_be_null()
+
+	Expect.that(service.capture_message("new generation")).to_equal("memory:1")
+	Expect.that(replacement.events()).to_have_size(1)
+	Expect.that(replacement.events()[0].message()).to_equal("new generation")
+	_shutdown_processing_service(service)
+
+
+func test_service_metric_capture_does_not_cross_reconfigured_generation() -> void:
+	var service := _processing_service()
+	var original := MemoryObservabilityProvider.new()
+	var replacement := MemoryObservabilityProvider.new()
+	var replacement_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+		)
+	_service_lifecycle_service = service
+	_service_lifecycle_provider = replacement
+	_service_lifecycle_config = replacement_config
+	_service_lifecycle_configure_result = Error.FAILED
+	Expect.that(service.configure(original, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [
+				Callable(self, "_service_reconfigure_from_metric_processor"),
+			],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_counter("old.metric")).to_be_false()
+	Expect.that(_service_lifecycle_configure_result).to_equal(Error.OK)
+	Expect.that(original.metrics()).to_have_size(0)
+	Expect.that(replacement.metrics()).to_have_size(0)
+	Expect.that(service.last_processing_diagnostic()).to_be_null()
+
+	Expect.that(service.capture_counter("new.metric")).to_be_true()
+	Expect.that(replacement.metrics()).to_have_size(1)
+	Expect.that(replacement.metrics()[0].name()).to_equal("new.metric")
+	_shutdown_processing_service(service)
+
+
+func test_service_rejects_reconfiguration_during_provider_capture() -> void:
+	var service := _processing_service()
+	var active := ReconfiguringCaptureMemoryProvider.new()
+	var replacement := ConfigureCountingMemoryProvider.new()
+	var replacement_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+		)
+	active.service = service
+	active.replacement_provider = replacement
+	active.replacement_config = replacement_config
+	Expect.that(service.configure(active, replacement_config)).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("active generation")).to_equal("memory:1")
+	Expect.that(active.reconfigure_result).to_equal(Error.ERR_BUSY)
+	Expect.that(active.shutdown_count).to_equal(0)
+	Expect.that(replacement.configure_calls).to_equal(0)
+	Expect.that(active.events()).to_have_size(1)
+	Expect.that(service.provider_name()).to_equal(&"memory")
+
+	Expect.that(service.capture_message("still active")).to_equal("memory:2")
+	Expect.that(active.events()).to_have_size(2)
+	_shutdown_processing_service(service)
+
+
+func test_service_blocks_other_provider_calls_during_reconfiguration() -> void:
+	var service := _processing_service()
+	var active := MemoryObservabilityProvider.new()
+	var replacement := ReentrantConfigureMemoryProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+		)
+	Expect.that(service.configure(active, config)).to_equal(Error.OK)
+	replacement.service = service
+
+	Expect.that(service.configure(replacement, config)).to_equal(Error.OK)
+	Expect.that(replacement.nested_flush_result).to_equal(Error.ERR_BUSY)
+	Expect.that(active.flush_count).to_equal(0)
+	Expect.that(service.capture_message("replacement active")).to_equal("memory:1")
+	_shutdown_processing_service(service)
+
+
+func test_service_normalizes_final_processor_replacement_before_delivery() -> void:
+	var service := _processing_service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_stack_trace_source_context_enabled = false,
+			p_stack_trace_variables_enabled = false,
+			p_event_processors = [
+				Callable(self, "_service_replace_with_unnormalized_exception"),
+			],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("input")).to_equal("memory:1")
+	var captured: ObservabilityEvent = provider.events()[0]
+	Expect.that(captured.timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(captured.engine_ticks_msec()).to_be_greater_than(-1)
+	Expect.that(captured.kind()).to_equal(&"exception")
+	Expect.that(captured.exception().frames()).to_have_size(1)
+	var frame: ObservabilityStackFrame = captured.exception().frames()[0]
+	Expect.that(frame.line()).to_equal(-1)
+	Expect.that(frame.context_line()).to_equal("")
+	Expect.that(frame.pre_context()).to_equal(PackedStringArray())
+	Expect.that(frame.post_context()).to_equal(PackedStringArray())
+	Expect.that(frame.variables()).to_equal({})
+	_shutdown_processing_service(service)
+
+
+func test_automatic_logger_preserves_event_failure_after_successful_log() -> void:
+	var service := _processing_service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 0,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_processing_wrong_type")],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+			p_log_limits = ObservabilitySignalLimits.new(),
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service,
+			config,
+			func() -> int: return 1000,
+			func() -> int: return 1,
+		)
+
+	logger._log_error(
+			"run",
+			"res://case.fs",
+			1,
+			"failure",
+			"",
+			false,
+			Logger.ERROR_TYPE_ERROR,
+			[],
+		)
+
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].kind()).to_equal(&"log")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
+	_shutdown_processing_service(service)
+
+
 func test_disabled_structured_logs_do_not_consume_rate_limit() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
@@ -6479,6 +6730,63 @@ func _service_replace_event(event: ObservabilityEvent) -> ObservabilityEvent:
 
 func _service_drop_event(_event: ObservabilityEvent) -> Variant:
 	return null
+
+
+func _service_reconfigure_from_event_processor(
+		event: ObservabilityEvent,
+) -> ObservabilityEvent:
+	_service_lifecycle_configure_result = _service_lifecycle_service.configure(
+			_service_lifecycle_provider,
+			_service_lifecycle_config,
+		)
+	return _processing_event_with_message(event, "stale replacement")
+
+
+func _service_reconfigure_from_metric_processor(
+		metric: ObservabilityMetric,
+) -> ObservabilityMetric:
+	_service_lifecycle_configure_result = _service_lifecycle_service.configure(
+			_service_lifecycle_provider,
+			_service_lifecycle_config,
+		)
+	return ObservabilityMetric.new(
+			metric.type(),
+			"stale.metric",
+			metric.value(),
+			metric.unit(),
+			metric.attributes(),
+		)
+
+
+func _service_replace_with_unnormalized_exception(
+		_event: ObservabilityEvent,
+) -> ObservabilityEvent:
+	return ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_level = ObservabilityLevel.ERROR,
+			p_message = "replacement",
+			p_source = &"processor",
+			p_timestamp_msec = ObservabilityEvent.UNASSIGNED_TIMESTAMP,
+			p_attributes = {},
+			p_exception = ObservabilityException.new(
+					p_type_name = "ReplacementFailure",
+					p_message = "replacement",
+					p_attributes = {},
+					p_frames = [
+						ObservabilityStackFrame.new(),
+						ObservabilityStackFrame.new(
+								p_file = "res://replacement.fs",
+								p_function = "run",
+								p_line = 0,
+								p_context_line = "secret context",
+								p_pre_context = PackedStringArray(["before"]),
+								p_post_context = PackedStringArray(["after"]),
+								p_variables = {"secret": "value"},
+							),
+					],
+				),
+			p_engine_ticks_msec = ObservabilityEvent.UNASSIGNED_TIMESTAMP,
+		)
 
 
 func _expect_service_per_frame_diagnostic(
