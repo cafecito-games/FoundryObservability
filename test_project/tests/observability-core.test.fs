@@ -419,6 +419,36 @@ func test_global_scope_requires_complete_capability_without_blocking_events() ->
 	service.shutdown()
 
 
+func test_partial_scope_capability_is_unavailable_without_blocking_unscoped_events() -> void:
+	var service: FoundryObservability = _service()
+	var provider := PartialScopeObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("unscoped")).to_equal("partial-scope:1")
+	Expect.that(provider.capture_count).to_equal(1)
+
+	Expect.that(service.set_tag("region", "iad")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(provider.scope_call_count).to_equal(0)
+
+	var local_scope := ObservabilityScope.new()
+	Expect.that(local_scope.set_tag("region", "fra")).to_be_true()
+	Expect.that(service.capture_message(
+			"scoped",
+			ObservabilityLevel.INFO,
+			{},
+			local_scope,
+		)).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(provider.capture_count).to_equal(1)
+	Expect.that(provider.scope_call_count).to_equal(0)
+	service.shutdown()
+
+
 func test_global_scope_provider_false_and_non_boolean_results_fail() -> void:
 	var service: FoundryObservability = _service()
 	var rejecting := RecordingScopeProvider.new()
