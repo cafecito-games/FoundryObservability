@@ -13,6 +13,12 @@ var _processing_filter_values: Array[String] = []
 var _processing_clock_calls: int = 0
 var _processing_frame_calls: int = 0
 var _recursive_pipeline: ObservabilityProcessingPipeline
+var _lifecycle_pipeline: ObservabilityProcessingPipeline
+var _processing_owner_id: int = 1
+var _lifecycle_nested_result: Dictionary = {}
+var _overlap_nested_result: Dictionary = {}
+var _overlap_recursive_result: Dictionary = {}
+var _overlap_stage: int = 0
 
 class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/ObservabilityStackFrame.fs":
 	var public_variables_calls: int = 0
@@ -33,6 +39,14 @@ class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/Obser
 	func variables() -> Dictionary:
 		public_variables_calls += 1
 		return {"public accessor": true}
+
+
+class MutableProcessingCallbacks extends Node:
+	func process_event(event: ObservabilityEvent) -> ObservabilityEvent:
+		return event
+
+	func filter_metric(_metric: ObservabilityMetric) -> bool:
+		return true
 
 
 class RecordingScopeProvider extends RefCounted:
@@ -5481,6 +5495,38 @@ func test_processing_pipeline_reports_processor_drops_and_wrong_types() -> void:
 	Expect.that(invalid.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
 
 
+func test_processing_pipeline_fails_closed_when_processor_target_expires() -> void:
+	var callbacks := MutableProcessingCallbacks.new()
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(_processing_config([
+			Callable(callbacks, "process_event"),
+	]))).to_equal(Error.OK)
+	callbacks.free()
+
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+
+
+func test_processing_pipeline_fails_closed_when_metric_filter_target_expires() -> void:
+	var callbacks := MutableProcessingCallbacks.new()
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_metric_filter = Callable(callbacks, "filter_metric"),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	callbacks.free()
+
+	Expect.that(pipeline.process_metric(ObservabilityMetric.new(
+			p_name = "metric", p_value = 1.0,
+	))["accepted"]).to_be_false()
+	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+
+
 func test_processing_pipeline_metric_filter_is_pre_redacted_and_precedes_processors() -> void:
 	_processing_order.clear()
 	_processing_filter_values.clear()
@@ -5536,6 +5582,7 @@ func test_processing_pipeline_blocks_recursive_entries_before_callbacks_or_limit
 	_recursive_pipeline = ObservabilityProcessingPipeline.new(
 			func() -> int: return 1,
 			func() -> int: return 1,
+			func() -> int: return 1,
 	)
 	Expect.that(_recursive_pipeline.configure(ObservabilityConfig.new(
 			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
@@ -5551,6 +5598,84 @@ func test_processing_pipeline_blocks_recursive_entries_before_callbacks_or_limit
 	Expect.that(_recursive_pipeline.process_metric(ObservabilityMetric.new(
 			p_name = "after.recursion", p_value = 1.0,
 	))["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_reconfigure_reentry_is_recursive_and_outer_result_is_stale() -> void:
+	_processing_owner_id = 1
+	_lifecycle_nested_result = {}
+	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(_lifecycle_pipeline.configure(_processing_config(
+			[Callable(self, "_processing_reconfigure_and_reenter")],
+	))).to_equal(Error.OK)
+
+	var outer: Dictionary = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(_lifecycle_nested_result["accepted"]).to_be_false()
+	Expect.that(outer["accepted"]).to_be_false()
+	Expect.that(_lifecycle_pipeline.recursive_drop_count()).to_equal(1)
+	Expect.that(_lifecycle_pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.RECURSIVE)
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_suppresses_old_generation_processor_drop_after_reset() -> void:
+	_processing_owner_id = 1
+	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(_lifecycle_pipeline.configure(_processing_config(
+			[Callable(self, "_processing_reconfigure_and_drop")],
+	))).to_equal(Error.OK)
+
+	Expect.that(_lifecycle_pipeline.process_event(
+			ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(_lifecycle_pipeline.last_diagnostic()).to_be_null()
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_allows_overlapping_different_owners() -> void:
+	_processing_owner_id = 1
+	_overlap_stage = 0
+	_overlap_nested_result = {}
+	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(_lifecycle_pipeline.configure(_processing_config(
+			[Callable(self, "_processing_overlap_different_owner")],
+	))).to_equal(Error.OK)
+
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(_overlap_nested_result["accepted"]).to_be_true()
+	Expect.that(_lifecycle_pipeline.recursive_drop_count()).to_equal(0)
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_exact_release_preserves_other_active_owner_reservation() -> void:
+	_processing_owner_id = 1
+	_overlap_stage = 0
+	_overlap_nested_result = {}
+	_overlap_recursive_result = {}
+	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(_lifecycle_pipeline.configure(_processing_config(
+			[Callable(self, "_processing_overlap_and_probe_original_owner")],
+	))).to_equal(Error.OK)
+
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(_overlap_nested_result["accepted"]).to_be_true()
+	Expect.that(_overlap_recursive_result["accepted"]).to_be_false()
+	Expect.that(_lifecycle_pipeline.recursive_drop_count()).to_equal(1)
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
 
 
 func test_processing_pipeline_uses_signal_local_limiters_and_publishes_limit_diagnostics() -> void:
@@ -5683,18 +5808,76 @@ func test_processing_pipeline_records_provider_results_and_keeps_admission_consu
 			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(1),
 	))).to_equal(Error.OK)
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
-	pipeline.record_provider_result(&"event", false, Error.OK)
+	var accepted: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(accepted["accepted"]).to_be_true()
+	pipeline.record_provider_result(&"event", false, Error.OK, accepted["operation_token"])
 	var rejected: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
 	Expect.that(rejected.reason()).to_equal(ObservabilityProcessingDiagnostic.PROVIDER_REJECTED)
 	Expect.that(rejected.error()).to_equal(Error.FAILED)
 	var isolated: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
 	Expect.that(isolated).to_not_equal(rejected)
 	pipeline.record_provider_result(&"event", true, Error.ERR_INVALID_PARAMETER)
+	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(rejected.sequence())
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+
+
+func test_processing_pipeline_pairs_provider_results_to_current_pending_tokens() -> void:
+	_processing_owner_id = 1
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
+	var old: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(old["accepted"]).to_be_true()
+	Expect.that(old.has("operation_token")).to_be_true()
+
+	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
+	pipeline.record_provider_result(&"event", false, Error.FAILED, old["operation_token"])
+	Expect.that(pipeline.last_diagnostic()).to_be_null()
+
+	var current: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	pipeline.record_provider_result(&"event", true, Error.ERR_INVALID_PARAMETER,
+			current["operation_token"])
+	var accepted: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	Expect.that(accepted.outcome()).to_equal(ObservabilityProcessingDiagnostic.ACCEPTED)
+	Expect.that(accepted.error()).to_equal(Error.OK)
+
+	pipeline.record_provider_result(&"event", false, Error.FAILED, current["operation_token"])
+	pipeline.record_provider_result(&"metric", false, Error.FAILED, current["operation_token"])
+	pipeline.record_provider_result(&"invalid", false, Error.FAILED, current["operation_token"])
+	pipeline.record_provider_result(&"event", false, Error.FAILED, -999)
+	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(accepted.sequence())
+
+	var paired_after_mismatch: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	pipeline.record_provider_result(
+			&"metric", false, Error.FAILED, paired_after_mismatch["operation_token"])
+	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(accepted.sequence())
+	pipeline.record_provider_result(
+			&"event", false, Error.ERR_INVALID_PARAMETER,
+			paired_after_mismatch["operation_token"])
+	var rejected: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	Expect.that(rejected.reason()).to_equal(
+			ObservabilityProcessingDiagnostic.PROVIDER_REJECTED)
+	Expect.that(rejected.error()).to_equal(Error.ERR_INVALID_PARAMETER)
+
+	var legacy: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(legacy["accepted"]).to_be_true()
+	pipeline.record_provider_result(&"event", true, Error.FAILED)
 	Expect.that(pipeline.last_diagnostic().outcome()).to_equal(
 			ObservabilityProcessingDiagnostic.ACCEPTED)
 	Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.OK)
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+
+	var ambiguous_first: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	var ambiguous_second: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	var before_ambiguous: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	pipeline.record_provider_result(&"event", false, Error.FAILED)
+	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(before_ambiguous.sequence())
+	pipeline.record_provider_result(
+			&"event", true, Error.OK, ambiguous_first["operation_token"])
+	pipeline.record_provider_result(
+			&"event", true, Error.OK, ambiguous_second["operation_token"])
 
 
 func test_processing_pipeline_identity_excludes_attributes_but_includes_message() -> void:
@@ -5991,6 +6174,55 @@ func _processing_repeated_pipeline() -> ObservabilityProcessingPipeline:
 			p_metric_limits = ObservabilitySignalLimits.new(0, 1000),
 	))
 	return pipeline
+
+
+func _processing_owner() -> int:
+	return _processing_owner_id
+
+
+func _processing_config(processors: Array[Callable]) -> ObservabilityConfig:
+	return ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = processors, p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	)
+
+
+func _processing_reconfigure_and_reenter(event: ObservabilityEvent) -> ObservabilityEvent:
+	_lifecycle_pipeline.configure(_processing_config([]))
+	_lifecycle_nested_result = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+	return event
+
+
+func _processing_reconfigure_and_drop(_event: ObservabilityEvent) -> Variant:
+	_lifecycle_pipeline.configure(_processing_config([]))
+	return null
+
+
+func _processing_overlap_different_owner(event: ObservabilityEvent) -> ObservabilityEvent:
+	if _overlap_stage == 0:
+		_overlap_stage = 1
+		_processing_owner_id = 2
+		_overlap_nested_result = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+		_processing_owner_id = 1
+		_overlap_stage = 2
+	return event
+
+
+func _processing_overlap_and_probe_original_owner(event: ObservabilityEvent) -> ObservabilityEvent:
+	if _overlap_stage == 0:
+		_overlap_stage = 1
+		_processing_owner_id = 2
+		_overlap_nested_result = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+		_processing_owner_id = 1
+		_overlap_stage = 3
+	elif _overlap_stage == 1:
+		_overlap_stage = 2
+		_processing_owner_id = 1
+		_overlap_recursive_result = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+		_processing_owner_id = 2
+	return event
 
 
 func _processing_reenter_metric(event: ObservabilityEvent) -> ObservabilityEvent:

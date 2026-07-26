@@ -11,6 +11,7 @@ const _MAX_METRIC_ATTRIBUTE_KEY_LENGTH: int = 200
 
 var _clock: Callable
 var _frame: Callable
+var _owner: Callable
 var _redactor: ObservabilityRedactor = ObservabilityRedactor.new()
 var _event_processors: Array[Callable] = []
 var _log_processors: Array[Callable] = []
@@ -19,6 +20,13 @@ var _metric_filter: Callable = Callable()
 var _event_limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new()
 var _log_limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new()
 var _metric_limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new()
+var _event_limiter_mutex: Mutex = Mutex.new()
+var _log_limiter_mutex: Mutex = Mutex.new()
+var _metric_limiter_mutex: Mutex = Mutex.new()
+var _config_generation: int = 0
+var _operation_sequence: int = 0
+var _active_operations: Dictionary = {}
+var _pending_provider_results: Dictionary = {}
 var _processing_depth: int = 0
 var _recursive_drops: int = 0
 var _diagnostic_sequence: int = 0
@@ -27,9 +35,14 @@ var _state_mutex: Mutex = Mutex.new()
 
 
 ## Creates a coordinator with optional deterministic admission suppliers.
-func _init(clock: Callable = Callable(), frame: Callable = Callable()) -> void:
+func _init(
+		clock: Callable = Callable(),
+		frame: Callable = Callable(),
+		owner: Callable = Callable(),
+) -> void:
 	_clock = clock if clock.is_valid() else func() -> int: return Time.get_ticks_msec()
 	_frame = frame if frame.is_valid() else func() -> int: return Engine.get_process_frames()
+	_owner = owner if owner.is_valid() else func() -> int: return OS.get_thread_caller_id()
 
 
 ## Atomically replaces all processing state after candidate validation succeeds.
@@ -67,8 +80,12 @@ func configure(config: ObservabilityConfig? = null) -> int:
 			config.log_sample_rate, log_limits, config.log_rate_limit_per_second)
 	var candidate_metric_limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new(
 			config.metric_sample_rate, metric_limits)
+	var candidate_event_limiter_mutex: Mutex = Mutex.new()
+	var candidate_log_limiter_mutex: Mutex = Mutex.new()
+	var candidate_metric_limiter_mutex: Mutex = Mutex.new()
 
 	_state_mutex.lock()
+	_config_generation += 1
 	_redactor = candidate_redactor
 	_event_processors = _copy_processors(event_processors)
 	_log_processors = _copy_processors(log_processors)
@@ -77,10 +94,13 @@ func configure(config: ObservabilityConfig? = null) -> int:
 	_event_limiter = candidate_event_limiter
 	_log_limiter = candidate_log_limiter
 	_metric_limiter = candidate_metric_limiter
-	_processing_depth = 0
+	_event_limiter_mutex = candidate_event_limiter_mutex
+	_log_limiter_mutex = candidate_log_limiter_mutex
+	_metric_limiter_mutex = candidate_metric_limiter_mutex
 	_recursive_drops = 0
 	_diagnostic_sequence = 0
 	_last_diagnostic = null
+	_pending_provider_results.clear()
 	_state_mutex.unlock()
 	return Error.OK
 
@@ -96,15 +116,44 @@ func process_metric(metric: ObservabilityMetric) -> Dictionary:
 	return _process_metric_signal(metric)
 
 
-## Records the provider outcome after a successful pre-provider processing result.
-func record_provider_result(p_signal: StringName, accepted: bool, error: int) -> void:
+## Records a provider outcome only for a matching current pending processing result.
+func record_provider_result(
+		p_signal: StringName,
+		accepted: bool,
+		error: int,
+		operation_token: Variant = null,
+) -> void:
 	if not _valid_signal(p_signal):
 		return
+	var owner_id: int = -1
+	if operation_token != null and not (operation_token is int):
+		return
+	if operation_token == null:
+		owner_id = _owner_id()
+
+	_state_mutex.lock()
+	var resolved_token: int = -1
+	if operation_token is int:
+		resolved_token = operation_token
+	else:
+		resolved_token = _unambiguous_pending_token_locked(owner_id, p_signal)
+	if resolved_token < 0 or not _pending_provider_results.has(resolved_token):
+		_state_mutex.unlock()
+		return
+	var pending: Dictionary = _pending_provider_results[resolved_token]
+	if _int_value(pending, "generation", -1) != _config_generation \
+			or StringName(str(pending.get("signal", &""))) != p_signal:
+		_state_mutex.unlock()
+		return
+	_pending_provider_results.erase(resolved_token)
 	if accepted:
-		_publish(p_signal, ObservabilityProcessingDiagnostic.ACCEPTED, &"", -1, -1, &"", Error.OK)
+		_publish_locked(
+				p_signal, ObservabilityProcessingDiagnostic.ACCEPTED,
+				&"", -1, -1, &"", Error.OK)
+		_state_mutex.unlock()
 		return
 	var effective_error: int = Error.FAILED if error == Error.OK else error
-	_publish(
+	_publish_locked(
 			p_signal,
 			ObservabilityProcessingDiagnostic.DROPPED,
 			ObservabilityProcessingDiagnostic.PROVIDER_REJECTED,
@@ -113,6 +162,7 @@ func record_provider_result(p_signal: StringName, accepted: bool, error: int) ->
 			&"",
 			effective_error,
 	)
+	_state_mutex.unlock()
 
 
 ## Returns an isolated payload-free diagnostic snapshot.
@@ -133,196 +183,159 @@ func recursive_drop_count() -> int:
 
 
 func _process_event_signal(event: ObservabilityEvent, p_signal: StringName) -> Dictionary:
-	var snapshot: Dictionary = _reserve(p_signal)
+	var owner_id: int = _owner_id()
+	var snapshot: Dictionary = _reserve(p_signal, owner_id)
 	if snapshot.is_empty():
 		return _rejected(p_signal)
 	if event == null:
-		_release()
-		_publish_invalid_payload(p_signal)
-		return _rejected(p_signal)
+		return _finish_invalid_payload(snapshot, p_signal)
 
 	@warning_ignore("unsafe_cast")
 	var redactor: ObservabilityRedactor = snapshot["redactor"] as ObservabilityRedactor
 	var redacted: Dictionary = redactor.redact_event(event, p_signal)
 	if not redacted["valid"]:
-		_release()
-		_publish_redaction_failure(p_signal, _rule_index(redacted))
-		return _rejected(p_signal)
+		return _finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
 	if not (redacted["value"] is ObservabilityEvent):
-		_release()
-		_publish_invalid_payload(p_signal)
-		return _rejected(p_signal)
+		return _finish_invalid_payload(snapshot, p_signal)
 	@warning_ignore("unsafe_cast")
 	var current: ObservabilityEvent = redacted["value"] as ObservabilityEvent
 	if not _valid_event(current, p_signal):
-		_release()
-		_publish_invalid_payload(p_signal)
-		return _rejected(p_signal)
+		return _finish_invalid_payload(snapshot, p_signal)
 
 	var processors: Array[Callable] = snapshot["processors"]
 	for index: int in range(processors.size()):
+		if not processors[index].is_valid():
+			return _finish_invalid_processor(snapshot, p_signal, index)
 		var result: Variant = processors[index].call(current)
 		if result == null:
-			_release()
-			_publish(p_signal, ObservabilityProcessingDiagnostic.DROPPED,
-					ObservabilityProcessingDiagnostic.PROCESSOR, index, -1, &"", Error.OK)
-			return _rejected(p_signal)
+			return _finish_drop(
+					snapshot, p_signal, ObservabilityProcessingDiagnostic.PROCESSOR,
+					index, -1, &"", Error.OK)
 		if not (result is ObservabilityEvent):
-			_release()
-			_publish_invalid_processor(p_signal, index)
-			return _rejected(p_signal)
+			return _finish_invalid_processor(snapshot, p_signal, index)
 		@warning_ignore("unsafe_cast")
 		current = result as ObservabilityEvent
 		if not _valid_event(current, p_signal):
-			_release()
-			_publish_invalid_processor(p_signal, index)
-			return _rejected(p_signal)
+			return _finish_invalid_processor(snapshot, p_signal, index)
 
 	redacted = redactor.redact_event(current, p_signal)
 	if not redacted["valid"]:
-		_release()
-		_publish_redaction_failure(p_signal, _rule_index(redacted))
-		return _rejected(p_signal)
+		return _finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
 	if not (redacted["value"] is ObservabilityEvent):
-		_release()
-		_publish_invalid_payload(p_signal)
-		return _rejected(p_signal)
+		return _finish_invalid_payload(snapshot, p_signal)
 	@warning_ignore("unsafe_cast")
 	current = redacted["value"] as ObservabilityEvent
 	if not _valid_event(current, p_signal):
-		_release()
-		_publish_invalid_payload(p_signal)
-		return _rejected(p_signal)
+		return _finish_invalid_payload(snapshot, p_signal)
 
-	@warning_ignore("unsafe_cast")
-	var limiter: ObservabilitySignalLimiter = snapshot["limiter"] as ObservabilitySignalLimiter
-	@warning_ignore("unsafe_cast")
-	var clock: Callable = snapshot["clock"] as Callable
-	@warning_ignore("unsafe_cast")
-	var frame: Callable = snapshot["frame"] as Callable
-	var admission: Dictionary = limiter.admit(
-			_event_identity(current, p_signal), _now_msec(clock), _frame_index(frame))
-	_release()
+	var admission: Dictionary = _admit(snapshot, _event_identity(current, p_signal))
 	if not admission["accepted"]:
-		_publish(p_signal, ObservabilityProcessingDiagnostic.DROPPED,
-				StringName(str(admission["reason"])), -1, -1,
+		return _finish_drop(
+				snapshot, p_signal, StringName(str(admission["reason"])), -1, -1,
 				StringName(str(admission["limit_kind"])), Error.OK)
-		return _rejected(p_signal)
-	return {"accepted": true, "value": current, "signal": p_signal}
+	return _finish_success(snapshot, p_signal, current)
 
 
 func _process_metric_signal(metric: ObservabilityMetric) -> Dictionary:
 	var p_signal: StringName = ObservabilityProcessingDiagnostic.METRIC
-	var snapshot: Dictionary = _reserve(p_signal)
+	var owner_id: int = _owner_id()
+	var snapshot: Dictionary = _reserve(p_signal, owner_id)
 	if snapshot.is_empty():
 		return _rejected(p_signal)
 	if not _valid_metric(metric):
-		_release()
-		_publish_invalid_payload(p_signal)
-		return _rejected(p_signal)
+		return _finish_invalid_payload(snapshot, p_signal)
 
 	@warning_ignore("unsafe_cast")
 	var redactor: ObservabilityRedactor = snapshot["redactor"] as ObservabilityRedactor
 	var redacted: Dictionary = redactor.redact_metric(metric)
 	if not redacted["valid"]:
-		_release()
-		_publish_redaction_failure(p_signal, _rule_index(redacted))
-		return _rejected(p_signal)
+		return _finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
 	if not (redacted["value"] is ObservabilityMetric):
-		_release()
-		_publish_invalid_payload(p_signal)
-		return _rejected(p_signal)
+		return _finish_invalid_payload(snapshot, p_signal)
 	@warning_ignore("unsafe_cast")
 	var current: ObservabilityMetric = redacted["value"] as ObservabilityMetric
 	if not _valid_metric(current):
-		_release()
-		_publish_invalid_payload(p_signal)
-		return _rejected(p_signal)
+		return _finish_invalid_payload(snapshot, p_signal)
 
 	var metric_filter: Callable = snapshot["metric_filter"]
+	if metric_filter != Callable() and not metric_filter.is_valid():
+		return _finish_invalid_processor(snapshot, p_signal, -1)
 	if metric_filter.is_valid():
 		var filter_result: Variant = metric_filter.call(current)
 		if not (filter_result is bool):
-			_release()
-			_publish_invalid_processor(p_signal, -1)
-			return _rejected(p_signal)
+			return _finish_invalid_processor(snapshot, p_signal, -1)
 		if not filter_result:
-			_release()
-			_publish(p_signal, ObservabilityProcessingDiagnostic.DROPPED,
-					ObservabilityProcessingDiagnostic.PROCESSOR, -1, -1, &"", Error.OK)
-			return _rejected(p_signal)
+			return _finish_drop(
+					snapshot, p_signal, ObservabilityProcessingDiagnostic.PROCESSOR,
+					-1, -1, &"", Error.OK)
 
 	var processors: Array[Callable] = snapshot["processors"]
 	for index: int in range(processors.size()):
+		if not processors[index].is_valid():
+			return _finish_invalid_processor(snapshot, p_signal, index)
 		var result: Variant = processors[index].call(current)
 		if result == null:
-			_release()
-			_publish(p_signal, ObservabilityProcessingDiagnostic.DROPPED,
-					ObservabilityProcessingDiagnostic.PROCESSOR, index, -1, &"", Error.OK)
-			return _rejected(p_signal)
+			return _finish_drop(
+					snapshot, p_signal, ObservabilityProcessingDiagnostic.PROCESSOR,
+					index, -1, &"", Error.OK)
 		if not (result is ObservabilityMetric):
-			_release()
-			_publish_invalid_processor(p_signal, index)
-			return _rejected(p_signal)
+			return _finish_invalid_processor(snapshot, p_signal, index)
 		@warning_ignore("unsafe_cast")
 		current = result as ObservabilityMetric
 		if not _valid_metric(current):
-			_release()
-			_publish_invalid_processor(p_signal, index)
-			return _rejected(p_signal)
+			return _finish_invalid_processor(snapshot, p_signal, index)
 
 	redacted = redactor.redact_metric(current)
 	if not redacted["valid"]:
-		_release()
-		_publish_redaction_failure(p_signal, _rule_index(redacted))
-		return _rejected(p_signal)
+		return _finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
 	if not (redacted["value"] is ObservabilityMetric):
-		_release()
-		_publish_invalid_payload(p_signal)
-		return _rejected(p_signal)
+		return _finish_invalid_payload(snapshot, p_signal)
 	@warning_ignore("unsafe_cast")
 	current = redacted["value"] as ObservabilityMetric
 	if not _valid_metric(current):
-		_release()
-		_publish_invalid_payload(p_signal)
-		return _rejected(p_signal)
+		return _finish_invalid_payload(snapshot, p_signal)
 
-	@warning_ignore("unsafe_cast")
-	var limiter: ObservabilitySignalLimiter = snapshot["limiter"] as ObservabilitySignalLimiter
-	@warning_ignore("unsafe_cast")
-	var clock: Callable = snapshot["clock"] as Callable
-	@warning_ignore("unsafe_cast")
-	var frame: Callable = snapshot["frame"] as Callable
-	var admission: Dictionary = limiter.admit(
-			_metric_identity(current), _now_msec(clock), _frame_index(frame))
-	_release()
+	var admission: Dictionary = _admit(snapshot, _metric_identity(current))
 	if not admission["accepted"]:
-		_publish(p_signal, ObservabilityProcessingDiagnostic.DROPPED,
-				StringName(str(admission["reason"])), -1, -1,
+		return _finish_drop(
+				snapshot, p_signal, StringName(str(admission["reason"])), -1, -1,
 				StringName(str(admission["limit_kind"])), Error.OK)
-		return _rejected(p_signal)
-	return {"accepted": true, "value": current, "signal": p_signal}
+	return _finish_success(snapshot, p_signal, current)
 
 
-func _reserve(p_signal: StringName) -> Dictionary:
+func _reserve(p_signal: StringName, owner_id: int) -> Dictionary:
 	_state_mutex.lock()
-	if _processing_depth > 0:
+	if _active_operations.has(owner_id):
 		_recursive_drops += 1
 		_publish_locked(p_signal, ObservabilityProcessingDiagnostic.DROPPED,
 				ObservabilityProcessingDiagnostic.RECURSIVE, -1, -1, &"", Error.OK)
 		_state_mutex.unlock()
 		return {}
+	_operation_sequence += 1
+	var operation_token: int = _operation_sequence
+	var generation: int = _config_generation
+	_active_operations[owner_id] = {
+		"token": operation_token,
+		"generation": generation,
+	}
 	_processing_depth += 1
 	var processors: Array[Callable] = _event_processors if p_signal == &"event" else _log_processors
 	var limiter: ObservabilitySignalLimiter = _event_limiter if p_signal == &"event" else _log_limiter
+	var limiter_mutex: Mutex = (
+			_event_limiter_mutex if p_signal == &"event" else _log_limiter_mutex)
 	if p_signal == &"metric":
 		processors = _metric_processors
 		limiter = _metric_limiter
+		limiter_mutex = _metric_limiter_mutex
 	var snapshot: Dictionary = {
+		"generation": generation,
+		"operation_token": operation_token,
+		"owner": owner_id,
 		"redactor": _redactor,
 		"processors": _copy_processors(processors),
 		"metric_filter": _metric_filter,
 		"limiter": limiter,
+		"limiter_mutex": limiter_mutex,
 		"clock": _clock,
 		"frame": _frame,
 	}
@@ -330,40 +343,128 @@ func _reserve(p_signal: StringName) -> Dictionary:
 	return snapshot
 
 
-func _release() -> void:
-	_state_mutex.lock()
+func _release_locked(snapshot: Dictionary) -> bool:
+	var owner_id: int = _int_value(snapshot, "owner", -1)
+	var operation_token: int = _int_value(snapshot, "operation_token", -1)
+	var generation: int = _int_value(snapshot, "generation", -1)
+	if not _active_operations.has(owner_id):
+		return false
+	var active: Dictionary = _active_operations[owner_id]
+	if _int_value(active, "token", -1) != operation_token \
+			or _int_value(active, "generation", -1) != generation:
+		return false
+	_active_operations.erase(owner_id)
 	_processing_depth = maxi(0, _processing_depth - 1)
+	return true
+
+
+func _finish_success(
+		snapshot: Dictionary,
+		p_signal: StringName,
+		value: Variant,
+) -> Dictionary:
+	_state_mutex.lock()
+	var released: bool = _release_locked(snapshot)
+	var generation: int = _int_value(snapshot, "generation", -1)
+	if not released or generation != _config_generation:
+		_state_mutex.unlock()
+		return _rejected(p_signal)
+	var operation_token: int = _int_value(snapshot, "operation_token", -1)
+	_pending_provider_results[operation_token] = {
+		"generation": generation,
+		"signal": p_signal,
+		"owner": _int_value(snapshot, "owner", -1),
+	}
 	_state_mutex.unlock()
+	return {
+		"accepted": true,
+		"value": value,
+		"signal": p_signal,
+		"operation_token": operation_token,
+	}
 
 
-func _publish_invalid_payload(p_signal: StringName) -> void:
-	_publish(p_signal, ObservabilityProcessingDiagnostic.DROPPED,
-			ObservabilityProcessingDiagnostic.INVALID_PAYLOAD, -1, -1, &"", Error.ERR_INVALID_DATA)
+func _finish_invalid_payload(snapshot: Dictionary, p_signal: StringName) -> Dictionary:
+	return _finish_drop(
+			snapshot, p_signal, ObservabilityProcessingDiagnostic.INVALID_PAYLOAD,
+			-1, -1, &"", Error.ERR_INVALID_DATA)
 
 
-func _publish_redaction_failure(p_signal: StringName, rule_index: int) -> void:
-	_publish(p_signal, ObservabilityProcessingDiagnostic.DROPPED,
-			ObservabilityProcessingDiagnostic.REDACTION_FAILED, -1, rule_index, &"", Error.ERR_INVALID_DATA)
+func _finish_redaction_failure(
+		snapshot: Dictionary,
+		p_signal: StringName,
+		rule_index: int,
+) -> Dictionary:
+	return _finish_drop(
+			snapshot, p_signal, ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+			-1, rule_index, &"", Error.ERR_INVALID_DATA)
 
 
-func _publish_invalid_processor(p_signal: StringName, processor_index: int) -> void:
-	_publish(p_signal, ObservabilityProcessingDiagnostic.DROPPED,
-			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT,
+func _finish_invalid_processor(
+		snapshot: Dictionary,
+		p_signal: StringName,
+		processor_index: int,
+) -> Dictionary:
+	return _finish_drop(
+			snapshot, p_signal, ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT,
 			processor_index, -1, &"", Error.ERR_INVALID_DATA)
 
 
-func _publish(
+func _finish_drop(
+		snapshot: Dictionary,
 		p_signal: StringName,
-		outcome: StringName,
 		reason: StringName,
 		processor_index: int,
 		rule_index: int,
 		limit_kind: StringName,
 		error: int,
-) -> void:
+) -> Dictionary:
 	_state_mutex.lock()
-	_publish_locked(p_signal, outcome, reason, processor_index, rule_index, limit_kind, error)
+	var released: bool = _release_locked(snapshot)
+	if released and _int_value(snapshot, "generation", -1) == _config_generation:
+		_publish_locked(
+				p_signal, ObservabilityProcessingDiagnostic.DROPPED,
+				reason, processor_index, rule_index, limit_kind, error)
 	_state_mutex.unlock()
+	return _rejected(p_signal)
+
+
+func _admit(snapshot: Dictionary, identity: String) -> Dictionary:
+	@warning_ignore("unsafe_cast")
+	var limiter: ObservabilitySignalLimiter = snapshot["limiter"] as ObservabilitySignalLimiter
+	@warning_ignore("unsafe_cast")
+	var limiter_mutex: Mutex = snapshot["limiter_mutex"] as Mutex
+	@warning_ignore("unsafe_cast")
+	var clock: Callable = snapshot["clock"] as Callable
+	@warning_ignore("unsafe_cast")
+	var frame: Callable = snapshot["frame"] as Callable
+	var now_msec: int = _now_msec(clock)
+	var frame_index: int = _frame_index(frame)
+	limiter_mutex.lock()
+	var admission: Dictionary = limiter.admit(identity, now_msec, frame_index)
+	limiter_mutex.unlock()
+	return admission
+
+
+func _unambiguous_pending_token_locked(owner_id: int, p_signal: StringName) -> int:
+	var matched_token: int = -1
+	for key: Variant in _pending_provider_results.keys():
+		if not (key is int):
+			continue
+		var pending: Dictionary = _pending_provider_results[key]
+		if _int_value(pending, "generation", -1) != _config_generation \
+				or _int_value(pending, "owner", -1) != owner_id \
+				or StringName(str(pending.get("signal", &""))) != p_signal:
+			continue
+		if matched_token >= 0:
+			return -1
+		matched_token = key
+	return matched_token
+
+
+func _int_value(values: Dictionary, key: String, fallback: int) -> int:
+	var value: Variant = values.get(key, fallback)
+	return value if value is int else fallback
 
 
 func _publish_locked(
@@ -505,12 +606,23 @@ func _rule_index(redacted: Dictionary) -> int:
 
 
 func _now_msec(clock: Callable) -> int:
+	if not clock.is_valid():
+		return 0
 	var value: Variant = clock.call()
 	return value if value is int else 0
 
 
 func _frame_index(frame: Callable) -> int:
+	if not frame.is_valid():
+		return 0
 	var value: Variant = frame.call()
+	return value if value is int else 0
+
+
+func _owner_id() -> int:
+	if not _owner.is_valid():
+		return 0
+	var value: Variant = _owner.call()
 	return value if value is int else 0
 
 

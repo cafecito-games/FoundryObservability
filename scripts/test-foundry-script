@@ -232,18 +232,31 @@ for pipeline_member in \
 	'func configure(config: ObservabilityConfig? = null) -> int:' \
 	'func process_event(event: ObservabilityEvent) -> Dictionary:' \
 	'func process_metric(metric: ObservabilityMetric) -> Dictionary:' \
-	'func record_provider_result(p_signal: StringName, accepted: bool, error: int) -> void:' \
+	'func record_provider_result(' \
 	'func last_diagnostic() -> ObservabilityProcessingDiagnostic?' \
 	'func recursive_drop_count() -> int:'; do
 	rg -Fq "$pipeline_member" "$addon/ObservabilityProcessingPipeline.fs" \
 		|| fail "processing pipeline is missing required API: $pipeline_member"
 done
 for pipeline_state in _redactor _event_processors _log_processors _metric_processors \
-	_metric_filter _event_limiter _log_limiter _metric_limiter _processing_depth \
+	_metric_filter _owner _event_limiter _log_limiter _metric_limiter _processing_depth \
+	_event_limiter_mutex _log_limiter_mutex _metric_limiter_mutex \
+	_config_generation _operation_sequence _active_operations _pending_provider_results \
 	_recursive_drops _diagnostic_sequence _last_diagnostic _state_mutex; do
 	rg -q "^var ${pipeline_state}:" "$addon/ObservabilityProcessingPipeline.fs" \
 		|| fail "processing pipeline is missing state: ${pipeline_state}"
 done
+for owner_seam_contract in \
+	'func _init(' \
+	'frame: Callable = Callable(),' \
+	'owner: Callable = Callable(),'; do
+	rg -Fq "$owner_seam_contract" "$addon/ObservabilityProcessingPipeline.fs" \
+		|| fail "processing pipeline constructor must expose the deterministic owner seam"
+done
+rg -Fq 'OS.get_thread_caller_id()' "$addon/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must default ownership to the current caller thread"
+rg -Fq '"operation_token"' "$addon/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline accepted results must expose an opaque operation token"
 rg -Fq '_is_active_container(value, active_containers)' \
 	"$addon/ObservabilityRedactionRule.fs" \
 	|| fail "ObservabilityRedactionRule must detect active replacement containers"
