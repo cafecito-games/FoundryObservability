@@ -57,7 +57,7 @@ func configure(config: ObservabilityConfig) -> int:
 
 ## Stores an event and returns a sequential memory event ID when enabled.
 func capture(event: ObservabilityEvent) -> String:
-	if not _enabled or _shutdown:
+	if event == null or not _enabled or _shutdown:
 		return ""
 	var effective_tags: Dictionary = _scope.tags()
 	var effective_contexts: Dictionary = _scope.contexts()

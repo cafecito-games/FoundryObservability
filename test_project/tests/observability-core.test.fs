@@ -1797,6 +1797,16 @@ func test_memory_provider_captures_messages_and_exceptions() -> void:
 	service.shutdown()
 
 
+func test_memory_provider_rejects_null_event_without_changing_capture_history() -> void:
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(provider.configure(ObservabilityConfig.new())).to_equal(Error.OK)
+
+	Expect.that(provider.capture(null)).to_equal("")
+	Expect.that(provider.events()).to_have_size(0)
+	Expect.that(provider.captured_scopes()).to_have_size(0)
+	provider.shutdown()
+
+
 func test_feedback_value_preserves_fields() -> void:
 	var feedback := ObservabilityFeedback.new(
 			p_message = "The tutorial was confusing.",
@@ -2008,11 +2018,21 @@ func test_memory_successful_reconfigure_resets_session_scope_and_updates_bound()
 	Expect.that(service.set_user(ObservabilityUser.new("player-7"))).to_be_true()
 	Expect.that(service.capture_breadcrumb(
 			ObservabilityBreadcrumb.new(p_message = "old"))).to_be_true()
+	Expect.that(service.capture_message("retained history")).to_equal("memory:1")
 
 	Expect.that(service.configure(provider, initial)).to_equal(Error.OK)
 	Expect.that(provider.breadcrumbs()).to_have_size(0)
-	Expect.that(service.capture_message("equivalent reset")).to_equal("memory:1")
 	Expect.that(provider.captured_scopes()[0]).to_equal({
+		"tags": {"region": "iad"},
+		"contexts": {"game": {"round": 1}},
+		"user": {
+			"id": "player-7",
+			"display_name": "",
+			"contact_email": "",
+		},
+	})
+	Expect.that(service.capture_message("equivalent reset")).to_equal("memory:2")
+	Expect.that(provider.captured_scopes()[1]).to_equal({
 		"tags": {},
 		"contexts": {},
 		"user": null,
@@ -2035,8 +2055,17 @@ func test_memory_successful_reconfigure_resets_session_scope_and_updates_bound()
 			ObservabilityBreadcrumb.new(p_message = "two"))).to_be_true()
 	Expect.that(provider.breadcrumbs()).to_have_size(1)
 	Expect.that(provider.breadcrumbs()[0].message()).to_equal("two")
-	Expect.that(provider.events()).to_have_size(1)
-	Expect.that(provider.captured_scopes()).to_have_size(1)
+	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.captured_scopes()).to_have_size(2)
+	Expect.that(provider.captured_scopes()[0]).to_equal({
+		"tags": {"region": "iad"},
+		"contexts": {"game": {"round": 1}},
+		"user": {
+			"id": "player-7",
+			"display_name": "",
+			"contact_email": "",
+		},
+	})
 	service.shutdown()
 
 
@@ -2107,12 +2136,25 @@ func test_memory_provider_replacement_and_shutdown_clear_only_live_session_state
 	Expect.that(first.clear_breadcrumbs()).to_be_false()
 	Expect.that(first.events()).to_have_size(1)
 	Expect.that(first.captured_scopes()).to_have_size(1)
+	Expect.that(first.captured_scopes()[0]).to_equal({
+		"tags": {"provider": "first"},
+		"contexts": {},
+		"user": {
+			"id": "player-7",
+			"display_name": "",
+			"contact_email": "",
+		},
+	})
 	Expect.that(service.capture_message("second empty")).to_equal("memory:1")
 	Expect.that(second.captured_scopes()[0]).to_equal({
 		"tags": {},
 		"contexts": {},
 		"user": null,
 	})
+	Expect.that(service.set_tag("provider", "second")).to_be_true()
+	Expect.that(service.set_context("game", {"round": 2})).to_be_true()
+	Expect.that(service.set_user(ObservabilityUser.new("player-8"))).to_be_true()
+	Expect.that(service.capture_message("second history")).to_equal("memory:2")
 	Expect.that(service.capture_breadcrumb(
 			ObservabilityBreadcrumb.new(p_message = "second"))).to_be_true()
 
@@ -2120,8 +2162,17 @@ func test_memory_provider_replacement_and_shutdown_clear_only_live_session_state
 	service.shutdown()
 	Expect.that(second.shutdown_count).to_equal(1)
 	Expect.that(second.breadcrumbs()).to_have_size(0)
-	Expect.that(second.events()).to_have_size(1)
-	Expect.that(second.captured_scopes()).to_have_size(1)
+	Expect.that(second.events()).to_have_size(2)
+	Expect.that(second.captured_scopes()).to_have_size(2)
+	Expect.that(second.captured_scopes()[1]).to_equal({
+		"tags": {"provider": "second"},
+		"contexts": {"game": {"round": 2}},
+		"user": {
+			"id": "player-8",
+			"display_name": "",
+			"contact_email": "",
+		},
+	})
 
 
 func test_memory_breadcrumb_bound_zero_and_service_clear_results() -> void:
