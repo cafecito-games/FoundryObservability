@@ -1,6 +1,7 @@
 namespace foundry.observability.tests
 
 import foundry.testlib
+import foundry.observability
 
 class_name ProjectWiringTests
 extends RefCounted
@@ -18,6 +19,15 @@ func test_project_enables_foundry_observability_editor_plugin() -> void:
 			"editor_plugins/enabled", PackedStringArray())
 	Expect.that(
 			"res://addons/FoundryObservability/plugin.cfg" in enabled_plugins).to_be_true()
+
+func test_project_registers_observability_startup_settings() -> void:
+	var defaults: Dictionary = ObservabilityStartupSettings.project_setting_defaults()
+	for setting_name: String in defaults:
+		Expect.that(ProjectSettings.has_setting(setting_name)).to_be_true()
+	Expect.that(ProjectSettings.get_setting(
+			ObservabilityStartupSettings.AUTO_INIT)).to_be_true()
+	Expect.that(ProjectSettings.get_setting(
+			ObservabilityStartupSettings.ENABLED)).to_be_true()
 
 func test_project_uses_foundrylib_adapter_from_core_addon() -> void:
 	var sink_source: String = FileAccess.get_file_as_string(
@@ -96,6 +106,10 @@ func test_project_contains_startup_status_and_settings_resources() -> void:
 	]:
 		Expect.that(FileAccess.file_exists(resource_path)).to_be_true()
 		Expect.that(FileAccess.file_exists(resource_path + ".uid")).to_be_true()
+	var plugin_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/export_plugin.fs")
+	Expect.that(plugin_source).to_contain(
+			"ObservabilityStartupSettings.register_project_settings()")
 
 func test_project_exposes_provider_neutral_startup_api() -> void:
 	var service_source: String = FileAccess.get_file_as_string(

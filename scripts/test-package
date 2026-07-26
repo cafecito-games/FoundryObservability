@@ -128,6 +128,10 @@ grep -qx 'addons/FoundryObservability/FoundryObservability.fs' <<<"$listing" \
 	|| fail "package is missing the autoload"
 grep -qx 'addons/FoundryObservability/FoundryObservabilityApi.fs' <<<"$listing" \
 	|| fail "package is missing the public contract marker"
+grep -qx 'addons/FoundryObservability/ObservabilityStartupStatus.fs' <<<"$listing" \
+	|| fail "package is missing startup status constants"
+grep -qx 'addons/FoundryObservability/ObservabilityStartupSettings.fs' <<<"$listing" \
+	|| fail "package is missing startup settings resolution"
 grep -qx 'addons/FoundryObservability/ObservabilityFeedback.fs' <<<"$listing" \
 	|| fail "package is missing the feedback value type"
 grep -qx 'addons/FoundryObservability/ObservabilityMetric.fs' <<<"$listing" \
