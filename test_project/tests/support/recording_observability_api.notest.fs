@@ -16,6 +16,18 @@ func configure(_provider: ObservabilityProvider, _config: ObservabilityConfig? =
 	return Error.OK
 
 
+func initialize_from_project_settings() -> int:
+	return Error.OK
+
+
+func startup_status() -> StringName:
+	return ObservabilityStartupStatus.INITIALIZED
+
+
+func startup_message() -> String:
+	return "recording startup initialized"
+
+
 func is_enabled() -> bool:
 	return true
 

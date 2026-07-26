@@ -5,6 +5,10 @@ namespace foundry.observability
 class_name FoundryObservability extends Node
 uses FoundryObservabilityApi
 
+const _SENTRY_PROVIDER_PATH: String = (
+	"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs"
+)
+
 var _provider: ObservabilityProvider
 var _config: ObservabilityConfig
 var _last_error: int = Error.OK
@@ -15,6 +19,10 @@ var _metric_sample_accumulator: float = 0.0
 var _pipeline_mutex: Mutex = Mutex.new()
 var _provider_call_count: int = 0
 var _automatic_logger: AutomaticObservabilityLogger
+var _startup_provider: ObservabilityProvider
+var _startup_provider_path: String = _SENTRY_PROVIDER_PATH
+var _startup_status: StringName = ObservabilityStartupStatus.NOT_STARTED
+var _startup_message: String = "Startup has not run."
 
 const MAX_FEEDBACK_MESSAGE_LENGTH: int = 4096
 const MAX_METRIC_NAME_LENGTH: int = 200
@@ -22,11 +30,160 @@ const MAX_METRIC_UNIT_LENGTH: int = 64
 const MAX_METRIC_ATTRIBUTE_KEY_LENGTH: int = 200
 
 
-func _init() -> void:
+func _init(
+	startup_settings: ObservabilityStartupSettings? = null,
+	startup_provider_path: String = _SENTRY_PROVIDER_PATH,
+) -> void:
 	_provider = NullObservabilityProvider.new()
 	_config = ObservabilityConfig.new(p_enabled = false)
+	_startup_provider_path = startup_provider_path
 	_reset_log_rate_limit()
 	_reset_metric_sampling()
+	if startup_settings == null:
+		initialize_from_project_settings()
+	else:
+		_initialize_startup(startup_settings)
+
+
+## Rereads project settings and runs the supported startup path.
+func initialize_from_project_settings() -> int:
+	return _initialize_startup(ObservabilityStartupSettings.from_project_settings())
+
+
+## Returns the latest startup-settings result.
+func startup_status() -> StringName:
+	return _startup_status
+
+
+## Returns a concise explanation of the latest startup-settings result.
+func startup_message() -> String:
+	return _startup_message
+
+
+func _initialize_startup(settings: ObservabilityStartupSettings?) -> int:
+	if settings == null:
+		return _record_startup(
+				ObservabilityStartupStatus.CONFIGURATION_FAILED,
+				"Startup configuration is invalid.",
+				Error.ERR_INVALID_PARAMETER,
+				false,
+			)
+
+	var skip_status: StringName = settings.skip_status()
+	if skip_status != ObservabilityStartupStatus.NOT_STARTED:
+		return _record_startup(
+				skip_status,
+				_startup_skip_message(skip_status),
+				Error.OK,
+				settings.debug_enabled(),
+			)
+	if settings.validation_error() != Error.OK:
+		return _record_startup(
+				ObservabilityStartupStatus.CONFIGURATION_FAILED,
+				"Startup configuration contains invalid values.",
+				settings.validation_error(),
+				settings.debug_enabled(),
+			)
+	if not settings.has_dsn():
+		return _record_startup(
+				ObservabilityStartupStatus.MISSING_DSN,
+				"Startup is disabled because no DSN is configured.",
+				Error.ERR_UNCONFIGURED,
+				settings.debug_enabled(),
+			)
+
+	var startup_provider: ObservabilityProvider? = _load_startup_provider()
+	if startup_provider == null:
+		return _record_startup(
+				ObservabilityStartupStatus.PROVIDER_UNAVAILABLE,
+				"The optional Sentry startup provider is unavailable.",
+				Error.ERR_UNAVAILABLE,
+				settings.debug_enabled(),
+			)
+
+	var result: int = configure(startup_provider, settings.observability_config())
+	if result == Error.OK:
+		return _record_startup(
+				ObservabilityStartupStatus.INITIALIZED,
+				"Startup provider initialized.",
+				Error.OK,
+				settings.debug_enabled(),
+			)
+	var failed_status: StringName = ObservabilityStartupStatus.CONFIGURATION_FAILED
+	if result == Error.ERR_UNAVAILABLE:
+		failed_status = ObservabilityStartupStatus.PROVIDER_UNAVAILABLE
+	return _record_startup(
+			failed_status,
+			"Startup provider configuration failed with Error %s." % result,
+			result,
+			settings.debug_enabled(),
+		)
+
+
+func _load_startup_provider() -> ObservabilityProvider?:
+	if _startup_provider != null:
+		return _startup_provider
+	if not ResourceLoader.exists(_startup_provider_path):
+		return null
+	var provider_script: Script = ResourceLoader.load(_startup_provider_path) as Script
+	if provider_script == null or not provider_script.can_instantiate():
+		return null
+	@warning_ignore("unsafe_method_access")
+	var candidate: Variant = provider_script.new()
+	if not (candidate is ObservabilityProvider) \
+			or not _has_startup_provider_contract(candidate):
+		return null
+	@warning_ignore("unsafe_cast")
+	_startup_provider = candidate as ObservabilityProvider
+	return _startup_provider
+
+
+func _has_startup_provider_contract(candidate: Variant) -> bool:
+	if not (candidate is Object):
+		return false
+	@warning_ignore("unsafe_cast")
+	var provider_object: Object = candidate as Object
+	for method_name: String in [
+		"provider_name",
+		"is_available",
+		"configure",
+		"capture",
+		"capture_feedback",
+		"flush",
+		"shutdown",
+	]:
+		if not provider_object.has_method(method_name):
+			return false
+	var provider_id: Variant = provider_object.call("provider_name")
+	return provider_id is StringName
+
+
+func _record_startup(
+		status: StringName,
+		message: String,
+		result: int,
+		print_diagnostics: bool,
+) -> int:
+	_startup_status = status
+	_startup_message = message
+	_last_error = result
+	if print_diagnostics:
+		print("FoundryObservability: " + message)
+	return result
+
+
+func _startup_skip_message(status: StringName) -> String:
+	match status:
+		ObservabilityStartupStatus.DISABLED:
+			return "Automatic startup is disabled."
+		ObservabilityStartupStatus.SKIPPED_EDITOR:
+			return "Automatic startup is skipped in the editor."
+		ObservabilityStartupStatus.SKIPPED_EDITOR_PLAY:
+			return "Automatic startup is skipped for editor play."
+		ObservabilityStartupStatus.SKIPPED_DEBUG:
+			return "Automatic startup is skipped for debug exports."
+		_:
+			return "Automatic startup was skipped."
 
 
 ## Configures a provider and activates it only after successful setup.

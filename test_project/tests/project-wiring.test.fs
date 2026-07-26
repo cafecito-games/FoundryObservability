@@ -96,3 +96,17 @@ func test_project_contains_startup_status_and_settings_resources() -> void:
 	]:
 		Expect.that(FileAccess.file_exists(resource_path)).to_be_true()
 		Expect.that(FileAccess.file_exists(resource_path + ".uid")).to_be_true()
+
+func test_project_exposes_provider_neutral_startup_api() -> void:
+	var service_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/FoundryObservability.fs")
+	var api_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/FoundryObservabilityApi.fs")
+	for method_signature: String in [
+		"func initialize_from_project_settings() -> int:",
+		"func startup_status() -> StringName:",
+		"func startup_message() -> String:",
+	]:
+		Expect.that(service_source).to_contain(method_signature)
+		Expect.that(api_source).to_contain(
+				"abstract " + method_signature.trim_suffix(":"))

@@ -2,6 +2,7 @@ namespace foundry.observability.tests
 
 import foundry.testlib
 import foundry.observability
+import foundry.observability.sentry.tests
 
 class_name ObservabilityCoreTests
 extends RefCounted
@@ -2345,9 +2346,248 @@ func test_startup_settings_register_project_defaults_idempotently() -> void:
 					)
 
 
+func test_startup_initializes_before_immediate_capture() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+				ObservabilityStartupSettings.ENVIRONMENT: "production",
+				ObservabilityStartupSettings.RELEASE: "1.2.3",
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: {
+					"send_default_pii": true,
+				},
+			},
+			{},
+			{"debug_build": false},
+		)
+	var service: FoundryObservability = _startup_service(settings)
+
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.INITIALIZED,
+		)
+	Expect.that(service.startup_message()).to_contain("initialized")
+	Expect.that(service.provider_name()).to_equal(&"sentry")
+	Expect.that(service.capture_message("startup event")).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads).to_have_size(1)
+	if not bridge.configured_payload.is_empty():
+		Expect.that(bridge.configured_payload["environment"]).to_equal(
+				"production",
+			)
+		Expect.that(bridge.configured_payload["release"]).to_equal("1.2.3")
+		Expect.that(
+				bridge.configured_payload["provider_options"]["send_default_pii"],
+			).to_be_true()
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_autoload_startup_completes_before_later_autoload() -> void:
+	var tree: SceneTree = Engine.get_main_loop() as SceneTree
+	var service: Node = tree.root.get_node("FoundryObservability")
+	var probe: Node? = tree.root.get_node_or_null(
+			"FoundryObservabilityStartupProbe")
+
+	Expect.that(probe).to_not_be_null()
+	if probe == null:
+		return
+	Expect.that(service.get_index()).to_be_less_than(probe.get_index())
+	Expect.that(probe.get("observed_status")).to_not_equal(
+			ObservabilityStartupStatus.NOT_STARTED,
+		)
+
+
+func test_startup_reports_safe_disabled_missing_and_invalid_states() -> void:
+	var disabled: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.ENABLED: false,
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: {
+					"invalid": Vector2.ONE,
+				},
+			}),
+		)
+	Expect.that(disabled.startup_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+	Expect.that(disabled.last_error()).to_equal(Error.OK)
+	Expect.that(disabled.provider_name()).to_equal(&"null")
+	disabled.shutdown()
+	disabled.free()
+
+	var missing_dsn: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources(),
+		)
+	Expect.that(missing_dsn.startup_status()).to_equal(
+			ObservabilityStartupStatus.MISSING_DSN,
+		)
+	Expect.that(missing_dsn.last_error()).to_equal(Error.ERR_UNCONFIGURED)
+	Expect.that(missing_dsn.provider_name()).to_equal(&"null")
+	missing_dsn.shutdown()
+	missing_dsn.free()
+
+	var invalid: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: {
+					"invalid": Vector2.ONE,
+				},
+			}),
+		)
+	Expect.that(invalid.startup_status()).to_equal(
+			ObservabilityStartupStatus.CONFIGURATION_FAILED,
+		)
+	Expect.that(invalid.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(invalid.startup_message()).to_contain("invalid")
+	Expect.that(invalid.provider_name()).to_equal(&"null")
+	invalid.shutdown()
+	invalid.free()
+
+	var null_settings: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.AUTO_INIT: false,
+			}),
+		)
+	Expect.that(null_settings._initialize_startup(null)).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+	Expect.that(null_settings.startup_status()).to_equal(
+			ObservabilityStartupStatus.CONFIGURATION_FAILED,
+		)
+	Expect.that(null_settings.startup_message()).to_contain("invalid")
+	null_settings.shutdown()
+	null_settings.free()
+
+
+func test_startup_reports_missing_noninstantiable_and_wrong_provider_scripts() -> void:
+	var settings := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: "https://public@example/1",
+	})
+	for provider_path: String in [
+		"res://addons/FoundryObservability/MissingProvider.fs",
+		"res://addons/FoundryObservability/ObservabilityProvider.fs",
+		"res://addons/FoundryObservability/ObservabilityConfig.fs",
+	]:
+		var service: FoundryObservability = _startup_service(
+				settings,
+				provider_path,
+			)
+		Expect.that(service.startup_status()).to_equal(
+				ObservabilityStartupStatus.PROVIDER_UNAVAILABLE,
+			)
+		Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+		Expect.that(service.startup_message()).to_contain("unavailable")
+		Expect.that(service.provider_name()).to_equal(&"null")
+		service.shutdown()
+		service.free()
+
+
+func test_startup_maps_provider_unavailable_configuration_result() -> void:
+	var bridge := FakeSentryBridge.new()
+	bridge.configure_result = Error.ERR_UNAVAILABLE
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var service: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+			}),
+		)
+
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.PROVIDER_UNAVAILABLE,
+		)
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(service.startup_message()).to_contain("failed")
+	Expect.that(service.provider_name()).to_equal(&"null")
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_startup_reuses_provider_for_reconfiguration_and_restart() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var first_settings := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: "https://public@example/1",
+		ObservabilityStartupSettings.ENVIRONMENT: "production",
+	})
+	var service: FoundryObservability = _startup_service(first_settings)
+	var first_owner: String = bridge.active_owner
+
+	Expect.that(service._initialize_startup(first_settings)).to_equal(Error.OK)
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(bridge.configured_payloads).to_have_size(2)
+
+	var changed_settings := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: "https://public@example/1",
+		ObservabilityStartupSettings.ENVIRONMENT: "staging",
+	})
+	Expect.that(service._initialize_startup(changed_settings)).to_equal(Error.OK)
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	if not bridge.configured_payload.is_empty():
+		Expect.that(bridge.configured_payload["environment"]).to_equal("staging")
+
+	service.shutdown()
+	Expect.that(service._initialize_startup(changed_settings)).to_equal(Error.OK)
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(service.provider_name()).to_equal(&"sentry")
+	Expect.that(service.is_available()).to_be_true()
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_startup_failure_preserves_working_provider_and_diagnostics() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var service: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+			}),
+		)
+	var first_owner: String = bridge.active_owner
+	bridge.configure_result = Error.FAILED
+	var failed := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: "https://public@example/2",
+	})
+
+	Expect.that(service._initialize_startup(failed)).to_equal(Error.FAILED)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.CONFIGURATION_FAILED,
+		)
+	Expect.that(service.startup_message()).to_contain("failed")
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(service.provider_name()).to_equal(&"sentry")
+	Expect.that(service.is_available()).to_be_true()
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
 func _service() -> FoundryObservability:
 	var tree: SceneTree = Engine.get_main_loop() as SceneTree
 	return tree.root.get_node("FoundryObservability") as FoundryObservability
+
+
+func _startup_service(
+		settings: ObservabilityStartupSettings,
+		provider_path: String = (
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs"
+		),
+) -> FoundryObservability:
+	var service_script: Script = ResourceLoader.load(
+			"res://addons/FoundryObservability/FoundryObservability.fs",
+		) as Script
+	@warning_ignore("unsafe_method_access")
+	var candidate: Variant = service_script.new(settings, provider_path)
+	if not (candidate is FoundryObservability):
+		return null
+	@warning_ignore("unsafe_cast")
+	return candidate as FoundryObservability
 
 
 func _push_test_error(message: String) -> void:

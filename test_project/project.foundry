@@ -10,6 +10,7 @@ config/features=PackedStringArray("0.1")
 [autoload]
 
 FoundryObservability="*res://addons/FoundryObservability/FoundryObservability.fs"
+FoundryObservabilityStartupProbe="*res://tests/support/startup_order_probe.notest.fs"
 
 [debug]
 
