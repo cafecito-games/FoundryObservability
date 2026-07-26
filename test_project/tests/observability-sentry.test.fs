@@ -541,6 +541,173 @@ func test_provider_redacts_stable_and_volatile_runtime_contexts_once_each() -> v
 	provider.shutdown()
 
 
+func test_provider_redacts_global_attributes_before_native_config_and_capture_paths() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
+	var raw_global_attributes: Dictionary = {
+		"build": 42,
+		"password": "root-secret",
+		"nested": {"PASSWORD": "nested-secret"},
+		"remove_me": "private",
+	}
+	var config := ObservabilityConfig.new(
+			p_global_attributes = raw_global_attributes,
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.sensitive_key("password"),
+				ObservabilityRedactionRule.remove_field(PackedStringArray([
+					"contexts",
+					"global_attributes",
+					"remove_me",
+				])),
+			]),
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	var expected_global_attributes: Dictionary = {
+		"build": 42,
+		"password": "[REDACTED]",
+		"nested": {"PASSWORD": "[REDACTED]"},
+	}
+	Expect.that(bridge.configured_payload["global_attributes"]).to_equal(
+			expected_global_attributes,
+		)
+	Expect.that(
+			bridge.active_configuration()["global_attributes"],
+		).to_equal(expected_global_attributes)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "event path",
+		))).to_equal("sentry:1")
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_kind = &"log",
+			p_message = "log path",
+		))).to_equal("sentry-log:1")
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "breadcrumb path",
+		))).to_be_true()
+	# The native event, log, breadcrumb, and crash-context mappers all consume
+	# this one committed configuration snapshot.
+	Expect.that(
+			bridge.active_configuration()["global_attributes"],
+		).to_equal(expected_global_attributes)
+	Expect.that(raw_global_attributes["password"]).to_equal("root-secret")
+	provider.shutdown()
+
+
+func test_invalid_global_attribute_redaction_preserves_committed_session_and_policy() -> void:
+	var bridge := FakeSentryBridge.new()
+	var probe := FakeRuntimeContextProbe.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = probe,
+		)
+	var initial_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.sensitive_key("password"),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["contexts", "foundry_app", "name"]),
+				"",
+				"committed-app",
+			),
+	])
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {"password": "old-secret"},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = initial_policy,
+	))).to_equal(Error.OK)
+	var configure_count: int = bridge.configured_payloads.size()
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {"password": "new-secret"},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.remove_field(PackedStringArray([
+					"contexts",
+					"global_attributes",
+				])),
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["contexts", "foundry_app", "name"]),
+						"",
+						"candidate-app",
+					),
+			]),
+	))).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(bridge.configured_payloads.size()).to_equal(configure_count)
+	Expect.that(
+			bridge.active_configuration()["global_attributes"],
+		).to_equal({"password": "[REDACTED]"})
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "committed session",
+		))).to_equal("sentry:1")
+	Expect.that(
+			bridge.captured_payloads[0]["contexts"]["foundry_app"]["name"],
+		).to_equal("committed-app")
+	provider.shutdown()
+
+
+func test_failed_session_reset_never_retains_raw_or_candidate_global_attributes() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.sensitive_key("password"),
+	])
+	var initial_config := ObservabilityConfig.new(
+			p_global_attributes = {"build": 42, "password": "old-secret"},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = policy,
+		)
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "retained breadcrumb",
+		))).to_be_true()
+	var retained_trail: Array[Dictionary] = (
+			bridge.current_breadcrumb_payloads.duplicate(true)
+		)
+	bridge.apply_scope_results = [false, true]
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {"build": 42, "password": "new-secret"},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = policy,
+	))).to_equal(Error.FAILED)
+	for payload: Dictionary in bridge.configured_payloads:
+		Expect.that(payload["global_attributes"]).to_equal({
+			"build": 42,
+			"password": "[REDACTED]",
+		})
+	Expect.that(
+			bridge.active_configuration()["global_attributes"],
+		).to_equal({"build": 42, "password": "[REDACTED]"})
+	Expect.that(bridge.current_scope_payload["tags"]).to_equal({"region": "iad"})
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal(retained_trail)
+	provider.shutdown()
+
+
 func test_provider_failed_reconfigure_preserves_last_stable_runtime_context() -> void:
 	var bridge := ScopeOnlySentryBridge.new()
 	var probe := FakeRuntimeContextProbe.new()

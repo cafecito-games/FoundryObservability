@@ -152,13 +152,31 @@ func configure(config: ObservabilityConfig) -> int:
 			return Error.ERR_INVALID_DATA
 		@warning_ignore("unsafe_cast")
 		candidate_stable_contexts = stable_result["value"] as Dictionary
+	var candidate_global_attributes: Dictionary = {}
+	var global_attributes_result: Dictionary = candidate_redactor.redact_contexts({
+		"global_attributes": config.global_attributes(),
+	})
+	if not global_attributes_result.get("valid", false) \
+			or not (global_attributes_result.get("value") is Dictionary):
+		return Error.ERR_INVALID_DATA
+	@warning_ignore("unsafe_cast")
+	var candidate_contexts: Dictionary = (
+			global_attributes_result["value"] as Dictionary
+		)
+	if not candidate_contexts.has("global_attributes") \
+			or not (candidate_contexts["global_attributes"] is Dictionary):
+		return Error.ERR_INVALID_DATA
+	@warning_ignore("unsafe_cast")
+	candidate_global_attributes = (
+			candidate_contexts["global_attributes"] as Dictionary
+		).duplicate(true)
 	var payload: Dictionary = {
 			"enabled": config.enabled,
 			"dsn": dsn,
 			"environment": config.environment,
 			"release": config.release,
 			"dist": config.dist,
-			"global_attributes": config.global_attributes(),
+			"global_attributes": candidate_global_attributes,
 			"provider_options": options,
 			"logs_enabled": config.logs_enabled,
 			"log_minimum_level": config.log_minimum_level,

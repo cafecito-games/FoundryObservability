@@ -422,8 +422,11 @@ func redaction_policy() -> ObservabilityRedactionPolicy
 ~~~
 
 Dictionary accessors return deep copies. global_attributes are shared metadata
-for a provider integration. provider_options are opaque to the core and are
-passed to provider implementations through the config object.
+for a provider integration. The Sentry provider redacts its candidate copy
+before native configuration, using the canonical
+`contexts/global_attributes/...` path described below; the caller's config is
+not modified. provider_options are opaque to the core and are passed to
+provider implementations through the config object.
 automatic_message_filter_prefixes returns a copied list of ordinary output
 prefixes excluded from automatic capture.
 
@@ -603,7 +606,7 @@ them. Canonical roots and their typed fields are:
 | `event` | kind, level, message, source, timestamp_msec, attributes, exception, engine_ticks_msec, and local scope |
 | `log` | the same event shape, for structured logs |
 | `metric` | type, name, value, unit, and attributes |
-| `contexts` | provider-owned named context dictionaries |
+| `contexts` | provider-owned named context dictionaries; Sentry configuration global attributes are nested at `contexts/global_attributes/...` |
 | `user` | application_user_id, display_name, and contact_email |
 | `breadcrumbs` | message, level, category, timestamp_msec, attributes, and type |
 | `attachments` | outbound filename, content_type, and category |
@@ -2148,8 +2151,12 @@ pre-configuration gap is outside the addon's capture boundary and cannot be
 recovered later.
 
 The native startup configuration includes `release`, `environment`, `dist`,
-and scalar global attributes. Global attributes are installed under the
-`foundry.global_attributes` context before capture begins. Apple enables the
+and scalar global attributes. Before native configuration, the Sentry provider
+applies the committed redaction policy to a candidate context shaped as
+`contexts/global_attributes/...`; an invalid result rejects configuration
+without committing it. Only the redacted snapshot is installed under the
+`foundry.global_attributes` context before capture begins and reused by native
+events, structured logs, breadcrumbs, and crash handling. Apple enables the
 Sentry crash handler. Android enables its uncaught-exception handler, NDK
 integration, and native scope synchronization. Sentry persists fatal crash data
 in-process and sends the previous launch report after the next launch starts
@@ -2201,7 +2208,8 @@ against a non-production Sentry project and disposable test data.
 Enabled `SentryObservabilityProvider` configuration automatically enriches
 macOS, iOS, and Android Sentry data with provider-private runtime
 contexts. This does not add fields or methods to the provider-neutral API and
-does not modify caller-supplied event attributes or global attributes.
+does not modify caller-supplied event attributes or global-attribute
+containers; the provider transmits only its redacted global-attribute snapshot.
 
 The addon uses six custom context names:
 

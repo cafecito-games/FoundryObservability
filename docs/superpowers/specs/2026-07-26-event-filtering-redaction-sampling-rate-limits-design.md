@@ -139,7 +139,8 @@ Canonical roots are:
 - `event`: kind, level, message, source, attributes, exception, and local scope;
 - `log`: the same event shape for structured logs;
 - `metric`: type, name, value, unit, and attributes;
-- `contexts`: provider-owned global structured contexts;
+- `contexts`: provider-owned global structured contexts, including Sentry
+  configuration attributes nested at `contexts/global_attributes`;
 - `user`: application user ID, display name, and contact email;
 - `breadcrumbs`: message, level, category, type, timestamp, and attributes;
 - `attachments`: outbound filename, content type, and category.
@@ -325,10 +326,13 @@ Successful reconfiguration already resets provider scope, user, breadcrumbs,
 and attachments, so changing policy cannot leave an older unredacted session
 snapshot alive.
 
-Sentry runtime-context enrichment and built-in attachment construction occur
-inside the provider after the core pipeline. `SentryObservabilityProvider` uses
-the committed shared redactor for those Foundry-owned fields before calling its
-existing bridge methods. The native bridge formats remain unchanged.
+Sentry global-attribute configuration, runtime-context enrichment, and built-in
+attachment construction occur inside the provider after the core pipeline.
+`SentryObservabilityProvider` uses the candidate shared redactor for global
+attributes at `contexts/global_attributes` before native configuration and the
+committed redactor for provider-created runtime contexts and attachment
+metadata. Invalid global-attribute reconstruction rejects the candidate
+atomically. The native bridge formats remain unchanged.
 
 If redaction invalidates an event, log, metric, user, context, or breadcrumb,
 the operation fails closed and records `redaction_failed`. If only attachment
