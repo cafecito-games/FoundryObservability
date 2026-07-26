@@ -495,6 +495,52 @@ func test_provider_redacts_stable_and_volatile_runtime_contexts_across_sessions(
 	provider.shutdown()
 
 
+func test_provider_redacts_stable_and_volatile_runtime_contexts_once_each() -> void:
+	var bridge := FakeSentryBridge.new()
+	var probe := FakeRuntimeContextProbe.new()
+	probe.app_name = "a"
+	probe.volatile_orientation = "a"
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = probe,
+		)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["contexts", "foundry_app", "name"]),
+						"a",
+						"aa",
+					),
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(
+								["contexts", "display", "primary_orientation"]),
+						"a",
+						"aa",
+					),
+			]),
+	))).to_equal(Error.OK)
+	Expect.that(
+			bridge.configured_payload["stable_contexts"]["foundry_app"]["name"],
+		).to_equal("aa")
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "single-pass contexts",
+		))).to_equal("sentry:1")
+	Expect.that(
+			bridge.captured_payloads[0]["contexts"]["foundry_app"]["name"],
+		).to_equal("aa")
+	Expect.that(
+			bridge.captured_payloads[0]["contexts"]["display"]["primary_orientation"],
+		).to_equal("aa")
+	provider.shutdown()
+
+
 func test_provider_failed_reconfigure_preserves_last_stable_runtime_context() -> void:
 	var bridge := ScopeOnlySentryBridge.new()
 	var probe := FakeRuntimeContextProbe.new()

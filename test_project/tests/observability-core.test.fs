@@ -13,6 +13,7 @@ var _processing_filter_values: Array[String] = []
 var _processing_clock_calls: int = 0
 var _processing_frame_calls: int = 0
 var _recursive_pipeline: ObservabilityProcessingPipeline
+var _recursive_state_result: Dictionary = {}
 var _lifecycle_pipeline: ObservabilityProcessingPipeline
 var _processing_owner_id: int = 1
 var _lifecycle_nested_result: Dictionary = {}
@@ -28,6 +29,12 @@ var _service_lifecycle_service: FoundryObservability
 var _service_lifecycle_provider: ObservabilityProvider
 var _service_lifecycle_config: ObservabilityConfig
 var _service_lifecycle_configure_result: int = Error.OK
+var _state_reentry_service: FoundryObservability
+var _state_reentry_result: bool = true
+var _state_reentry_error: int = Error.OK
+var _state_reentry_signal: StringName = &""
+var _state_reentry_reason: StringName = &""
+var _state_reentry_diagnostic_error: int = Error.OK
 
 class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/ObservabilityStackFrame.fs":
 	var public_variables_calls: int = 0
@@ -3292,6 +3299,43 @@ func test_service_state_redaction_failures_skip_provider_mutations_and_report_st
 	service.shutdown()
 
 
+func test_service_rejects_recursive_state_mutation_with_operation_local_error() -> void:
+	_state_reentry_service = _processing_service()
+	_state_reentry_result = true
+	_state_reentry_error = Error.OK
+	_state_reentry_signal = &""
+	_state_reentry_reason = &""
+	_state_reentry_diagnostic_error = Error.OK
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(_state_reentry_service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [
+				Callable(self, "_service_set_context_during_processing"),
+			],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+
+	Expect.that(_state_reentry_service.capture_message("outer")).to_equal("memory:1")
+	Expect.that(_state_reentry_result).to_be_false()
+	Expect.that(_state_reentry_error).to_equal(Error.ERR_BUSY)
+	Expect.that(_state_reentry_service.last_error()).to_equal(Error.ERR_BUSY)
+	Expect.that(provider.captured_scopes()[0]["contexts"]).to_equal({})
+	Expect.that(_state_reentry_signal).to_equal(
+			ObservabilityProcessingDiagnostic.STATE,
+		)
+	Expect.that(_state_reentry_reason).to_equal(
+			ObservabilityProcessingDiagnostic.RECURSIVE,
+		)
+	Expect.that(_state_reentry_diagnostic_error).to_equal(Error.ERR_BUSY)
+	_shutdown_processing_service(_state_reentry_service)
+	_state_reentry_service = null
+
+
 func test_memory_scope_merges_local_overrides_and_defensively_snapshots_user() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
@@ -4813,6 +4857,55 @@ func test_automatic_logger_preserves_event_failure_after_successful_log() -> voi
 			[],
 		)
 
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].kind()).to_equal(&"log")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
+	_shutdown_processing_service(service)
+
+
+func test_automatic_logger_preserves_breadcrumb_redaction_failure_after_log() -> void:
+	var service := _processing_service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 0,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_log_limits = ObservabilitySignalLimits.new(),
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["breadcrumbs", "level"]),
+						"invalid",
+					),
+			]),
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service,
+			config,
+			func() -> int: return 1000,
+			func() -> int: return 1,
+		)
+
+	logger._log_error(
+			"run",
+			"res://case.fs",
+			1,
+			"failure",
+			"",
+			false,
+			Logger.ERROR_TYPE_ERROR,
+			[],
+		)
+
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
 	Expect.that(provider.events()).to_have_size(1)
 	Expect.that(provider.events()[0].kind()).to_equal(&"log")
 	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
@@ -6435,6 +6528,75 @@ func test_processing_pipeline_blocks_recursive_entries_before_callbacks_or_limit
 	))["accepted"]).to_be_true()
 
 
+func test_processing_pipeline_recursive_state_result_is_operation_local() -> void:
+	_recursive_state_result = {}
+	_recursive_pipeline = ObservabilityProcessingPipeline.new()
+	Expect.that(_recursive_pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_processing_reenter_state")],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+
+	Expect.that(
+			_recursive_pipeline.process_event(ObservabilityEvent.new())["accepted"],
+		).to_be_true()
+	Expect.that(_recursive_state_result["accepted"]).to_be_false()
+	Expect.that(_recursive_state_result["valid"]).to_be_false()
+	Expect.that(_recursive_state_result["value"]).to_be_null()
+	Expect.that(_recursive_state_result["signal"]).to_equal(
+			ObservabilityProcessingDiagnostic.STATE,
+		)
+	Expect.that(_recursive_state_result["reason"]).to_equal(
+			ObservabilityProcessingDiagnostic.RECURSIVE,
+		)
+	Expect.that(_recursive_state_result["error"]).to_equal(Error.ERR_BUSY)
+
+
+func test_processing_pipeline_state_result_survives_later_diagnostic_overwrite() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_service_drop_event")],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["contexts", "account"]),
+						7,
+					),
+			]),
+	))).to_equal(Error.OK)
+
+	var state_result: Dictionary = pipeline.redact_contexts({
+		"account": {"token": "secret"},
+	})
+	Expect.that(state_result["accepted"]).to_be_false()
+	Expect.that(state_result["valid"]).to_be_false()
+	Expect.that(state_result["signal"]).to_equal(
+			ObservabilityProcessingDiagnostic.STATE,
+		)
+	Expect.that(state_result["reason"]).to_equal(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+		)
+	Expect.that(state_result["error"]).to_equal(Error.ERR_INVALID_DATA)
+
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.PROCESSOR,
+		)
+	Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.OK)
+	Expect.that(state_result["reason"]).to_equal(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+		)
+	Expect.that(state_result["error"]).to_equal(Error.ERR_INVALID_DATA)
+
+
 func test_processing_pipeline_reconfigure_reentry_is_recursive_and_outer_result_is_stale() -> void:
 	_processing_owner_id = 1
 	_lifecycle_nested_result = {}
@@ -7111,7 +7273,14 @@ func _processing_overlap_and_probe_original_owner(event: ObservabilityEvent) -> 
 func _processing_reenter_metric(event: ObservabilityEvent) -> ObservabilityEvent:
 	_recursive_pipeline.process_metric(ObservabilityMetric.new(
 			p_name = "nested.metric", p_value = 1.0,
-	))
+		))
+	return event
+
+
+func _processing_reenter_state(event: ObservabilityEvent) -> ObservabilityEvent:
+	_recursive_state_result = _recursive_pipeline.redact_contexts({
+		"nested": {"value": "must not be admitted"},
+	})
 	return event
 
 
@@ -7128,6 +7297,23 @@ func _service_replace_event(event: ObservabilityEvent) -> ObservabilityEvent:
 
 func _service_drop_event(_event: ObservabilityEvent) -> Variant:
 	return null
+
+
+func _service_set_context_during_processing(
+		event: ObservabilityEvent,
+) -> ObservabilityEvent:
+	_state_reentry_result = _state_reentry_service.set_context(
+			"nested",
+			{"value": "must not reach provider"},
+		)
+	_state_reentry_error = _state_reentry_service.last_error()
+	var diagnostic: ObservabilityProcessingDiagnostic = (
+			_state_reentry_service.last_processing_diagnostic()
+		)
+	_state_reentry_signal = diagnostic.processing_signal()
+	_state_reentry_reason = diagnostic.reason()
+	_state_reentry_diagnostic_error = diagnostic.error()
+	return event
 
 
 func _service_reconfigure_from_event_processor(

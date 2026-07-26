@@ -329,7 +329,10 @@ func _redact_state_value(kind: StringName, value: Variant) -> Dictionary:
 	var p_signal: StringName = ObservabilityProcessingDiagnostic.STATE
 	var snapshot: Dictionary = _reserve(p_signal, _owner_id())
 	if snapshot.is_empty():
-		return {"valid": false}
+		return _state_rejected(
+				ObservabilityProcessingDiagnostic.RECURSIVE,
+				Error.ERR_BUSY,
+			)
 	@warning_ignore("unsafe_cast")
 	var redactor: ObservabilityRedactor = snapshot["redactor"] as ObservabilityRedactor
 	var redacted: Dictionary = {}
@@ -358,7 +361,10 @@ func _redact_state_value(kind: StringName, value: Variant) -> Dictionary:
 			return _finish_state_invalid(snapshot)
 	if not redacted.get("valid", false):
 		_finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
-		return {"valid": false}
+		return _state_rejected(
+				ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+				Error.ERR_INVALID_DATA,
+			)
 	if not redacted.has("value"):
 		return _finish_state_invalid(snapshot)
 	return _finish_state_success(snapshot, redacted["value"])
@@ -368,8 +374,14 @@ func _reserve(p_signal: StringName, owner_id: int) -> Dictionary:
 	_state_mutex.lock()
 	if _active_operations.has(owner_id):
 		_recursive_drops += 1
+		var recursive_error: int = (
+			Error.ERR_BUSY
+			if p_signal == ObservabilityProcessingDiagnostic.STATE
+			else Error.OK
+		)
 		_publish_locked(p_signal, ObservabilityProcessingDiagnostic.DROPPED,
-				ObservabilityProcessingDiagnostic.RECURSIVE, -1, -1, &"", Error.OK)
+				ObservabilityProcessingDiagnostic.RECURSIVE, -1, -1, &"",
+				recursive_error)
 		_state_mutex.unlock()
 		return {}
 	_operation_sequence += 1
@@ -413,10 +425,14 @@ func _finish_state_success(snapshot: Dictionary, value: Variant) -> Dictionary:
 		)
 	_state_mutex.unlock()
 	if not current:
-		return {"valid": false}
+		return _state_rejected(&"", Error.ERR_BUSY)
 	return {
+		"accepted": true,
 		"valid": true,
 		"value": value,
+		"signal": ObservabilityProcessingDiagnostic.STATE,
+		"reason": &"",
+		"error": Error.OK,
 	}
 
 
@@ -426,7 +442,21 @@ func _finish_state_invalid(snapshot: Dictionary) -> Dictionary:
 			ObservabilityProcessingDiagnostic.STATE,
 			-1,
 		)
-	return {"valid": false}
+	return _state_rejected(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+			Error.ERR_INVALID_DATA,
+		)
+
+
+func _state_rejected(reason: StringName, error: int) -> Dictionary:
+	return {
+		"accepted": false,
+		"valid": false,
+		"value": null,
+		"signal": ObservabilityProcessingDiagnostic.STATE,
+		"reason": reason,
+		"error": error,
+	}
 
 
 func _release_locked(snapshot: Dictionary) -> bool:

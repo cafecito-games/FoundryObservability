@@ -26,6 +26,8 @@ var _configuration_generation: int = 0
 var _configuration_in_progress: bool = false
 var _automatic_capture_owner: int = -1
 var _automatic_capture_failure: int = Error.OK
+var _processing_failures: Dictionary = {}
+var _processing_failure_depths: Dictionary = {}
 var _automatic_logger: AutomaticObservabilityLogger
 var _startup_provider: ObservabilityProvider
 var _startup_provider_path: String = _SENTRY_PROVIDER_PATH
@@ -261,6 +263,8 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	_config = candidate_config
 	_pipeline = candidate_pipeline
 	_configuration_generation += 1
+	_processing_failures.clear()
+	_processing_failure_depths.clear()
 	_last_error = Error.OK
 	_shutdown = false
 	_configuration_in_progress = false
@@ -374,7 +378,10 @@ func _record_processing_rejection(
 	_pipeline_mutex.unlock()
 
 
-func _record_state_processing_rejection(state: Dictionary) -> void:
+func _record_state_processing_rejection(
+		state: Dictionary,
+		result: Dictionary,
+) -> void:
 	if not state.get("valid", false):
 		return
 	@warning_ignore("unsafe_cast")
@@ -387,11 +394,58 @@ func _record_state_processing_rejection(state: Dictionary) -> void:
 	if not (generation_value is int):
 		return
 	var generation: int = generation_value
-	_record_processing_rejection(
-			pipeline,
-			provider,
-			generation,
-		)
+	var error_value: Variant = result.get("error")
+	var error: int = (
+		error_value
+		if error_value is int and error_value != Error.OK
+		else Error.ERR_INVALID_DATA
+	)
+	var reason: StringName = StringName(str(result.get("reason", &"")))
+	var owner_id: int = OS.get_thread_caller_id()
+	_pipeline_mutex.lock()
+	if not _configuration_in_progress \
+			and generation == _configuration_generation \
+			and pipeline == _pipeline \
+			and provider == _provider:
+		_record_capture_result_locked(error)
+		if reason == ObservabilityProcessingDiagnostic.RECURSIVE:
+			var depth: int = _processing_failure_depth(owner_id)
+			if depth > 0:
+				_processing_failures[_processing_failure_key(owner_id, depth)] = error
+	_pipeline_mutex.unlock()
+
+
+func _begin_processing_failure_scope() -> void:
+	var owner_id: int = OS.get_thread_caller_id()
+	_pipeline_mutex.lock()
+	var depth: int = _processing_failure_depth(owner_id) + 1
+	_processing_failure_depths[owner_id] = depth
+	_processing_failures.erase(_processing_failure_key(owner_id, depth))
+	_pipeline_mutex.unlock()
+
+
+func _take_processing_failure() -> int:
+	var owner_id: int = OS.get_thread_caller_id()
+	_pipeline_mutex.lock()
+	var depth: int = _processing_failure_depth(owner_id)
+	var key: String = _processing_failure_key(owner_id, depth)
+	var error_value: Variant = _processing_failures.get(key, Error.OK)
+	_processing_failures.erase(key)
+	if depth <= 1:
+		_processing_failure_depths.erase(owner_id)
+	else:
+		_processing_failure_depths[owner_id] = depth - 1
+	_pipeline_mutex.unlock()
+	return error_value if error_value is int else Error.ERR_INVALID_DATA
+
+
+func _processing_failure_key(owner_id: int, depth: int) -> String:
+	return "%s:%s" % [owner_id, depth]
+
+
+func _processing_failure_depth(owner_id: int) -> int:
+	var value: Variant = _processing_failure_depths.get(owner_id, 0)
+	return value if value is int else 0
 
 
 ## Adds one persistent diagnostic attachment through an optional provider capability.
@@ -409,7 +463,7 @@ func add_attachment(attachment: ObservabilityAttachment) -> String:
 	var redaction: Dictionary = pipeline.redact_attachment(attachment)
 	if not redaction.get("valid", false) \
 			or not (redaction.get("value") is ObservabilityAttachment):
-		_record_state_processing_rejection(state)
+		_record_state_processing_rejection(state, redaction)
 		return ""
 	@warning_ignore("unsafe_cast")
 	var redacted_attachment: ObservabilityAttachment = (
@@ -548,9 +602,20 @@ func capture_event(event: ObservabilityEvent) -> String:
 		if not config.logs_enabled or normalized.level() < config.log_minimum_level:
 			return ""
 	var processable: ObservabilityEvent = _normalized_exception_event(normalized, config)
+	_begin_processing_failure_scope()
 	var result: Dictionary = pipeline.process_event(processable)
+	var processing_error: int = _take_processing_failure()
 	if not result.get("accepted", false):
-		_record_processing_rejection(pipeline, provider, generation)
+		if processing_error != Error.OK:
+			_pipeline_mutex.lock()
+			if not _configuration_in_progress \
+					and generation == _configuration_generation \
+					and pipeline == _pipeline \
+					and provider == _provider:
+				_record_capture_result_locked(processing_error)
+			_pipeline_mutex.unlock()
+		else:
+			_record_processing_rejection(pipeline, provider, generation)
 		return ""
 	@warning_ignore("unsafe_cast")
 	var processed: ObservabilityEvent = result["value"] as ObservabilityEvent
@@ -588,7 +653,9 @@ func capture_event(event: ObservabilityEvent) -> String:
 			effective_error,
 			result["operation_token"],
 		)
-	_finish_provider_call(effective_error)
+	_finish_provider_call(
+			processing_error if processing_error != Error.OK else effective_error,
+		)
 	return event_id
 
 
@@ -694,7 +761,7 @@ func set_context(context_name: String, value: Dictionary) -> bool:
 	var redaction: Dictionary = pipeline.redact_contexts({context_name: value})
 	if not redaction.get("valid", false) \
 			or not (redaction.get("value") is Dictionary):
-		_record_state_processing_rejection(state)
+		_record_state_processing_rejection(state, redaction)
 		return false
 	@warning_ignore("unsafe_cast")
 	var contexts: Dictionary = redaction["value"] as Dictionary
@@ -738,7 +805,7 @@ func set_user(user: ObservabilityUser) -> bool:
 	var redaction: Dictionary = pipeline.redact_user(user)
 	if not redaction.get("valid", false) \
 			or not (redaction.get("value") is ObservabilityUser):
-		_record_state_processing_rejection(state)
+		_record_state_processing_rejection(state, redaction)
 		return false
 	@warning_ignore("unsafe_cast")
 	var redacted_user: ObservabilityUser = redaction["value"] as ObservabilityUser
@@ -841,7 +908,7 @@ func _capture_breadcrumb(
 	var redaction: Dictionary = pipeline.redact_breadcrumb(breadcrumb)
 	if not redaction.get("valid", false) \
 			or not (redaction.get("value") is ObservabilityBreadcrumb):
-		_record_state_processing_rejection(state)
+		_record_state_processing_rejection(state, redaction)
 		return false
 	@warning_ignore("unsafe_cast")
 	var redacted_breadcrumb: ObservabilityBreadcrumb = (
@@ -902,9 +969,20 @@ func capture_metric(metric: ObservabilityMetric) -> bool:
 	if not provider.has_method("capture_metric"):
 		_last_error = Error.ERR_UNAVAILABLE
 		return false
+	_begin_processing_failure_scope()
 	var result: Dictionary = pipeline.process_metric(normalized)
+	var processing_error: int = _take_processing_failure()
 	if not result.get("accepted", false):
-		_record_processing_rejection(pipeline, provider, generation)
+		if processing_error != Error.OK:
+			_pipeline_mutex.lock()
+			if not _configuration_in_progress \
+					and generation == _configuration_generation \
+					and pipeline == _pipeline \
+					and provider == _provider:
+				_record_capture_result_locked(processing_error)
+			_pipeline_mutex.unlock()
+		else:
+			_record_processing_rejection(pipeline, provider, generation)
 		return false
 	@warning_ignore("unsafe_cast")
 	var processed: ObservabilityMetric = result["value"] as ObservabilityMetric
@@ -926,7 +1004,9 @@ func capture_metric(metric: ObservabilityMetric) -> bool:
 			effective_error,
 			result["operation_token"],
 		)
-	_finish_provider_call(effective_error)
+	_finish_provider_call(
+			processing_error if processing_error != Error.OK else effective_error,
+		)
 	return accepted
 
 
@@ -1409,6 +1489,8 @@ func _complete_requested_shutdown() -> void:
 	_shutdown_requested = false
 	_automatic_capture_owner = -1
 	_automatic_capture_failure = Error.OK
+	_processing_failures.clear()
+	_processing_failure_depths.clear()
 	_pipeline_mutex.unlock()
 
 

@@ -330,13 +330,18 @@ func capture(event: ObservabilityEvent) -> String:
 			"engine_ticks_msec": event.engine_ticks_msec(),
 			"attributes": event.attributes(),
 		}
-	var contexts: Dictionary = _context_collector.contexts_for_capture(_stable_contexts)
-	var contexts_result: Dictionary = _redactor.redact_contexts(contexts)
-	if not contexts_result.get("valid", false) \
-			or not (contexts_result.get("value") is Dictionary):
+	var volatile_result: Dictionary = _redactor.redact_contexts(
+			_context_collector.volatile_contexts(),
+		)
+	if not volatile_result.get("valid", false) \
+			or not (volatile_result.get("value") is Dictionary):
 		return ""
 	@warning_ignore("unsafe_cast")
-	var redacted_contexts: Dictionary = contexts_result["value"] as Dictionary
+	var redacted_volatile: Dictionary = volatile_result["value"] as Dictionary
+	var redacted_contexts: Dictionary = _context_collector.merge_contexts(
+			_stable_contexts,
+			redacted_volatile,
+		)
 	if not redacted_contexts.is_empty():
 		payload["contexts"] = redacted_contexts
 	if event_scope != null and not event_scope.is_empty():
