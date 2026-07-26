@@ -5,13 +5,15 @@ import foundry.observability
 ## FoundryScript adapter for the optional cross-platform Sentry native bridge.
 class_name SentryObservabilityProvider
 extends RefCounted
-uses ObservabilityProvider, ObservabilityMetricsProvider, ObservabilityBreadcrumbsProvider, ObservabilityScopeProvider
+uses ObservabilityProvider, ObservabilityMetricsProvider, ObservabilityBreadcrumbsProvider, ObservabilityScopeProvider, ObservabilityAttachmentsProvider
 
 const _NATIVE_CLASS: String = "SentryObservabilityBridge"
 const _LIFECYCLE_VERSION: int = 1
+const DEFAULT_MAX_ATTACHMENT_BYTES: int = 20 * 1024 * 1024
 
 var _bridge: Object? = null
 var _context_collector: SentryRuntimeContextCollector
+var _attachment_collector: SentryBuiltInAttachmentCollector
 var _stable_contexts: Dictionary = {}
 var _scope: ObservabilityScope = ObservabilityScope.new()
 var _user: ObservabilityUser? = null
@@ -20,12 +22,19 @@ var _has_last_config_payload: bool = false
 var _enabled: bool = false
 var _owner: String = ""
 var _shutdown: bool = false
+var _attachments: Dictionary = {}
+var _attachment_sequence: int = 0
+var _last_attachment_failures: Array[ObservabilityAttachmentFailure] = []
+var _persistent_builtin_attachments: Array[Dictionary] = []
+var _native_attachment_payloads: Array[Dictionary] = []
+var _attachment_config: ObservabilityConfig
 
 
 ## Creates a provider with an optional bridge seam used by deterministic tests.
 func _init(
 		p_bridge: Object? = null,
 		p_runtime_context_probe: Object? = null,
+		p_attachment_runtime_probe: Object? = null,
 ) -> void:
 	_bridge = p_bridge
 	var runtime_context_probe: Object = (
@@ -34,6 +43,20 @@ func _init(
 			else SentryRuntimeContextProbe.new()
 		)
 	_context_collector = SentryRuntimeContextCollector.new(runtime_context_probe)
+	var attachment_runtime_probe: Object = (
+			p_attachment_runtime_probe
+			if p_attachment_runtime_probe != null
+			else SentryAttachmentRuntimeProbe.new()
+		)
+	_attachment_collector = SentryBuiltInAttachmentCollector.new(
+			attachment_runtime_probe,
+		)
+	_attachment_config = _attachment_config_from(ObservabilityConfig.new(
+			p_enabled = false,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+		))
 	_owner = str(get_instance_id())
 
 
@@ -69,6 +92,7 @@ func configure(config: ObservabilityConfig) -> int:
 		_stable_contexts = {}
 		_scope = ObservabilityScope.new()
 		_user = null
+		_clear_attachment_state()
 		_clear_last_config_payload()
 		_shutdown = false
 		return Error.OK
@@ -79,12 +103,24 @@ func configure(config: ObservabilityConfig) -> int:
 			and bridge.has_method("captureBreadcrumb") \
 			and not bridge.has_method("clearBreadcrumbs"):
 		return Error.FAILED
+	var attachment_features_enabled: bool = (
+			config.attach_game_log
+			or config.attach_screenshot
+			or config.attach_scene_tree
+		)
+	if config.enabled and attachment_features_enabled and (
+			bridge == null
+			or not bridge.has_method("replaceAttachments")
+			or not bridge.has_method("captureWithAttachments")
+	):
+		return Error.FAILED
 
 	if bridge == null:
 		_enabled = false
 		_stable_contexts = {}
 		_scope = ObservabilityScope.new()
 		_user = null
+		_clear_attachment_state()
 		_clear_last_config_payload()
 		_shutdown = false
 		return Error.OK
@@ -119,6 +155,10 @@ func configure(config: ObservabilityConfig) -> int:
 			"android_anr_timeout_msec": maxi(1000, config.android_anr_timeout_msec),
 			"android_anr_attach_thread_dump": config.android_anr_attach_thread_dump,
 			"max_breadcrumbs": config.max_breadcrumbs,
+			"max_attachment_bytes": config.max_attachment_bytes,
+			"attach_game_log": config.attach_game_log,
+			"attach_screenshot": config.attach_screenshot,
+			"attach_scene_tree": config.attach_scene_tree,
 			"lifecycle_owner": _owner,
 		}
 	if config.enabled:
@@ -126,6 +166,19 @@ func configure(config: ObservabilityConfig) -> int:
 	var candidate_config_payload: Dictionary = payload.duplicate(true)
 	var retained_scope_payload: Dictionary = _scope_payload(_scope, _user)
 	var retained_scope_was_enabled: bool = _enabled and not _shutdown
+	var retained_native_attachments: Array = _native_attachment_payloads.duplicate(true)
+	var candidate_attachment_config: ObservabilityConfig = _attachment_config_from(config)
+	var candidate_persistent_builtins: Array[Dictionary] = []
+	if config.enabled and bridge.has_method("replaceAttachments"):
+		var built_in_result: Dictionary = _attachment_collector.collect(
+				null,
+				candidate_attachment_config,
+			)
+		for attachment: Dictionary in built_in_result["attachments"]:
+			if attachment.get("persistent", false) == true:
+				var persistent: Dictionary = attachment.duplicate(true)
+				persistent.erase("persistent")
+				candidate_persistent_builtins.append(persistent)
 	var candidate_matches_committed_config: bool = (
 			_has_last_config_payload
 			and _config_payloads_are_equivalent(candidate_config_payload)
@@ -154,13 +207,25 @@ func configure(config: ObservabilityConfig) -> int:
 	var result_code: int = result
 	if result_code != Error.OK:
 		if not can_preserve_prior_session_after_configuration_attempt \
-				or not _restore_retained_scope(
+				or not _restore_retained_session(
 				bridge,
 				retained_scope_was_enabled,
 				retained_scope_payload,
+				retained_native_attachments,
 		):
 			_fail_closed(bridge)
 		return result_code
+	if config.enabled and bridge.has_method("replaceAttachments"):
+		if not _replace_native_snapshot(bridge, candidate_persistent_builtins):
+			if not can_preserve_prior_session_after_configuration_attempt \
+					or not _rollback_after_session_reset_failure(
+					bridge,
+					retained_scope_was_enabled,
+					retained_scope_payload,
+					retained_native_attachments,
+			):
+				_fail_closed(bridge)
+			return Error.FAILED
 	if config.enabled and _has_scope_contract(bridge):
 		var empty_scope_payload: Dictionary = _scope_payload(
 				ObservabilityScope.new(),
@@ -172,6 +237,7 @@ func configure(config: ObservabilityConfig) -> int:
 					bridge,
 					retained_scope_was_enabled,
 					retained_scope_payload,
+					retained_native_attachments,
 			):
 				_fail_closed(bridge)
 			return Error.FAILED
@@ -186,6 +252,7 @@ func configure(config: ObservabilityConfig) -> int:
 				bridge,
 				retained_scope_was_enabled,
 				retained_scope_payload,
+				retained_native_attachments,
 			):
 				_fail_closed(bridge)
 			return Error.FAILED
@@ -193,6 +260,11 @@ func configure(config: ObservabilityConfig) -> int:
 	_stable_contexts = candidate_stable_contexts
 	_scope = ObservabilityScope.new()
 	_user = null
+	_attachments = {}
+	_last_attachment_failures.clear()
+	_persistent_builtin_attachments = candidate_persistent_builtins.duplicate(true)
+	_native_attachment_payloads = candidate_persistent_builtins.duplicate(true)
+	_attachment_config = candidate_attachment_config
 	_last_config_payload = candidate_config_payload.duplicate(true)
 	_has_last_config_payload = true
 	_shutdown = false
@@ -248,7 +320,78 @@ func capture(event: ObservabilityEvent) -> String:
 		method = "captureLog"
 		if not bridge.has_method(method):
 			return ""
+	else:
+		_last_attachment_failures.clear()
+		var capture_attachments: Array = _capture_local_attachments(event)
+		if not capture_attachments.is_empty():
+			payload["attachments"] = capture_attachments
+		if bridge.has_method("replaceAttachments") \
+				and bridge.has_method("captureWithAttachments"):
+			method = "captureWithAttachments"
 	return str(bridge.call(method, payload))
+
+
+## Atomically adds one persistent user attachment to the native snapshot.
+func add_attachment(attachment: ObservabilityAttachment) -> String:
+	if not _enabled or _shutdown or attachment == null or not attachment.is_valid():
+		return ""
+	var bridge: Object? = _resolve_bridge()
+	if bridge == null \
+			or not bridge.has_method("replaceAttachments") \
+			or not bridge.has_method("captureWithAttachments"):
+		return ""
+	_attachment_sequence += 1
+	var handle: String = "sentry-attachment:%s" % _attachment_sequence
+	var candidate: Dictionary = _attachments.duplicate(true)
+	candidate[handle] = attachment.duplicate()
+	var native_candidate: Array[Dictionary] = _native_payloads_for(candidate)
+	if not _replace_native_snapshot(bridge, native_candidate):
+		return ""
+	_attachments = candidate
+	_native_attachment_payloads = native_candidate.duplicate(true)
+	return handle
+
+
+## Atomically removes one persistent user attachment.
+func remove_attachment(handle: String) -> int:
+	if not _enabled or _shutdown:
+		return Error.FAILED
+	if not _attachments.has(handle):
+		return Error.ERR_DOES_NOT_EXIST
+	var bridge: Object? = _resolve_bridge()
+	if bridge == null or not bridge.has_method("replaceAttachments"):
+		return Error.FAILED
+	var candidate: Dictionary = _attachments.duplicate(true)
+	candidate.erase(handle)
+	var native_candidate: Array[Dictionary] = _native_payloads_for(candidate)
+	if not _replace_native_snapshot(bridge, native_candidate):
+		return Error.FAILED
+	_attachments = candidate
+	_native_attachment_payloads = native_candidate.duplicate(true)
+	return Error.OK
+
+
+## Atomically clears user attachments while retaining configured built-ins.
+func clear_attachments() -> bool:
+	if not _enabled or _shutdown:
+		return false
+	var bridge: Object? = _resolve_bridge()
+	if bridge == null or not bridge.has_method("replaceAttachments"):
+		return false
+	var native_candidate: Array[Dictionary] = _persistent_builtin_attachments.duplicate(true)
+	if not _replace_native_snapshot(bridge, native_candidate):
+		return false
+	_attachments = {}
+	_native_attachment_payloads = native_candidate.duplicate(true)
+	return true
+
+
+## Returns defensive typed failures from the latest applicable event capture.
+func last_attachment_failures() -> Array:
+	var failures: Array = []
+	for failure: ObservabilityAttachmentFailure in _last_attachment_failures:
+		failures.append(failure.duplicate())
+	return failures
 
 
 ## Sets a global tag only after the native bridge accepts the complete candidate scope.
@@ -441,6 +584,7 @@ func shutdown() -> void:
 	_stable_contexts = {}
 	_scope = ObservabilityScope.new()
 	_user = null
+	_clear_attachment_state()
 	_clear_last_config_payload()
 	var bridge: Object? = _resolve_bridge()
 	if bridge != null and _has_lifecycle_contract(bridge):
@@ -485,6 +629,166 @@ func _is_bridge_available(bridge: Object) -> bool:
 	return result is bool and result == true
 
 
+func _native_payloads_for(candidate: Dictionary) -> Array[Dictionary]:
+	if _attachment_config.max_attachment_bytes == 0:
+		return []
+	var payloads: Array[Dictionary] = _persistent_builtin_attachments.duplicate(true)
+	for handle: String in candidate:
+		var attachment: ObservabilityAttachment = candidate[handle]
+		if attachment.is_path() and attachment.path().begins_with("res://"):
+			continue
+		var payload: Dictionary = {
+			"filename": attachment.effective_filename(),
+			"content_type": attachment.content_type(),
+			"category": String(attachment.category()),
+		}
+		if attachment.is_path():
+			var path: String = attachment.path()
+			if path.begins_with("user://"):
+				path = ProjectSettings.globalize_path(path)
+			payload["path"] = path
+		else:
+			payload["bytes"] = attachment.bytes()
+		payloads.append(payload)
+	return payloads
+
+
+func _replace_native_snapshot(bridge: Object, payloads: Array) -> bool:
+	if not bridge.has_method("replaceAttachments"):
+		return false
+	var result: Variant = bridge.call(
+			"replaceAttachments",
+			payloads.duplicate(true),
+		)
+	return result is bool and result == true
+
+
+func _capture_local_attachments(event: ObservabilityEvent) -> Array:
+	var local: Array[Dictionary] = []
+	for handle: String in _attachments:
+		var attachment: ObservabilityAttachment = _attachments[handle]
+		if _attachment_config.max_attachment_bytes == 0:
+			_append_attachment_failure(
+					handle,
+					attachment.effective_filename(),
+					ObservabilityAttachmentFailure.OVERSIZED,
+					Error.FAILED,
+				)
+			continue
+		if attachment.is_bytes():
+			if attachment.bytes().size() > _attachment_config.max_attachment_bytes:
+				_append_attachment_failure(
+						handle,
+						attachment.effective_filename(),
+						ObservabilityAttachmentFailure.OVERSIZED,
+						Error.FAILED,
+					)
+			continue
+		var materialized: Dictionary = _preflight_path_attachment(handle, attachment)
+		if attachment.path().begins_with("res://") \
+				and materialized.get("accepted", false) == true:
+			local.append({
+				"bytes": materialized["bytes"],
+				"filename": attachment.effective_filename(),
+				"content_type": attachment.content_type(),
+				"category": String(attachment.category()),
+			})
+	var built_ins: Dictionary = _attachment_collector.collect(
+			event,
+			_attachment_config,
+		)
+	for failure: ObservabilityAttachmentFailure in built_ins["failures"]:
+		_last_attachment_failures.append(failure.duplicate())
+	for payload: Dictionary in built_ins["attachments"]:
+		if payload.get("persistent", false) == true:
+			continue
+		var capture_payload: Dictionary = payload.duplicate(true)
+		capture_payload.erase("persistent")
+		local.append(capture_payload)
+	return local
+
+
+func _preflight_path_attachment(
+		handle: String,
+		attachment: ObservabilityAttachment,
+) -> Dictionary:
+	var path: String = attachment.path()
+	var readable_path: String = path
+	if readable_path.begins_with("user://"):
+		readable_path = ProjectSettings.globalize_path(readable_path)
+	if not FileAccess.file_exists(readable_path):
+		_append_attachment_failure(
+				handle,
+				attachment.effective_filename(),
+				ObservabilityAttachmentFailure.MISSING_FILE,
+				Error.ERR_FILE_NOT_FOUND,
+			)
+		return {"accepted": false}
+	var file: FileAccess = FileAccess.open(readable_path, FileAccess.READ)
+	if file == null:
+		_append_attachment_failure(
+				handle,
+				attachment.effective_filename(),
+				ObservabilityAttachmentFailure.UNREADABLE_FILE,
+				Error.ERR_FILE_CANT_OPEN,
+			)
+		return {"accepted": false}
+	var length: int = file.get_length()
+	if length > _attachment_config.max_attachment_bytes:
+		file.close()
+		_append_attachment_failure(
+				handle,
+				attachment.effective_filename(),
+				ObservabilityAttachmentFailure.OVERSIZED,
+				Error.FAILED,
+			)
+		return {"accepted": false}
+	if not path.begins_with("res://"):
+		file.close()
+		return {"accepted": true}
+	var bytes: PackedByteArray = file.get_buffer(length)
+	file.close()
+	if bytes.size() != length:
+		_append_attachment_failure(
+				handle,
+				attachment.effective_filename(),
+				ObservabilityAttachmentFailure.UNREADABLE_FILE,
+				Error.ERR_FILE_CANT_READ,
+			)
+		return {"accepted": false}
+	return {
+		"accepted": true,
+		"bytes": bytes,
+	}
+
+
+func _append_attachment_failure(
+		handle: String,
+		filename: String,
+		reason: StringName,
+		error: int,
+) -> void:
+	_last_attachment_failures.append(ObservabilityAttachmentFailure.new(
+			handle,
+			filename,
+			reason,
+			error,
+		))
+
+
+func _attachment_config_from(config: ObservabilityConfig) -> ObservabilityConfig:
+	return ObservabilityConfig.new(
+			p_enabled = config.enabled,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = config.max_attachment_bytes,
+			p_attach_game_log = config.attach_game_log,
+			p_attach_screenshot = config.attach_screenshot,
+			p_attach_scene_tree = config.attach_scene_tree,
+		)
+
+
 func _apply_scope_candidate(
 		candidate_scope: ObservabilityScope,
 		candidate_user: ObservabilityUser?,
@@ -508,20 +812,28 @@ func _apply_scope_payload(bridge: Object, payload: Dictionary) -> bool:
 	return result is bool and result == true
 
 
-func _restore_retained_scope(
+func _restore_retained_session(
 		bridge: Object,
 		retained_scope_was_enabled: bool,
 		retained_scope_payload: Dictionary,
+		retained_native_attachments: Array,
 ) -> bool:
-	if not retained_scope_was_enabled or not _has_scope_contract(bridge):
+	if not retained_scope_was_enabled:
 		return true
-	return _apply_scope_payload(bridge, retained_scope_payload)
+	if _has_scope_contract(bridge) \
+			and not _apply_scope_payload(bridge, retained_scope_payload):
+		return false
+	if bridge.has_method("replaceAttachments") \
+			and not _replace_native_snapshot(bridge, retained_native_attachments):
+		return false
+	return true
 
 
 func _rollback_after_session_reset_failure(
 		bridge: Object,
 		retained_scope_was_enabled: bool,
 		retained_scope_payload: Dictionary,
+		retained_native_attachments: Array,
 ) -> bool:
 	if not _has_last_config_payload:
 		return false
@@ -531,10 +843,11 @@ func _rollback_after_session_reset_failure(
 		)
 	if not (rollback_result is int) or rollback_result != Error.OK:
 		return false
-	return _restore_retained_scope(
+	return _restore_retained_session(
 			bridge,
 			retained_scope_was_enabled,
 			retained_scope_payload,
+			retained_native_attachments,
 		)
 
 
@@ -569,8 +882,23 @@ func _fail_closed(bridge: Object) -> void:
 	_stable_contexts = {}
 	_scope = ObservabilityScope.new()
 	_user = null
+	_clear_attachment_state()
 	_clear_last_config_payload()
 	_shutdown = true
+
+
+func _clear_attachment_state() -> void:
+	_attachments = {}
+	_last_attachment_failures.clear()
+	_persistent_builtin_attachments = []
+	_native_attachment_payloads = []
+	_attachment_config = _attachment_config_from(ObservabilityConfig.new(
+			p_enabled = false,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = DEFAULT_MAX_ATTACHMENT_BYTES,
+		))
 
 
 func _clear_last_config_payload() -> void:

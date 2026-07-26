@@ -223,6 +223,8 @@ Value types:
 - ObservabilityFeedback
 - ObservabilityMetricType
 - ObservabilityMetric
+- ObservabilityAttachment
+- ObservabilityAttachmentFailure
 - ObservabilityStartupStatus: stable project-settings startup result constants; see the [startup status table](#skip-decisions-and-results).
 
 Optional provider capabilities:
@@ -230,6 +232,7 @@ Optional provider capabilities:
 - ObservabilityMetricsProvider
 - ObservabilityBreadcrumbsProvider
 - ObservabilityScopeProvider
+- ObservabilityAttachmentsProvider
 
 Built-in providers:
 
@@ -344,6 +347,10 @@ ObservabilityConfig.new(
 		p_android_anr_timeout_msec: int = 5000,
 		p_android_anr_attach_thread_dump: bool = false,
 		p_max_breadcrumbs: int = 100,
+		p_max_attachment_bytes: int = 20 * 1024 * 1024,
+		p_attach_game_log: bool = false,
+		p_attach_screenshot: bool = false,
+		p_attach_scene_tree: bool = false,
 )
 ~~~
 
@@ -377,6 +384,10 @@ Public fields:
 | android_anr_timeout_msec | int | Pre-Android-11 watchdog threshold in milliseconds; defaults to 5000 and normalizes to at least 1000 |
 | android_anr_attach_thread_dump | bool | Request an Android 11+ ANR thread dump when available; disabled by default |
 | max_breadcrumbs | int | Maximum retained breadcrumbs; defaults to 100, negative values normalize to zero, and zero disables storage |
+| max_attachment_bytes | int | Maximum bytes accepted per attachment; defaults to 20 MiB, negative values normalize to zero, and zero disables attachment delivery |
+| attach_game_log | bool | Include the current game log when supported; disabled by default |
+| attach_screenshot | bool | Include a capture-time screenshot when supported; disabled by default |
+| attach_scene_tree | bool | Include a bounded capture-time scene-tree snapshot when supported; disabled by default |
 
 Accessors:
 
@@ -980,6 +991,10 @@ abstract func is_enabled() -> bool
 abstract func is_available() -> bool
 abstract func provider_name() -> StringName
 abstract func last_error() -> int
+abstract func add_attachment(attachment: ObservabilityAttachment) -> String
+abstract func remove_attachment(handle: String) -> bool
+abstract func clear_attachments() -> bool
+abstract func last_attachment_failures() -> Array
 abstract func capture_event(event: ObservabilityEvent) -> String
 abstract func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}, scope: ObservabilityScope? = null) -> String
 abstract func capture_log(message: String, level: int = ObservabilityLevel.INFO, source: StringName = &"game", timestamp_msec: int = -1, attributes: Dictionary = {}, engine_ticks_msec: int = -1, scope: ObservabilityScope? = null) -> String
@@ -1461,6 +1476,7 @@ Public methods:
 ~~~
 func events() -> Array[ObservabilityEvent]
 func captured_scopes() -> Array[Dictionary]
+func captured_attachments() -> Array[Array]
 func breadcrumbs() -> Array[ObservabilityBreadcrumb]
 func feedback() -> Array[ObservabilityFeedback]
 func metrics() -> Array[ObservabilityMetric]
@@ -1470,21 +1486,24 @@ func clear_feedback() -> void
 func clear_metrics() -> void
 ~~~
 
-events returns a copy of the captured event list. clear removes captured events
-and aligned effective-scope history without changing configuration.
+events returns a copy of the captured event list.
 `captured_scopes()` returns deep defensive snapshots of the effective tags,
-contexts, and user for each event. Successful event capture returns sequential
-IDs in the form memory:N. Breadcrumbs are stored in their own bounded FIFO list
-and return true when accepted. Feedback is stored separately and returns IDs in
-the form memory-feedback:N. Metrics are stored in another list and return true
-when accepted. Capture returns an empty ID or false while disabled or after
-shutdown.
+contexts, and user for each event. `captured_attachments()` returns deep
+defensive snapshots aligned one-to-one with captured events. `clear()` clears
+captured events, scopes, and attachment history but retains the live session
+attachment set. It does not change provider configuration.
+
+Successful event capture returns sequential IDs in the form memory:N.
+Breadcrumbs are stored in their own bounded FIFO list and return true when
+accepted. Feedback is stored separately and returns IDs in the form
+memory-feedback:N. Metrics are stored in another list and return true when
+accepted. Capture returns an empty ID or false while disabled or after shutdown.
 
 Successful configure/reconfigure, provider replacement, and shutdown clear the
 memory provider's live global scope, explicit user, and breadcrumb trail.
-Failed configure preserves them. Captured event and effective-scope history
-survives those lifecycle changes and remains available until `clear()`; feedback
-and metric histories use their own explicit clear methods.
+Failed configure preserves them. Captured event, effective-scope, and attachment
+history survives those lifecycle changes and remains available until `clear()`;
+feedback and metric histories use their own explicit clear methods.
 
 Example:
 
@@ -1496,6 +1515,180 @@ FoundryObservability.configure(provider, ObservabilityConfig.new(p_enabled = tru
 FoundryObservability.capture_message("test event")
 var captured: Array[ObservabilityEvent] = provider.events()
 ~~~
+
+## Diagnostic attachments
+
+Diagnostic attachments are provider-neutral files or immutable byte snapshots
+that accompany captured events. The core and memory provider expose the
+lifecycle contract on every platform; the included Sentry provider delivers
+attachments natively on Apple and Android.
+
+### ObservabilityAttachment
+
+Create an attachment with one of the validated factories:
+
+~~~
+static func from_path(path: String, filename: String = "", content_type: String = "", category: StringName = DEFAULT_CATEGORY) -> ObservabilityAttachment?
+static func from_bytes(bytes: PackedByteArray, filename: String, content_type: String = "", category: StringName = DEFAULT_CATEGORY) -> ObservabilityAttachment?
+~~~
+
+Both factories return null for invalid input. A path must be absolute or begin
+with `user://` or `res://`; it must be nonempty and have a usable filename,
+either supplied explicitly or derived from the final path component. A byte
+attachment requires a nonempty, explicit filename. Paths and metadata reject
+leading or trailing whitespace and control characters. A content type may be
+omitted, in which case `application/octet-stream` is used.
+
+Only `event.attachment` (the default) and `event.view_hierarchy` are supported
+categories. A value contains exactly one source: path-backed attachments have
+no byte payload, while byte-backed attachments have no path. Validation checks
+the descriptor, not whether a path is currently readable.
+
+Accessors:
+
+~~~
+func path() -> String
+func bytes() -> PackedByteArray
+func filename() -> String
+func effective_filename() -> String
+func content_type() -> String
+func category() -> StringName
+func is_path() -> bool
+func is_bytes() -> bool
+func duplicate() -> ObservabilityAttachment
+func is_valid() -> bool
+~~~
+
+Byte attachments are copied on construction and access. `duplicate()` also
+returns an isolated value, so later caller mutation cannot change pending
+delivery.
+
+### ObservabilityAttachmentFailure
+
+An attachment failure describes one attachment that could not accompany an
+otherwise accepted event:
+
+~~~
+func handle() -> String
+func filename() -> String
+func reason() -> StringName
+func error() -> int
+func duplicate() -> ObservabilityAttachmentFailure
+~~~
+
+The stable reasons are:
+
+| Reason | Meaning |
+| --- | --- |
+| `missing_file` | The path no longer exists at capture time |
+| `unreadable_file` | The path exists but cannot be read |
+| `oversized` | The attachment exceeds the per-attachment limit, or delivery is disabled by a zero limit |
+| `platform_unavailable` | The active platform cannot collect or deliver the requested attachment |
+| `provider_rejected` | The provider or native SDK rejected attachment preparation |
+
+Returned failure DTOs are defensive copies.
+
+### Service and provider contracts
+
+The public service API is:
+
+~~~
+func add_attachment(attachment: ObservabilityAttachment) -> String
+func remove_attachment(handle: String) -> bool
+func clear_attachments() -> bool
+func last_attachment_failures() -> Array
+~~~
+
+`add_attachment()` returns a provider-local, opaque handle. Invalid input
+returns an empty string and stores `Error.ERR_INVALID_PARAMETER`; a provider
+without the complete optional capability stores `Error.ERR_UNAVAILABLE`; and
+an empty or malformed provider result stores `Error.FAILED`. Success stores
+`Error.OK`.
+
+`remove_attachment()` validates the handle and maps the provider's integer
+result directly to `last_error()`. In particular, an unknown handle returns
+false with `Error.ERR_DOES_NOT_EXIST`. `clear_attachments()` stores
+`Error.ERR_UNAVAILABLE` when the capability is absent, `Error.FAILED` when the
+provider rejects or returns a malformed result, and `Error.OK` on success.
+While the service is disabled, these mutating calls are no-ops and leave the
+previous error unchanged.
+
+Providers opt in by implementing the complete trait:
+
+~~~
+trait_name ObservabilityAttachmentsProvider
+
+abstract func add_attachment(attachment: ObservabilityAttachment) -> String
+abstract func remove_attachment(handle: String) -> int
+abstract func clear_attachments() -> bool
+abstract func last_attachment_failures() -> Array
+~~~
+
+The integer provider removal result lets the service preserve
+`Error.ERR_DOES_NOT_EXIST` rather than collapsing every rejection into
+`Error.FAILED`.
+
+Attachments persist for the configured provider session until removed or cleared.
+Successful reconfiguration, provider replacement, and shutdown invalidate every prior handle.
+Failed reconfiguration preserves attachments and their handles. A successful
+reconfiguration starts a fresh attachment session even when the same provider
+object remains active.
+
+### Limits, materialization, and failures
+
+| Configuration key | Default |
+| --- | --- |
+| max_attachment_bytes | `20 * 1024 * 1024` (20 MiB) |
+| attach_game_log | `false` |
+| attach_screenshot | `false` |
+| attach_scene_tree | `false` |
+
+Negative values normalize to zero. Zero disables all attachment delivery, while attachment management may continue.
+The limit applies independently to each attachment.
+
+Absolute paths and `user://` paths stay lazy until capture. For the native
+Sentry global scope, `user://` is converted to its absolute globalized path.
+This lets native crashes and Android ANRs include a file's latest contents,
+subject to the native SDK's timing. Packaged `res://` paths are materialized only for the current Foundry-originated event.
+They are not installed as native global-scope paths because packaged resources
+may not exist as ordinary files.
+
+Foundry preflight runs independently for each event. It validates path
+availability and the per-attachment size without deleting persistent
+attachments. Partial attachment failures never reject an accepted event.
+`last_error()` remains `Error.OK` after an accepted event with attachment failures.
+Only the latest event envelope replaces `last_attachment_failures()`.
+Non-event APIs and automatic structured logs do not replace the latest attachment failures.
+Calling the failure accessor itself also leaves `last_error()` unchanged.
+
+### Built-in attachments and native delivery
+
+`attach_game_log`, `attach_screenshot`, and `attach_scene_tree` are independent,
+false-by-default opt-ins. The game log remains a lazy path attachment.
+Screenshot capture runs on the main thread, is unavailable headlessly, and may
+reuse the current frame.
+Scene-tree output is bounded and may contain game-authored names or text.
+Game logs and screenshots may contain sensitive data. Review every built-in
+payload for privacy-sensitive information before enabling it. Screenshot and
+scene-tree collection can affect frame time.
+Scene-tree collection requires the main thread and an initialized scene tree.
+
+Apple and Android are the supported native attachment targets.
+User-supplied byte attachments, absolute and globalized `user://` paths, and the
+persistent game log are mirrored to the Apple and Android Sentry global scope.
+They may accompany native crashes, Apple app hangs, and Android ANRs.
+Only materialized `res://` bytes and capture-time screenshot or scene-tree
+snapshots remain capture-local. Capture-time screenshots and scene-tree
+snapshots do not accompany recovered native crashes.
+The Sentry provider owns its SDK attachment collection while configured;
+applications should not expect direct native SDK attachments to coexist with
+that collection.
+
+The native SDK owns diagnostic timing and the final attachment race. A lazy
+file can change, disappear, become unreadable, or exceed the native limit after
+Foundry preflight. Native crash and ANR delivery is consequently best effort;
+the latest `last_attachment_failures()` reports Foundry event-envelope
+preflight, not failures that occur later inside native diagnostic handling.
 
 ## FoundryLib integration
 
@@ -1906,8 +2099,8 @@ interpret them.
 
 This core API does not include Sentry, Apple/Android native bindings, crash
 handlers, automatic identity collection, persistence, or retry queues,
-attachments, or performance transactions. Providers own native delivery,
+or performance transactions. Providers own native delivery,
 offline storage, retry policy, and flush behavior. The optional Sentry sibling
 addon contains its native bindings, breadcrumb delivery, structured-log
-delivery, feedback delivery, and custom-metric delivery. A foundry-cpp project
-is not required by this API.
+delivery, feedback delivery, custom-metric delivery, and attachment delivery.
+A foundry-cpp project is not required by this API.

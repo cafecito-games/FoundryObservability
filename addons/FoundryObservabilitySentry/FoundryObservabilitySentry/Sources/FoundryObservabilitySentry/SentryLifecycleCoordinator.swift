@@ -17,6 +17,7 @@ struct SentryLifecycleConfiguration: Equatable {
     let applicationHangDetectionEnabled: Bool
     let applicationHangTimeoutMsec: Int
     let maxBreadcrumbs: Int
+    let maxAttachmentBytes: UInt
 
     static func == (
         lhs: SentryLifecycleConfiguration,
@@ -39,6 +40,7 @@ struct SentryLifecycleConfiguration: Equatable {
             && lhs.applicationHangTimeoutMsec
                 == rhs.applicationHangTimeoutMsec
             && lhs.maxBreadcrumbs == rhs.maxBreadcrumbs
+            && lhs.maxAttachmentBytes == rhs.maxAttachmentBytes
     }
 }
 
@@ -47,6 +49,7 @@ protocol SentryLifecycleDriving: AnyObject {
 
     func start(configuration: SentryLifecycleConfiguration) -> Bool
     func flush(timeout: TimeInterval)
+    func replaceAttachments(_ attachments: [Attachment])
     func close()
 }
 
@@ -165,12 +168,31 @@ final class SentryLifecycleCoordinator: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    func replaceAttachments(
+        owner candidateOwner: String,
+        attachments: [Attachment]
+    ) -> Bool {
+        withLock {
+            guard
+                !candidateOwner.isEmpty,
+                candidateOwner == owner,
+                driver.isEnabled
+            else {
+                return false
+            }
+            driver.replaceAttachments(attachments)
+            return true
+        }
+    }
+
     func shutdown(owner candidateOwner: String) {
         withLock {
             guard !candidateOwner.isEmpty, candidateOwner == owner else {
                 return
             }
             if driver.isEnabled {
+                driver.replaceAttachments([])
                 driver.close()
             }
             owner = nil
@@ -204,6 +226,13 @@ final class AppleSentrySDKDriver: SentryLifecycleDriving {
         SentrySDK.flush(timeout: timeout)
     }
 
+    func replaceAttachments(_ attachments: [Attachment]) {
+        SentrySDK.configureScope { scope in
+            scope.clearAttachments()
+            applyFoundryAttachments(attachments, to: scope)
+        }
+    }
+
     func close() {
         SentrySDK.close()
     }
@@ -232,6 +261,7 @@ func makeAppleSentryOptions(
     options.enableLogs = configuration.logsEnabled
     options.enableMetrics = configuration.metricsEnabled
     options.maxBreadcrumbs = UInt(max(0, configuration.maxBreadcrumbs))
+    options.maxAttachmentSize = configuration.maxAttachmentBytes
     applyAppleHangDiagnostics(
         from: [
             "application_hang_detection_enabled":

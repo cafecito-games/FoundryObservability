@@ -173,6 +173,48 @@ class ScopeOnlySentryBridge extends \
 		return true
 
 
+class FakeAttachmentRuntimeProbe extends RefCounted:
+	var main_thread: bool = true
+	var headless: bool = false
+	var frame: int = 1
+	var screenshot: PackedByteArray = PackedByteArray([1, 2, 3])
+	var screenshot_calls: int = 0
+	var tree: Object? = null
+	var game_log: String = ""
+
+	func is_main_thread() -> bool:
+		return main_thread
+
+	func is_headless() -> bool:
+		return headless
+
+	func frames_drawn() -> int:
+		return frame
+
+	func main_scene_tree() -> Object?:
+		return tree
+
+	func screenshot_png() -> PackedByteArray:
+		screenshot_calls += 1
+		return screenshot.duplicate()
+
+	func game_log_path() -> String:
+		return game_log
+
+
+class FakeAttachmentSceneTree extends RefCounted:
+	var root: Node
+
+	func _init(p_root: Node) -> void:
+		root = p_root
+
+
+class ReplaceOnlySentryBridge extends \
+		"res://tests/support/breadcrumbless_sentry_bridge.notest.fs":
+	func replaceAttachments(_payloads: Array) -> bool:
+		return true
+
+
 func test_runtime_context_collector_builds_stable_context_without_pii() -> void:
 	var probe := FakeRuntimeContextProbe.new()
 	var collector := SentryRuntimeContextCollector.new(probe)
@@ -2133,6 +2175,635 @@ func test_shutdown_discards_committed_configuration_rollback_state() -> void:
 	Expect.that(bridge.shutdown_count).to_equal(2)
 	Expect.that(bridge.active_owner).to_equal("")
 	Expect.that(bridge.active_configuration()).to_equal({})
+
+
+func test_attachment_candidates_replace_native_snapshot_atomically() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.OK)
+	Expect.that(bridge.replaced_attachment_payloads).to_equal([[]])
+
+	var bytes_attachment := ObservabilityAttachment.from_bytes(
+			PackedByteArray([1, 2, 3]),
+			"state.bin",
+		)
+	Expect.that(bytes_attachment).not_().to_be_null()
+	var first_handle: String = provider.add_attachment(bytes_attachment)
+	Expect.that(first_handle.is_empty()).to_be_false()
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+
+	var file: FileAccess = FileAccess.open("user://sentry-attachment.txt", FileAccess.WRITE)
+	file.store_string("diagnostic")
+	file.close()
+	var path_attachment := ObservabilityAttachment.from_path(
+			"user://sentry-attachment.txt",
+			"renamed.txt",
+			"text/plain",
+		)
+	var second_handle: String = provider.add_attachment(path_attachment)
+	Expect.that(second_handle.is_empty()).to_be_false()
+	Expect.that(bridge.current_attachment_payloads).to_have_size(2)
+	Expect.that(bridge.current_attachment_payloads[1]["path"]).to_equal(
+			ProjectSettings.globalize_path("user://sentry-attachment.txt"),
+		)
+
+	Expect.that(provider.remove_attachment(first_handle)).to_equal(Error.OK)
+	Expect.that(provider.remove_attachment(first_handle)).to_equal(Error.ERR_DOES_NOT_EXIST)
+	bridge.replace_attachments_results = [false, "accepted"]
+	Expect.that(provider.clear_attachments()).to_be_false()
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+	var retained_payload: Array = bridge.current_attachment_payloads.duplicate(true)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "after rejected attachment mutation",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_native_attachment_payloads[0]).to_equal(retained_payload)
+	Expect.that(provider.clear_attachments()).to_be_false()
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "after malformed attachment mutation",
+		))).to_equal("sentry:2")
+	Expect.that(bridge.captured_native_attachment_payloads[1]).to_equal(retained_payload)
+	Expect.that(provider.remove_attachment(second_handle)).to_equal(Error.OK)
+
+
+func test_attachment_bridge_methods_are_optional_until_feature_or_api_is_used() -> void:
+	var bridge := CountingBreadcrumblessSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.OK)
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
+			PackedByteArray([1]),
+			"unsupported.bin",
+		))).to_equal("")
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "legacy bridge still captures",
+		))).to_equal("sentry:1")
+
+	var feature_provider := SentryObservabilityProvider.new(
+			p_bridge = ReplaceOnlySentryBridge.new(),
+		)
+	Expect.that(feature_provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_screenshot = true,
+	))).to_equal(Error.FAILED)
+
+
+func test_capture_materializes_only_res_paths_into_event_local_attachments() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.OK)
+	var resource := ObservabilityAttachment.from_path(
+			"res://tests/support/fake_sentry_bridge.notest.fs",
+			"bridge.fs",
+			"text/plain",
+		)
+	var global := ObservabilityAttachment.from_bytes(
+			PackedByteArray([7, 8]),
+			"native.bin",
+		)
+	Expect.that(provider.add_attachment(resource).is_empty()).to_be_false()
+	Expect.that(provider.add_attachment(global).is_empty()).to_be_false()
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "attachments",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads[0]["attachments"]).to_have_size(1)
+	Expect.that(bridge.captured_payloads[0]["attachments"][0]["filename"]).to_equal(
+			"bridge.fs",
+		)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+	Expect.that(bridge.current_attachment_payloads[0]["filename"]).to_equal("native.bin")
+
+
+func test_attachment_preflight_failures_do_not_block_events_and_clear_on_success() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = 2,
+	))).to_equal(Error.OK)
+	var missing_handle: String = provider.add_attachment(
+			ObservabilityAttachment.from_path(
+				"user://definitely-missing-sentry-file.log",
+				"missing.log",
+			),
+		)
+	Expect.that(missing_handle.is_empty()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(p_message = "partial"))).to_equal(
+			"sentry:1",
+		)
+	var missing_failures: Array = provider.last_attachment_failures()
+	Expect.that(missing_failures).to_have_size(1)
+	var missing_failure: ObservabilityAttachmentFailure = missing_failures[0]
+	Expect.that(missing_failure.handle()).to_equal(missing_handle)
+	Expect.that(missing_failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.MISSING_FILE,
+		)
+
+	Expect.that(provider.remove_attachment(missing_handle)).to_equal(Error.OK)
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
+			PackedByteArray([1, 2]),
+			"valid.bin",
+		)).is_empty()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(p_message = "valid"))).to_equal(
+			"sentry:2",
+		)
+	Expect.that(provider.last_attachment_failures()).to_have_size(0)
+
+
+func test_attachment_management_preserves_latest_event_failure_history() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+	))).to_equal(Error.OK)
+	var missing_path: String = (
+			"user://sentry-management-missing-%s.log" % bridge.get_instance_id()
+		)
+	var absolute_path: String = ProjectSettings.globalize_path(missing_path)
+	if FileAccess.file_exists(absolute_path):
+		DirAccess.remove_absolute(absolute_path)
+	var missing_handle: String = provider.add_attachment(
+			ObservabilityAttachment.from_path(missing_path, "missing.log"),
+		)
+	Expect.that(missing_handle.is_empty()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "establish event failure",
+		))).to_equal("sentry:1")
+	_expect_missing_attachment_failure(provider, missing_handle)
+
+	var successful_handle: String = provider.add_attachment(
+			ObservabilityAttachment.from_bytes(
+				PackedByteArray([1]),
+				"successful.bin",
+			),
+		)
+	Expect.that(successful_handle.is_empty()).to_be_false()
+	_expect_missing_attachment_failure(provider, missing_handle)
+	Expect.that(provider.remove_attachment(successful_handle)).to_equal(Error.OK)
+	_expect_missing_attachment_failure(provider, missing_handle)
+	Expect.that(provider.clear_attachments()).to_be_true()
+	_expect_missing_attachment_failure(provider, missing_handle)
+
+	bridge.replace_attachments_results = [false]
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
+			PackedByteArray([2]),
+			"rejected-add.bin",
+		))).to_equal("")
+	_expect_missing_attachment_failure(provider, missing_handle)
+
+	var retained_handle: String = provider.add_attachment(
+			ObservabilityAttachment.from_bytes(
+				PackedByteArray([3]),
+				"retained.bin",
+			),
+		)
+	Expect.that(retained_handle.is_empty()).to_be_false()
+	_expect_missing_attachment_failure(provider, missing_handle)
+	bridge.replace_attachments_results = [false]
+	Expect.that(provider.remove_attachment(retained_handle)).to_equal(Error.FAILED)
+	_expect_missing_attachment_failure(provider, missing_handle)
+	bridge.replace_attachments_results = [false]
+	Expect.that(provider.clear_attachments()).to_be_false()
+	_expect_missing_attachment_failure(provider, missing_handle)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "next applicable event",
+		))).to_equal("sentry:2")
+	Expect.that(provider.last_attachment_failures()).to_have_size(0)
+
+
+func test_oversized_global_path_failure_survives_logs_until_applicable_capture() -> void:
+	var file: FileAccess = FileAccess.open(
+			"user://sentry-oversized-global.log",
+			FileAccess.WRITE,
+		)
+	file.store_buffer(PackedByteArray([1, 2, 3]))
+	file.close()
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_logs_enabled = true,
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = 2,
+		))).to_equal(Error.OK)
+	var handle: String = provider.add_attachment(ObservabilityAttachment.from_path(
+			"user://sentry-oversized-global.log",
+			"oversized.log",
+			"text/plain",
+		))
+	Expect.that(handle.is_empty()).to_be_false()
+
+	Expect.that(provider.capture(ObservabilityEvent.new(p_message = "oversized"))).to_equal(
+			"sentry:1",
+		)
+	var oversized_failures: Array = provider.last_attachment_failures()
+	Expect.that(oversized_failures).to_have_size(1)
+	var oversized_failure: ObservabilityAttachmentFailure = oversized_failures[0]
+	Expect.that(oversized_failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.OVERSIZED,
+		)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_kind = &"log",
+			p_message = "non-applicable",
+		))).to_equal("sentry-log:1")
+	Expect.that(provider.last_attachment_failures()[0]).not_().to_be_null()
+	Expect.that(provider.last_attachment_failures()).to_have_size(1)
+
+	file = FileAccess.open("user://sentry-oversized-global.log", FileAccess.WRITE)
+	file.store_buffer(PackedByteArray([1, 2]))
+	file.close()
+	Expect.that(provider.capture(ObservabilityEvent.new(p_message = "now valid"))).to_equal(
+			"sentry:2",
+		)
+	Expect.that(provider.last_attachment_failures()).to_have_size(0)
+
+
+func test_attachment_reconfigure_invalidates_handles_and_restores_equivalent_failures() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	var attachment := ObservabilityAttachment.from_bytes(
+			PackedByteArray([9]),
+			"retained.bin",
+		)
+	var retained_handle: String = provider.add_attachment(attachment)
+	var retained_snapshot: Array = bridge.current_attachment_payloads.duplicate(true)
+
+	bridge.replace_attachments_results = [false, true]
+	Expect.that(provider.configure(config)).to_equal(Error.FAILED)
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(bridge.current_attachment_payloads).to_equal(retained_snapshot)
+	Expect.that(provider.remove_attachment(retained_handle)).to_equal(Error.OK)
+
+	var invalidated_handle: String = provider.add_attachment(attachment)
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.remove_attachment(invalidated_handle)).to_equal(
+			Error.ERR_DOES_NOT_EXIST,
+		)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
+
+
+func test_attachment_restore_rejection_fails_closed() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
+			PackedByteArray([1]),
+			"state.bin",
+		)).is_empty()).to_be_false()
+
+	bridge.replace_attachments_results = [false, false]
+	Expect.that(provider.configure(config)).to_equal(Error.FAILED)
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new())).to_equal("")
+
+
+func test_built_in_attachment_collection_is_independent_cached_and_bounded() -> void:
+	var probe := FakeAttachmentRuntimeProbe.new()
+	var root := Node.new()
+	root.name = "Root"
+	for index: int in range(SentryBuiltInAttachmentCollector.MAX_SCENE_NODES + 20):
+		var child := Node.new()
+		child.name = "Child%s" % index
+		root.add_child(child)
+	probe.tree = FakeAttachmentSceneTree.new(root)
+	var collector := SentryBuiltInAttachmentCollector.new(probe)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_screenshot = true,
+			p_attach_scene_tree = true,
+			p_max_attachment_bytes = 1024 * 1024,
+		)
+
+	var first: Dictionary = collector.collect(ObservabilityEvent.new(), config)
+	var second: Dictionary = collector.collect(ObservabilityEvent.new(), config)
+	Expect.that(first["attachments"]).to_have_size(2)
+	Expect.that(second["attachments"]).to_have_size(2)
+	Expect.that(probe.screenshot_calls).to_equal(1)
+	var hierarchy_payload: Dictionary = first["attachments"][1]
+	var hierarchy_bytes: PackedByteArray = hierarchy_payload["bytes"]
+	var hierarchy: Dictionary = JSON.parse_string(hierarchy_bytes.get_string_from_utf8())
+	var hierarchy_children: Array = hierarchy["children"]
+	Expect.that(hierarchy_children.size()).to_equal(
+			SentryBuiltInAttachmentCollector.MAX_SCENE_NODES - 1,
+		)
+
+	probe.frame += 1
+	probe.main_thread = false
+	var skipped: Dictionary = collector.collect(ObservabilityEvent.new(), config)
+	Expect.that(skipped["attachments"]).to_have_size(0)
+	Expect.that(skipped["failures"]).to_have_size(2)
+	probe.main_thread = true
+	probe.headless = true
+	var headless: Dictionary = collector.collect(ObservabilityEvent.new(), config)
+	Expect.that(headless["attachments"]).to_have_size(1)
+	Expect.that(headless["failures"]).to_have_size(1)
+	root.free()
+
+
+func test_built_in_attachment_toggles_and_size_limits_are_independent() -> void:
+	var probe := FakeAttachmentRuntimeProbe.new()
+	var root := Node.new()
+	root.name = "Root"
+	probe.tree = FakeAttachmentSceneTree.new(root)
+	var collector := SentryBuiltInAttachmentCollector.new(probe)
+	var screenshot_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_screenshot = true,
+		)
+	var screenshot_only: Dictionary = collector.collect(
+			ObservabilityEvent.new(),
+			screenshot_config,
+		)
+	Expect.that(screenshot_only["attachments"]).to_have_size(1)
+	Expect.that(screenshot_only["attachments"][0]["filename"]).to_equal(
+			"screenshot.png",
+		)
+
+	var scene_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_scene_tree = true,
+		)
+	var scene_only: Dictionary = collector.collect(
+			ObservabilityEvent.new(),
+			scene_config,
+		)
+	Expect.that(scene_only["attachments"]).to_have_size(1)
+	Expect.that(scene_only["attachments"][0]["filename"]).to_equal(
+			"view-hierarchy.json",
+		)
+
+	var oversized_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = 2,
+			p_attach_screenshot = true,
+		)
+	var oversized: Dictionary = collector.collect(
+			ObservabilityEvent.new(),
+			oversized_config,
+		)
+	Expect.that(oversized["attachments"]).to_have_size(0)
+	Expect.that(oversized["failures"]).to_have_size(1)
+	var failure: ObservabilityAttachmentFailure = oversized["failures"][0]
+	Expect.that(failure.reason()).to_equal(ObservabilityAttachmentFailure.OVERSIZED)
+	root.free()
+
+
+func test_scene_hierarchy_respects_maximum_depth() -> void:
+	var probe := FakeAttachmentRuntimeProbe.new()
+	var root := Node.new()
+	root.name = "Depth0"
+	var parent: Node = root
+	for depth: int in range(SentryBuiltInAttachmentCollector.MAX_SCENE_DEPTH + 10):
+		var child := Node.new()
+		child.name = "Depth%s" % (depth + 1)
+		parent.add_child(child)
+		parent = child
+	probe.tree = FakeAttachmentSceneTree.new(root)
+	var collector := SentryBuiltInAttachmentCollector.new(probe)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = 1024 * 1024,
+			p_attach_scene_tree = true,
+		)
+
+	var result: Dictionary = collector.collect(ObservabilityEvent.new(), config)
+	var hierarchy_payload: Dictionary = result["attachments"][0]
+	var hierarchy_bytes: PackedByteArray = hierarchy_payload["bytes"]
+	var cursor: Dictionary = JSON.parse_string(hierarchy_bytes.get_string_from_utf8())
+	var captured_depth: int = 0
+	var children: Array = cursor["children"]
+	while not children.is_empty():
+		captured_depth += 1
+		cursor = children[0]
+		children = cursor["children"]
+	Expect.that(captured_depth).to_equal(
+			SentryBuiltInAttachmentCollector.MAX_SCENE_DEPTH,
+		)
+	root.free()
+
+
+func test_zero_attachment_limit_disables_every_sentry_delivery_path() -> void:
+	var user_file: FileAccess = FileAccess.open(
+			"user://sentry-zero-user.log",
+			FileAccess.WRITE,
+		)
+	user_file.close()
+	var game_file: FileAccess = FileAccess.open(
+			"user://sentry-zero-game.log",
+			FileAccess.WRITE,
+		)
+	game_file.close()
+	var probe := FakeAttachmentRuntimeProbe.new()
+	var root := Node.new()
+	root.name = "Root"
+	probe.tree = FakeAttachmentSceneTree.new(root)
+	probe.game_log = "user://sentry-zero-game.log"
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = 0,
+			p_attach_game_log = true,
+			p_attach_screenshot = true,
+			p_attach_scene_tree = true,
+		))).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
+			PackedByteArray(),
+			"empty.bin",
+		)).is_empty()).to_be_false()
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_path(
+			"user://sentry-zero-user.log",
+			"empty.log",
+		)).is_empty()).to_be_false()
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_path(
+			"res://tests/support/fake_sentry_bridge.notest.fs",
+			"resource.fs",
+		)).is_empty()).to_be_false()
+	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "zero disables delivery",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads[0].has("attachments")).to_be_false()
+	Expect.that(bridge.captured_native_attachment_payloads[0]).to_have_size(0)
+	var failures: Array = provider.last_attachment_failures()
+	Expect.that(failures).to_have_size(6)
+	for failure: ObservabilityAttachmentFailure in failures:
+		Expect.that(failure.reason()).to_equal(
+				ObservabilityAttachmentFailure.OVERSIZED,
+			)
+	Expect.that(probe.screenshot_calls).to_equal(0)
+	root.free()
+
+
+func test_game_log_path_is_registered_lazily_before_the_file_exists() -> void:
+	var bridge := FakeSentryBridge.new()
+	var path: String = "user://sentry-lazy-game-%s.log" % bridge.get_instance_id()
+	var absolute_path: String = ProjectSettings.globalize_path(path)
+	if FileAccess.file_exists(absolute_path):
+		DirAccess.remove_absolute(absolute_path)
+	var probe := FakeAttachmentRuntimeProbe.new()
+	probe.game_log = path
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_game_log = true,
+		))).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+	Expect.that(bridge.current_attachment_payloads[0]["path"]).to_equal(absolute_path)
+
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string("late log")
+	file.close()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "lazy game log",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads[0].has("attachments")).to_be_false()
+	Expect.that(bridge.captured_native_attachment_payloads[0]).to_have_size(1)
+	Expect.that(provider.last_attachment_failures()).to_have_size(0)
+
+
+func test_empty_or_disabled_game_log_path_reports_missing_file() -> void:
+	var probe := FakeAttachmentRuntimeProbe.new()
+	probe.game_log = ""
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_game_log = true,
+		))).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "missing game log",
+		))).to_equal("sentry:1")
+	var failures: Array = provider.last_attachment_failures()
+	Expect.that(failures).to_have_size(1)
+	var failure: ObservabilityAttachmentFailure = failures[0]
+	Expect.that(failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.MISSING_FILE,
+		)
+	Expect.that(failure.error()).to_equal(Error.ERR_FILE_NOT_FOUND)
+
+
+func test_missing_configured_game_log_is_preflighted_at_event_time() -> void:
+	var bridge := FakeSentryBridge.new()
+	var path: String = "user://sentry-missing-game-%s.log" % bridge.get_instance_id()
+	var absolute_path: String = ProjectSettings.globalize_path(path)
+	if FileAccess.file_exists(absolute_path):
+		DirAccess.remove_absolute(absolute_path)
+	var probe := FakeAttachmentRuntimeProbe.new()
+	probe.game_log = path
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_game_log = true,
+		))).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "still missing game log",
+		))).to_equal("sentry:1")
+	var failures: Array = provider.last_attachment_failures()
+	Expect.that(failures).to_have_size(1)
+	var failure: ObservabilityAttachmentFailure = failures[0]
+	Expect.that(failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.MISSING_FILE,
+		)
+	Expect.that(failure.error()).to_equal(Error.ERR_FILE_NOT_FOUND)
+	Expect.that(bridge.captured_payloads[0].has("attachments")).to_be_false()
+
+
+func test_user_clear_preserves_configured_game_log_attachment() -> void:
+	var file: FileAccess = FileAccess.open("user://sentry-game.log", FileAccess.WRITE)
+	file.store_string("game output")
+	file.close()
+	var probe := FakeAttachmentRuntimeProbe.new()
+	probe.game_log = "user://sentry-game.log"
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			bridge,
+			null,
+			probe,
+		)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_game_log = true,
+	))).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
+			PackedByteArray([4]),
+			"user.bin",
+		)).is_empty()).to_be_false()
+	Expect.that(bridge.current_attachment_payloads).to_have_size(2)
+	Expect.that(provider.clear_attachments()).to_be_true()
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+	Expect.that(bridge.current_attachment_payloads[0]["filename"]).to_equal(
+			"sentry-game.log",
+		)
+
+
+func _expect_missing_attachment_failure(
+		provider: SentryObservabilityProvider,
+		expected_handle: String,
+) -> void:
+	var failures: Array = provider.last_attachment_failures()
+	Expect.that(failures).to_have_size(1)
+	if failures.is_empty():
+		return
+	var failure: ObservabilityAttachmentFailure = failures[0]
+	Expect.that(failure.handle()).to_equal(expected_handle)
+	Expect.that(failure.filename()).to_equal("missing.log")
+	Expect.that(failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.MISSING_FILE,
+		)
+	Expect.that(failure.error()).to_equal(Error.ERR_FILE_NOT_FOUND)
 
 
 func _service() -> FoundryObservability:

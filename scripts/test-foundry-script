@@ -127,12 +127,40 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/ObservabilityStackFrame.fs" ]] || fail "ObservabilityStackFrame.fs is missing"
 [[ -f "$addon/ObservabilityMetricType.fs" ]] || fail "ObservabilityMetricType.fs is missing"
 [[ -f "$addon/ObservabilityMetricsProvider.fs" ]] || fail "ObservabilityMetricsProvider.fs is missing"
+[[ -f "$addon/ObservabilityAttachment.fs" ]] || fail "ObservabilityAttachment.fs is missing"
+[[ -f "$addon/ObservabilityAttachmentFailure.fs" ]] \
+	|| fail "ObservabilityAttachmentFailure.fs is missing"
+[[ -f "$addon/ObservabilityAttachmentsProvider.fs" ]] \
+	|| fail "ObservabilityAttachmentsProvider.fs is missing"
 [[ -f "$addon/foundrylib/FoundryLibObservabilitySink.fs" ]] || fail "FoundryLib observability sink is missing"
 [[ -f "$sentry_addon/SentryObservabilityProvider.fs" ]] || fail "Sentry provider is missing"
 [[ -f "$sentry_addon/SentryRuntimeContextProbe.fs" ]] \
 	|| fail "Sentry runtime context probe is missing"
 [[ -f "$sentry_addon/SentryRuntimeContextCollector.fs" ]] \
 	|| fail "Sentry runtime context collector is missing"
+[[ -f "$sentry_addon/SentryAttachmentRuntimeProbe.fs" ]] \
+	|| fail "Sentry attachment runtime probe is missing"
+[[ -f "$sentry_addon/SentryBuiltInAttachmentCollector.fs" ]] \
+	|| fail "Sentry built-in attachment collector is missing"
+for attachment_resource in \
+	ObservabilityAttachment \
+	ObservabilityAttachmentFailure \
+	ObservabilityAttachmentsProvider; do
+	[[ -s "$addon/${attachment_resource}.fs.uid" ]] \
+		|| fail "${attachment_resource}.fs.uid is missing or empty"
+done
+for sentry_attachment_resource in \
+	SentryAttachmentRuntimeProbe \
+	SentryBuiltInAttachmentCollector; do
+	[[ -s "$sentry_addon/${sentry_attachment_resource}.fs.uid" ]] \
+		|| fail "${sentry_attachment_resource}.fs.uid is missing or empty"
+done
+rg -q '^class_name SentryAttachmentRuntimeProbe$' \
+	"$sentry_addon/SentryAttachmentRuntimeProbe.fs" \
+	|| fail "Sentry attachment runtime probe declaration is missing"
+rg -q '^class_name SentryBuiltInAttachmentCollector$' \
+	"$sentry_addon/SentryBuiltInAttachmentCollector.fs" \
+	|| fail "Sentry built-in attachment collector declaration is missing"
 for field in _kind _level _message _source _timestamp_msec _attributes _exception _engine_ticks_msec _scope; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityEvent.fs" \
 		|| fail "ObservabilityEvent field must be immutable: ${field}"
@@ -148,6 +176,14 @@ done
 for field in _tags _contexts; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityScope.fs" \
 		|| fail "ObservabilityScope container reference must be immutable: ${field}"
+done
+for field in _path _bytes _filename _content_type _category; do
+	rg -q "^final var ${field}:" "$addon/ObservabilityAttachment.fs" \
+		|| fail "ObservabilityAttachment field must be immutable: ${field}"
+done
+for field in _handle _filename _reason _error; do
+	rg -q "^final var ${field}:" "$addon/ObservabilityAttachmentFailure.fs" \
+		|| fail "ObservabilityAttachmentFailure field must be immutable: ${field}"
 done
 rg -q '^const UNASSIGNED_TIMESTAMP: int = -1$' "$addon/ObservabilityEvent.fs" \
 	|| fail "ObservabilityEvent must define the unassigned timestamp sentinel"
@@ -189,6 +225,30 @@ rg -q '^class_name ObservabilityMetricType$' "$addon/ObservabilityMetricType.fs"
 	|| fail "metric type declaration is missing"
 rg -q '^trait_name ObservabilityMetricsProvider$' "$addon/ObservabilityMetricsProvider.fs" \
 	|| fail "optional metrics provider contract is missing"
+rg -q '^class_name ObservabilityAttachment$' "$addon/ObservabilityAttachment.fs" \
+	|| fail "attachment value type declaration is missing"
+rg -q '^class_name ObservabilityAttachmentFailure$' \
+	"$addon/ObservabilityAttachmentFailure.fs" \
+	|| fail "attachment failure value type declaration is missing"
+rg -q '^trait_name ObservabilityAttachmentsProvider$' \
+	"$addon/ObservabilityAttachmentsProvider.fs" \
+	|| fail "optional attachments provider contract is missing"
+for attachment_api in \
+	'abstract func add_attachment(attachment: ObservabilityAttachment) -> String' \
+	'abstract func remove_attachment(handle: String) -> bool' \
+	'abstract func clear_attachments() -> bool' \
+	'abstract func last_attachment_failures() -> Array'; do
+	rg -Fq "$attachment_api" "$addon/FoundryObservabilityApi.fs" \
+		|| fail "public contract is missing exact attachment API: $attachment_api"
+done
+for provider_attachment_api in \
+	'abstract func add_attachment(attachment: ObservabilityAttachment) -> String' \
+	'abstract func remove_attachment(handle: String) -> int' \
+	'abstract func clear_attachments() -> bool' \
+	'abstract func last_attachment_failures() -> Array'; do
+	rg -Fq "$provider_attachment_api" "$addon/ObservabilityAttachmentsProvider.fs" \
+		|| fail "optional provider contract is missing exact attachment API: $provider_attachment_api"
+done
 rg -q 'capture_feedback' "$addon/FoundryObservabilityApi.fs" \
 	|| fail "public contract is missing capture_feedback"
 for scope_api in \

@@ -12,6 +12,8 @@ var flush_result: int = Error.OK
 var apply_scope_result: bool = true
 var apply_scope_results: Array[bool] = []
 var clear_breadcrumbs_result: Variant = true
+var replace_attachments_result: Variant = true
+var replace_attachments_results: Array[Variant] = []
 var malformed_clear_mutates_trail: bool = false
 var clear_breadcrumbs_count: int = 0
 var configured_payload: Dictionary = {}
@@ -22,9 +24,12 @@ var current_scope_payload: Dictionary = {
 		"contexts": {},
 	}
 var captured_payloads: Array[Dictionary] = []
+var captured_native_attachment_payloads: Array[Array] = []
 var captured_log_payloads: Array[Dictionary] = []
 var captured_breadcrumb_payloads: Array[Dictionary] = []
 var current_breadcrumb_payloads: Array[Dictionary] = []
+var replaced_attachment_payloads: Array[Array] = []
+var current_attachment_payloads: Array[Dictionary] = []
 var captured_feedback_payloads: Array[Dictionary] = []
 var captured_metric_payloads: Array[Dictionary] = []
 var active_owner: String = ""
@@ -106,9 +111,16 @@ func isAvailable(owner: String) -> Variant:
 
 func capture(payload: Dictionary) -> String:
 	captured_payloads.append(payload.duplicate(true))
+	captured_native_attachment_payloads.append(
+			current_attachment_payloads.duplicate(true),
+		)
 	var event_id: String = "sentry:%s" % next_event_id
 	next_event_id += 1
 	return event_id
+
+
+func captureWithAttachments(payload: Dictionary) -> String:
+	return capture(payload)
 
 
 func captureLog(payload: Dictionary) -> String:
@@ -142,6 +154,17 @@ func clearBreadcrumbs() -> Variant:
 	return clear_breadcrumbs_result
 
 
+func replaceAttachments(payloads: Array) -> Variant:
+	var snapshot: Array = payloads.duplicate(true)
+	replaced_attachment_payloads.append(snapshot)
+	var result: Variant = replace_attachments_result
+	if not replace_attachments_results.is_empty():
+		result = replace_attachments_results.pop_front()
+	if result is bool and result == true:
+		current_attachment_payloads = snapshot.duplicate(true)
+	return result
+
+
 func captureFeedback(payload: Dictionary) -> String:
 	captured_feedback_payloads.append(payload.duplicate(true))
 	var feedback_id: String = "sentry-feedback:%s" % next_feedback_id
@@ -170,4 +193,5 @@ func shutdown(owner: String) -> void:
 			"contexts": {},
 		}
 		current_breadcrumb_payloads = []
+		current_attachment_payloads = []
 		shutdown_count += 1

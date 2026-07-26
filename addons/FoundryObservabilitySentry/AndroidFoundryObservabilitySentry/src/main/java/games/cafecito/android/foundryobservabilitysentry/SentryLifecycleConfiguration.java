@@ -9,6 +9,8 @@ import java.util.Map;
 import java.util.Objects;
 
 final class SentryLifecycleConfiguration {
+  private static final long DEFAULT_MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
+
   final Context applicationContext;
   final String dsn;
   final String environment;
@@ -23,6 +25,7 @@ final class SentryLifecycleConfiguration {
   final long anrTimeoutMsec;
   final boolean attachAnrThreadDump;
   final int maxBreadcrumbs;
+  final long maxAttachmentBytes;
 
   SentryLifecycleConfiguration(
       Context applicationContext,
@@ -39,6 +42,40 @@ final class SentryLifecycleConfiguration {
       long anrTimeoutMsec,
       boolean attachAnrThreadDump,
       int maxBreadcrumbs) {
+    this(
+        applicationContext,
+        dsn,
+        environment,
+        release,
+        dist,
+        globalAttributes,
+        stableContexts,
+        providerOptions,
+        logsEnabled,
+        metricsEnabled,
+        anrDetectionEnabled,
+        anrTimeoutMsec,
+        attachAnrThreadDump,
+        maxBreadcrumbs,
+        DEFAULT_MAX_ATTACHMENT_BYTES);
+  }
+
+  SentryLifecycleConfiguration(
+      Context applicationContext,
+      String dsn,
+      String environment,
+      String release,
+      String dist,
+      Map<String, Object> globalAttributes,
+      Map<String, Object> stableContexts,
+      Map<String, Object> providerOptions,
+      boolean logsEnabled,
+      boolean metricsEnabled,
+      boolean anrDetectionEnabled,
+      long anrTimeoutMsec,
+      boolean attachAnrThreadDump,
+      int maxBreadcrumbs,
+      long maxAttachmentBytes) {
     this.applicationContext = applicationContext;
     this.dsn = dsn;
     this.environment = environment;
@@ -53,6 +90,11 @@ final class SentryLifecycleConfiguration {
     this.anrTimeoutMsec = anrTimeoutMsec;
     this.attachAnrThreadDump = attachAnrThreadDump;
     this.maxBreadcrumbs = maxBreadcrumbs;
+    this.maxAttachmentBytes = Math.max(0L, maxAttachmentBytes);
+  }
+
+  long maxAttachmentBytes() {
+    return maxAttachmentBytes;
   }
 
   @Override
@@ -76,7 +118,8 @@ final class SentryLifecycleConfiguration {
         && anrDetectionEnabled == other.anrDetectionEnabled
         && anrTimeoutMsec == other.anrTimeoutMsec
         && attachAnrThreadDump == other.attachAnrThreadDump
-        && maxBreadcrumbs == other.maxBreadcrumbs;
+        && maxBreadcrumbs == other.maxBreadcrumbs
+        && maxAttachmentBytes == other.maxAttachmentBytes;
   }
 
   @Override
@@ -94,7 +137,8 @@ final class SentryLifecycleConfiguration {
         anrDetectionEnabled,
         anrTimeoutMsec,
         attachAnrThreadDump,
-        maxBreadcrumbs);
+        maxBreadcrumbs,
+        maxAttachmentBytes);
   }
 
   private static Map<String, Object> immutableCopy(Map<String, Object> values) {

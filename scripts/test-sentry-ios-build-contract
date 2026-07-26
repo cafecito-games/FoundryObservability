@@ -16,6 +16,7 @@ swift_sources="$native_root/Sources/FoundryObservabilitySentry"
 tests="$native_root/Tests/FoundryObservabilitySentryTests"
 bridge_source="$swift_sources/FoundryObservabilitySentry.swift"
 lifecycle_coordinator="$swift_sources/SentryLifecycleCoordinator.swift"
+attachment_mapper="$swift_sources/SentryAttachmentMapper.swift"
 descriptor="$repo_root/addons/FoundryObservabilitySentry/FoundryObservabilitySentry.foundryextension"
 export_plugin="$repo_root/addons/FoundryObservabilitySentry/export_plugin.fs"
 package_swift="$native_root/Package.swift"
@@ -43,9 +44,12 @@ project_test="$repo_root/scripts/test-project"
 [[ -f "$swift_sources/SentryEventMapper.swift" ]] || fail "Sentry mapper source is missing"
 [[ -f "$swift_sources/SentryLifecycleCoordinator.swift" ]] \
 	|| fail "Sentry lifecycle coordinator source is missing"
+[[ -f "$attachment_mapper" ]] || fail "Sentry attachment mapper source is missing"
 [[ -f "$tests/SentryEventMapperTests.swift" ]] || fail "Sentry mapper tests are missing"
 [[ -f "$tests/SentryLifecycleCoordinatorTests.swift" ]] \
 	|| fail "Sentry lifecycle coordinator tests are missing"
+[[ -f "$tests/SentryAttachmentMapperTests.swift" ]] \
+	|| fail "Sentry attachment mapper tests are missing"
 
 rg -q 'platform=iOS' "$taskfile" || fail "Taskfile must build an iOS device framework"
 rg -q 'platform=iOS Simulator' "$taskfile" || fail "Taskfile must build an iOS simulator framework"
@@ -72,6 +76,8 @@ rg -Fq "$expected_foundryswift_runpath" "$project_yml" \
 	|| fail "native project must resolve the sibling FoundrySwift addon from Versions/A"
 rg -Fq "$expected_foundryswift_runpath" "$pbxproj" \
 	|| fail "generated Xcode project must preserve the sibling FoundrySwift runpath"
+rg -q 'SentryAttachmentMapper\.swift' "$pbxproj" \
+	|| fail "generated Sentry Xcode project must compile the attachment mapper"
 
 rg -q '^\[packages\.FoundrySwift\]$' "$packages_manifest" \
 	|| fail "test project must pin the FoundrySwift companion addon"
@@ -184,6 +190,8 @@ rg -q 'foundry_observability_sentry_entry_point' "$swift_sources/FoundryObservab
 	|| fail "bridge source has the wrong entry symbol"
 rg -q '@Foundry' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose a Foundry class"
+rg -q '^class[[:space:]]+SentryObservabilityBridge:[[:space:]]+RefCounted[[:space:]]*\{' "$bridge_source" \
+	|| fail "Apple bridge must retain the exact Foundry class name"
 rg -q '@Callable' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose callable bridge methods"
 rg -q 'func lifecycleVersion\(\) -> Int' "$swift_sources/FoundryObservabilitySentry.swift" \
@@ -194,6 +202,24 @@ rg -q 'func flush\(_ owner: String, _ timeoutMsec: Int\) -> Int' "$swift_sources
 	|| fail "bridge flush must require a lifecycle owner"
 rg -q 'func shutdown\(_ owner: String\)' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge shutdown must require a lifecycle owner"
+rg -q 'func replaceAttachments\(payloads: VariantArray\) -> Bool' "$bridge_source" \
+	|| fail "bridge must expose owner-safe attachment replacement"
+rg -q 'func captureWithAttachments\(payload: VariantDictionary\) -> String' "$bridge_source" \
+	|| fail "bridge must expose capture-local attachment delivery"
+rg -q -U '@Callable[[:space:]]+func captureWithAttachments\(payload: VariantDictionary\) -> String' "$bridge_source" \
+	|| fail "attachment-aware Apple capture must remain a Foundry-callable export"
+rg -q -U '@Callable[[:space:]]+func replaceAttachments\(payloads: VariantArray\) -> Bool' "$bridge_source" \
+	|| fail "Apple attachment replacement must remain a Foundry-callable export"
+rg -q -U 'switch captureAttachmentCandidate\(from: payload\)[[:space:]]*\{(.|\n)*let values = foundationDictionary\(from: payload\)' "$bridge_source" \
+	|| fail "capture-local attachments must parse strictly before generic conversion"
+rg -q 'return strictFoundryAttachments\(from: values\)' "$bridge_source" \
+	|| fail "capture and replacement must share strict attachment array conversion"
+rg -q 'let preparation = prepareFoundrySentryCapture\(' "$bridge_source" \
+	|| fail "bridge capture must delegate to its tested preparation seam"
+rg -q 'preparation\.apply\(to: scope\)' "$bridge_source" \
+	|| fail "bridge capture must apply the tested capture-local scope preparation"
+rg -q 'PackedByteArray\(variant\)' "$bridge_source" \
+	|| fail "bridge must convert Foundry packed bytes before container mapping"
 rg -q 'static let lifecycleCoordinator' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge instances must share a process-global lifecycle coordinator"
 rg -q 'lifecycle_owner' "$swift_sources/FoundryObservabilitySentry.swift" \
@@ -220,6 +246,18 @@ rg -q 'captureMetric' "$swift_sources/FoundryObservabilitySentry.swift" \
 	|| fail "bridge source must expose custom metric capture"
 rg -q 'options\.enableMetrics = configuration\.metricsEnabled' "$lifecycle_coordinator" \
 	|| fail "Apple lifecycle must configure Sentry Metrics"
+rg -q 'options\.maxAttachmentSize = configuration\.maxAttachmentBytes' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle must configure the attachment size limit"
+rg -q 'let maxAttachmentBytes: UInt' "$lifecycle_coordinator" \
+	|| fail "Apple lifecycle configuration must retain its typed attachment limit"
+rg -q 'scope\.clearAttachments\(\)' "$lifecycle_coordinator" \
+	|| fail "Apple attachment replacement must clear the owned SDK snapshot"
+rg -q 'scope\.addAttachment\(attachment\)' "$attachment_mapper" \
+	|| fail "Apple capture-local mapping must add attachments to the capture scope"
+rg -q 'event\.attachment' "$attachment_mapper" \
+	|| fail "Apple attachment mapper must support event attachments"
+rg -q 'event\.view_hierarchy' "$attachment_mapper" \
+	|| fail "Apple attachment mapper must support view hierarchy attachments"
 diagnostics_configurator="$swift_sources/SentryDiagnosticsConfigurator.swift"
 [[ -f "$diagnostics_configurator" ]] \
 	|| fail "Apple diagnostics configurator is missing"

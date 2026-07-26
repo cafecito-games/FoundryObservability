@@ -54,6 +54,25 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
         )
     }
 
+    func testChangedMaxAttachmentBytesClosesThenStarts() {
+        let driver = FakeSentryLifecycleDriver()
+        let coordinator = SentryLifecycleCoordinator(driver: driver)
+
+        XCTAssertTrue(coordinator.configure(
+            owner: "first",
+            configuration: configuration(maxAttachmentBytes: 20)
+        ))
+        XCTAssertTrue(coordinator.configure(
+            owner: "second",
+            configuration: configuration(maxAttachmentBytes: 21)
+        ))
+
+        XCTAssertEqual(
+            driver.operations,
+            ["start:1.0.0", "close", "start:1.0.0"]
+        )
+    }
+
     func testChangedConfigurationClosesThenStarts() {
         let driver = FakeSentryLifecycleDriver()
         let coordinator = SentryLifecycleCoordinator(driver: driver)
@@ -189,8 +208,69 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
         coordinator.shutdown(owner: "first")
         coordinator.shutdown(owner: "first")
 
-        XCTAssertEqual(driver.operations, ["start:1.0.0", "close"])
+        XCTAssertEqual(
+            driver.operations,
+            ["start:1.0.0", "clearAttachments", "close"]
+        )
         XCTAssertNil(coordinator.activeOwner)
+    }
+
+    func testCurrentOwnerCanReplaceAttachmentsAtomically() {
+        let driver = FakeSentryLifecycleDriver()
+        let coordinator = SentryLifecycleCoordinator(driver: driver)
+        let attachments = [
+            Attachment(data: Data([1]), filename: "first.bin"),
+            Attachment(path: "/tmp/second.txt", filename: "second.txt"),
+        ]
+
+        XCTAssertTrue(coordinator.configure(owner: "first", configuration: configuration()))
+        XCTAssertTrue(coordinator.replaceAttachments(
+            owner: "first",
+            attachments: attachments
+        ))
+
+        XCTAssertEqual(driver.attachmentOperations, [
+            "clear",
+            "add:first.bin",
+            "add:second.txt",
+        ])
+        XCTAssertEqual(driver.attachmentFilenames, ["first.bin", "second.txt"])
+    }
+
+    func testStaleOwnerCannotReplaceAttachments() {
+        let driver = FakeSentryLifecycleDriver()
+        let coordinator = SentryLifecycleCoordinator(driver: driver)
+        let config = configuration()
+
+        XCTAssertTrue(coordinator.configure(owner: "first", configuration: config))
+        XCTAssertTrue(coordinator.configure(owner: "second", configuration: config))
+        XCTAssertFalse(coordinator.replaceAttachments(
+            owner: "first",
+            attachments: [Attachment(data: Data([1]), filename: "stale.bin")]
+        ))
+
+        XCTAssertTrue(driver.attachmentOperations.isEmpty)
+    }
+
+    func testShutdownClearsAttachmentsBeforeClosingSDK() {
+        let driver = FakeSentryLifecycleDriver()
+        let coordinator = SentryLifecycleCoordinator(driver: driver)
+
+        XCTAssertTrue(coordinator.configure(owner: "first", configuration: configuration()))
+        XCTAssertTrue(coordinator.replaceAttachments(
+            owner: "first",
+            attachments: [Attachment(data: Data([1]), filename: "live.bin")]
+        ))
+
+        coordinator.shutdown(owner: "first")
+
+        XCTAssertEqual(driver.attachmentOperations, [
+            "clear",
+            "add:live.bin",
+            "clear",
+        ])
+        XCTAssertTrue(driver.attachmentFilenames.isEmpty)
+        XCTAssertEqual(driver.operations.suffix(2), ["clearAttachments", "close"])
     }
 
     func testAppleOptionsEnableCrashHandlerAndStableMetadata() {
@@ -212,6 +292,7 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
         XCTAssertEqual(options.environment, "qa")
         XCTAssertEqual(options.dist, "macos")
         XCTAssertEqual(options.maxBreadcrumbs, 2)
+        XCTAssertEqual(options.maxAttachmentSize, 20)
         XCTAssertEqual(
             foundryCrashContext(config) as NSDictionary,
             ["global_attributes": ["build": 42]] as NSDictionary
@@ -240,7 +321,8 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
         dist: String = "macos",
         globalAttributes: [String: Any] = [:],
         stableContexts: [String: Any] = [:],
-        maxBreadcrumbs: Int = 2
+        maxBreadcrumbs: Int = 2,
+        maxAttachmentBytes: UInt = 20
     ) -> SentryLifecycleConfiguration {
         SentryLifecycleConfiguration(
             dsn: "https://public@example.com/1",
@@ -254,7 +336,8 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
             metricsEnabled: true,
             applicationHangDetectionEnabled: true,
             applicationHangTimeoutMsec: 3_200,
-            maxBreadcrumbs: maxBreadcrumbs
+            maxBreadcrumbs: maxBreadcrumbs,
+            maxAttachmentBytes: maxAttachmentBytes
         )
     }
 }
@@ -263,6 +346,8 @@ private final class FakeSentryLifecycleDriver: SentryLifecycleDriving {
     var isEnabled = false
     var failNextStart = false
     var operations: [String] = []
+    var attachmentOperations: [String] = []
+    var attachmentFilenames: [String] = []
 
     func start(configuration: SentryLifecycleConfiguration) -> Bool {
         operations.append("start:\(configuration.release)")
@@ -282,5 +367,15 @@ private final class FakeSentryLifecycleDriver: SentryLifecycleDriving {
     func close() {
         operations.append("close")
         isEnabled = false
+    }
+
+    func replaceAttachments(_ attachments: [Attachment]) {
+        operations.append("clearAttachments")
+        attachmentOperations.append("clear")
+        attachmentFilenames.removeAll()
+        for attachment in attachments {
+            attachmentOperations.append("add:\(attachment.filename)")
+            attachmentFilenames.append(attachment.filename)
+        }
     }
 }

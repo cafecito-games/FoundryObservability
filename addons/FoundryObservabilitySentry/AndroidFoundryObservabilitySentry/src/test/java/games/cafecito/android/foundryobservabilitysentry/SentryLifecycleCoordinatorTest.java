@@ -244,6 +244,30 @@ public class SentryLifecycleCoordinatorTest {
   }
 
   @Test
+  public void changedMaxAttachmentBytesRestartsAndParticipatesInEquality() {
+    FakeDriver driver = new FakeDriver();
+    SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
+    SentryLifecycleConfiguration first =
+        configuration("1.0.0", Map.of(), 100, 20L);
+    SentryLifecycleConfiguration equal =
+        configuration("1.0.0", Map.of(), 100, 20L);
+    SentryLifecycleConfiguration changed =
+        configuration("1.0.0", Map.of(), 100, 21L);
+
+    assertEquals(first, equal);
+    assertEquals(first.hashCode(), equal.hashCode());
+    assertEquals(20L, first.maxAttachmentBytes());
+    assertFalse(first.equals(changed));
+    assertTrue(coordinator.configure("first", first));
+    assertTrue(coordinator.configure("second", changed));
+
+    assertEquals(
+        List.of("start:1.0.0", "close", "start:1.0.0"),
+        driver.operations);
+    assertEquals(List.of(20L, 21L), driver.startedMaxAttachmentBytes);
+  }
+
+  @Test
   public void changedStableContextsCloseThenStart() {
     FakeDriver driver = new FakeDriver();
     SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
@@ -351,7 +375,8 @@ public class SentryLifecycleCoordinatorTest {
         true,
         6_400L,
         true,
-        2);
+        2,
+        20L);
     SentryAndroidOptions options = new SentryAndroidOptions();
 
     AndroidSentrySdkDriver.applyOptions(options, configuration);
@@ -364,6 +389,7 @@ public class SentryLifecycleCoordinatorTest {
     assertEquals("qa", options.getEnvironment());
     assertEquals("android", options.getDist());
     assertEquals(2, options.getMaxBreadcrumbs());
+    assertEquals(20L, options.getMaxAttachmentSize());
     assertEquals(
         Map.of("global_attributes", Map.of("build", 42)),
         AndroidSentrySdkDriver.foundryCrashContext(configuration));
@@ -407,6 +433,14 @@ public class SentryLifecycleCoordinatorTest {
       String release,
       Map<String, Object> stableContexts,
       int maxBreadcrumbs) {
+    return configuration(release, stableContexts, maxBreadcrumbs, 20L * 1024L * 1024L);
+  }
+
+  private static SentryLifecycleConfiguration configuration(
+      String release,
+      Map<String, Object> stableContexts,
+      int maxBreadcrumbs,
+      long maxAttachmentBytes) {
     return new SentryLifecycleConfiguration(
         null,
         "https://public@example.com/1",
@@ -421,7 +455,8 @@ public class SentryLifecycleCoordinatorTest {
         true,
         3_200L,
         true,
-        maxBreadcrumbs);
+        maxBreadcrumbs,
+        maxAttachmentBytes);
   }
 
   private static final class FakeDriver implements SentryLifecycleDriver {
@@ -429,6 +464,7 @@ public class SentryLifecycleCoordinatorTest {
     private boolean failNextStart;
     private final List<String> operations = new ArrayList<>();
     private final List<Integer> startedMaxBreadcrumbs = new ArrayList<>();
+    private final List<Long> startedMaxAttachmentBytes = new ArrayList<>();
 
     @Override
     public boolean isEnabled() {
@@ -439,6 +475,7 @@ public class SentryLifecycleCoordinatorTest {
     public boolean start(SentryLifecycleConfiguration configuration) {
       operations.add("start:" + configuration.release);
       startedMaxBreadcrumbs.add(configuration.maxBreadcrumbs);
+      startedMaxAttachmentBytes.add(configuration.maxAttachmentBytes);
       if (failNextStart) {
         failNextStart = false;
         enabled = false;
