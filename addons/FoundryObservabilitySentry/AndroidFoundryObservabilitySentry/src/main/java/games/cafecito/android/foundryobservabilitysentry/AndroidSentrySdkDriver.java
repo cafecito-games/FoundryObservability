@@ -6,6 +6,7 @@ import io.sentry.ScopeType;
 import io.sentry.Sentry;
 import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -55,7 +56,11 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
 
   @Override
   public void close() {
-    replaceAttachments(List.of());
+    try {
+      Sentry.getGlobalScope().clearAttachments();
+    } catch (RuntimeException ignored) {
+      // Closing the SDK remains mandatory even if its scope rejects cleanup.
+    }
     Sentry.close();
   }
 
@@ -115,15 +120,46 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
   }
 
   static boolean replaceAttachments(List<Attachment> attachments) {
-    IScope scope = Sentry.getGlobalScope();
+    return replaceAttachments(
+        Sentry.getGlobalScope(),
+        attachments,
+        Sentry::close);
+  }
+
+  static boolean replaceAttachments(
+      IScope scope,
+      List<Attachment> attachments,
+      Runnable closeSdk) {
+    List<Attachment> previous;
     try {
-      scope.clearAttachments();
-      for (Attachment attachment : attachments) {
-        scope.addAttachment(attachment);
-      }
-      return true;
+      previous = new ArrayList<>(scope.getAttachments());
     } catch (RuntimeException exception) {
       return false;
+    }
+
+    try {
+      applyAttachments(scope, attachments);
+      return true;
+    } catch (RuntimeException exception) {
+      try {
+        applyAttachments(scope, previous);
+      } catch (RuntimeException restorationException) {
+        try {
+          closeSdk.run();
+        } catch (RuntimeException ignored) {
+          // Replacement already failed; preserve its boolean failure contract.
+        }
+      }
+      return false;
+    }
+  }
+
+  private static void applyAttachments(
+      IScope scope,
+      List<Attachment> attachments) {
+    scope.clearAttachments();
+    for (Attachment attachment : attachments) {
+      scope.addAttachment(attachment);
     }
   }
 

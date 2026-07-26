@@ -10,18 +10,24 @@ import games.cafecito.foundry.Foundry;
 import io.sentry.Attachment;
 import io.sentry.Breadcrumb;
 import io.sentry.IScope;
+import io.sentry.Scope;
 import io.sentry.ScopeType;
 import io.sentry.Sentry;
 import io.sentry.SentryEvent;
+import io.sentry.SentryOptions;
 import io.sentry.android.core.SentryAndroidOptions;
 import io.sentry.protocol.SentryId;
+import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
@@ -500,6 +506,51 @@ public class SentryObservabilityBridgeTest {
   }
 
   @Test
+  public void failedGlobalReplacementRestoresPreviousSnapshotInOrder() {
+    Scope liveScope = new Scope(new SentryOptions());
+    liveScope.addAttachment(new Attachment(new byte[] {1}, "prior-first.bin"));
+    liveScope.addAttachment(new Attachment(new byte[] {2}, "prior-second.bin"));
+    IScope faultingScope = scopeFailingOnAttachmentAdds(liveScope, 2);
+    AtomicBoolean closed = new AtomicBoolean();
+
+    assertFalse(AndroidSentrySdkDriver.replaceAttachments(
+        faultingScope,
+        List.of(
+            new Attachment(new byte[] {3}, "candidate-first.bin"),
+            new Attachment(new byte[] {4}, "candidate-second.bin")),
+        () -> closed.set(true)));
+
+    assertEquals(
+        List.of("prior-first.bin", "prior-second.bin"),
+        attachmentFilenames(liveScope));
+    assertFalse(closed.get());
+  }
+
+  @Test
+  public void failedGlobalReplacementAndRollbackCloseSdkAndInvalidateOwner() {
+    SentryObservabilityBridge bridge = configuredBridge();
+    assertTrue(bridge.isAvailable(OWNER));
+    Scope liveScope = new Scope(new SentryOptions());
+    liveScope.addAttachment(new Attachment(new byte[] {1}, "prior.bin"));
+    IScope faultingScope = scopeFailingOnAttachmentAdds(liveScope, 2, 3);
+    AtomicInteger closeCalls = new AtomicInteger();
+
+    assertFalse(AndroidSentrySdkDriver.replaceAttachments(
+        faultingScope,
+        List.of(
+            new Attachment(new byte[] {2}, "candidate-first.bin"),
+            new Attachment(new byte[] {3}, "candidate-second.bin")),
+        () -> {
+          closeCalls.incrementAndGet();
+          Sentry.close();
+        }));
+
+    assertEquals(1, closeCalls.get());
+    assertFalse(Sentry.isEnabled());
+    assertFalse(bridge.isAvailable(OWNER));
+  }
+
+  @Test
   public void attachmentAwareCaptureHandlesAllEventRoutesLocallyAndStrictly() {
     RecordingCapturer capturer = new RecordingCapturer();
     SentryObservabilityBridge bridge = newBridge(capturer);
@@ -935,6 +986,23 @@ public class SentryObservabilityBridgeTest {
       filenames.add(attachment.getFilename());
     }
     return filenames;
+  }
+
+  private static IScope scopeFailingOnAttachmentAdds(
+      IScope delegate,
+      Integer... failingCalls) {
+    Set<Integer> failures = new HashSet<>(List.of(failingCalls));
+    AtomicInteger addCalls = new AtomicInteger();
+    return (IScope) Proxy.newProxyInstance(
+        IScope.class.getClassLoader(),
+        new Class<?>[] {IScope.class},
+        (proxy, method, arguments) -> {
+          if ("addAttachment".equals(method.getName())
+              && failures.contains(addCalls.incrementAndGet())) {
+            throw new IllegalStateException("injected attachment add failure");
+          }
+          return method.invoke(delegate, arguments);
+        });
   }
 
   private static int assertCollisionRejectedAndSafeReplacementSucceeds(
