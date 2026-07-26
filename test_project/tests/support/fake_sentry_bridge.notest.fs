@@ -6,8 +6,11 @@ extends RefCounted
 var available: bool = true
 var configure_result: int = Error.OK
 var flush_result: int = Error.OK
+var apply_scope_result: bool = true
+var clear_breadcrumbs_result: bool = true
 var configured_payload: Dictionary = {}
 var configured_payloads: Array[Dictionary] = []
+var applied_scope_payloads: Array[Dictionary] = []
 var captured_payloads: Array[Dictionary] = []
 var captured_log_payloads: Array[Dictionary] = []
 var captured_breadcrumb_payloads: Array[Dictionary] = []
@@ -60,6 +63,15 @@ func captureLog(payload: Dictionary) -> String:
 func captureBreadcrumb(payload: Dictionary) -> bool:
 	captured_breadcrumb_payloads.append(payload.duplicate(true))
 	return true
+
+
+func applyScope(payload: Dictionary) -> bool:
+	applied_scope_payloads.append(payload.duplicate(true))
+	return apply_scope_result
+
+
+func clearBreadcrumbs() -> bool:
+	return clear_breadcrumbs_result
 
 
 func captureFeedback(payload: Dictionary) -> String:
