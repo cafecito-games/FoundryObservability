@@ -121,24 +121,28 @@ func configure(config: ObservabilityConfig) -> int:
 	var candidate_config_payload: Dictionary = payload.duplicate(true)
 	var retained_scope_payload: Dictionary = _scope_payload(_scope, _user)
 	var retained_scope_was_enabled: bool = _enabled and not _shutdown
+	# Local candidate state commits only after native configure and empty-scope reset;
+	# otherwise the prior session must be fully restored or the provider fails closed.
 	var result: Variant = bridge.call(
 			"configure",
 			candidate_config_payload.duplicate(true),
 		)
 	if not (result is int):
-		_restore_retained_scope(
+		if not _restore_retained_scope(
 				bridge,
 				retained_scope_was_enabled,
 				retained_scope_payload,
-			)
+		):
+			_fail_closed(bridge)
 		return Error.FAILED
 	var result_code: int = result
 	if result_code != Error.OK:
-		_restore_retained_scope(
+		if not _restore_retained_scope(
 				bridge,
 				retained_scope_was_enabled,
 				retained_scope_payload,
-			)
+		):
+			_fail_closed(bridge)
 		return result_code
 	if config.enabled and _has_scope_contract(bridge):
 		var empty_scope_payload: Dictionary = _scope_payload(
@@ -146,11 +150,12 @@ func configure(config: ObservabilityConfig) -> int:
 				null,
 			)
 		if not _apply_scope_payload(bridge, empty_scope_payload):
-			_rollback_after_scope_reset_failure(
+			if not _rollback_after_scope_reset_failure(
 					bridge,
 					retained_scope_was_enabled,
 					retained_scope_payload,
-				)
+			):
+				_fail_closed(bridge)
 			return Error.FAILED
 	_enabled = config.enabled
 	_stable_contexts = candidate_stable_contexts
@@ -444,7 +449,8 @@ func _has_scope_contract(bridge: Object) -> bool:
 func _is_bridge_available(bridge: Object) -> bool:
 	if not _has_lifecycle_contract(bridge):
 		return false
-	return bridge.call("isAvailable", _owner) == true
+	var result: Variant = bridge.call("isAvailable", _owner)
+	return result is bool and result == true
 
 
 func _apply_scope_candidate(
@@ -474,29 +480,40 @@ func _restore_retained_scope(
 		bridge: Object,
 		retained_scope_was_enabled: bool,
 		retained_scope_payload: Dictionary,
-) -> void:
-	if retained_scope_was_enabled:
-		_apply_scope_payload(bridge, retained_scope_payload)
+) -> bool:
+	if not retained_scope_was_enabled or not _has_scope_contract(bridge):
+		return true
+	return _apply_scope_payload(bridge, retained_scope_payload)
 
 
 func _rollback_after_scope_reset_failure(
 		bridge: Object,
 		retained_scope_was_enabled: bool,
 		retained_scope_payload: Dictionary,
-) -> void:
+) -> bool:
 	if not _has_last_config_payload:
-		bridge.call("shutdown", _owner)
-		return
+		return false
 	var rollback_result: Variant = bridge.call(
 			"configure",
 			_last_config_payload.duplicate(true),
 		)
-	if rollback_result is int and rollback_result == Error.OK:
-		_restore_retained_scope(
-				bridge,
-				retained_scope_was_enabled,
-				retained_scope_payload,
-			)
+	if not (rollback_result is int) or rollback_result != Error.OK:
+		return false
+	return _restore_retained_scope(
+			bridge,
+			retained_scope_was_enabled,
+			retained_scope_payload,
+		)
+
+
+func _fail_closed(bridge: Object) -> void:
+	bridge.call("shutdown", _owner)
+	_enabled = false
+	_stable_contexts = {}
+	_scope = ObservabilityScope.new()
+	_user = null
+	_clear_last_config_payload()
+	_shutdown = true
 
 
 func _clear_last_config_payload() -> void:

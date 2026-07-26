@@ -4,6 +4,7 @@ class_name FakeSentryBridge
 extends RefCounted
 
 var available: bool = true
+var availability_result: Variant = true
 var configure_result: int = Error.OK
 var configure_results: Array[int] = []
 var flush_result: int = Error.OK
@@ -73,8 +74,10 @@ func active_configuration() -> Dictionary:
 	return _active_configuration.duplicate(true)
 
 
-func isAvailable(owner: String) -> bool:
-	return available and not owner.is_empty() and owner == active_owner
+func isAvailable(owner: String) -> Variant:
+	if not available or owner.is_empty() or owner != active_owner:
+		return false
+	return availability_result
 
 
 func capture(payload: Dictionary) -> String:

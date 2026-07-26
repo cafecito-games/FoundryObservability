@@ -399,6 +399,23 @@ func test_enabled_configuration_reports_native_bridge_availability() -> void:
 		Expect.that(result).to_equal(Error.ERR_UNAVAILABLE)
 
 
+func test_non_boolean_native_availability_is_rejected() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.OK)
+	bridge.availability_result = 1
+
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "unavailable",
+	))).to_equal("")
+	provider.shutdown()
+
+
 func test_disabled_configuration_is_safe_without_native_bridge() -> void:
 	var provider := SentryObservabilityProvider.new()
 
@@ -886,7 +903,7 @@ func test_initial_scope_reset_failure_shuts_down_orphan_native_session() -> void
 	Expect.that(bridge.shutdown_count).to_equal(1)
 
 
-func test_scope_reset_rollback_failure_preserves_local_state_and_reports_failure() -> void:
+func test_scope_reset_rollback_configure_failure_fails_closed_and_can_recover() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var initial_config := ObservabilityConfig.new(
@@ -897,6 +914,10 @@ func test_scope_reset_rollback_failure_preserves_local_state_and_reports_failure
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	Expect.that(provider.set_context("match", {"round": 3})).to_be_true()
+	Expect.that(provider.set_user(ObservabilityUser.new(
+			p_application_user_id = "player-1",
+	))).to_be_true()
 	bridge.configure_results = [Error.OK, Error.FAILED]
 	bridge.apply_scope_results = [false]
 
@@ -912,11 +933,121 @@ func test_scope_reset_rollback_failure_preserves_local_state_and_reports_failure
 			"production",
 		)
 
-	Expect.that(provider.set_tag("mode", "ranked")).to_be_true()
-	Expect.that(bridge.current_scope_payload["tags"]).to_equal({
-			"region": "iad",
-			"mode": "ranked",
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.active_configuration()).to_equal({})
+	Expect.that(bridge.current_scope_payload).to_equal({
+			"tags": {},
+			"contexts": {},
 		})
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "failed closed",
+	))).to_equal("")
+	Expect.that(provider.set_tag("mode", "ranked")).to_be_false()
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "failed closed",
+	))).to_be_false()
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.set_tag("fresh", "scope")).to_be_true()
+	Expect.that(bridge.current_scope_payload).to_equal({
+			"tags": {"fresh": "scope"},
+			"contexts": {},
+		})
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "recovered",
+	))).to_equal("sentry:1")
+	provider.shutdown()
+
+
+func test_scope_reset_retained_scope_reapply_failure_fails_closed() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var initial_config := ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	bridge.configure_results = [Error.OK, Error.OK]
+	bridge.apply_scope_results = [false, false]
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "staging",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+	))).to_equal(Error.FAILED)
+	Expect.that(bridge.configured_payloads.slice(-2)[0]["environment"]).to_equal(
+			"staging",
+		)
+	Expect.that(bridge.configured_payloads.slice(-2)[1]["environment"]).to_equal(
+			"production",
+		)
+	Expect.that(bridge.applied_scope_payloads.slice(-2)).to_equal([
+		{
+			"tags": {},
+			"contexts": {},
+		},
+		{
+			"tags": {"region": "iad"},
+			"contexts": {},
+		},
+	])
+
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.active_configuration()).to_equal({})
+	Expect.that(bridge.current_scope_payload).to_equal({
+			"tags": {},
+			"contexts": {},
+		})
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "failed closed",
+	))).to_equal("")
+	Expect.that(provider.set_tag("mode", "ranked")).to_be_false()
+	Expect.that(provider.clear_breadcrumbs()).to_be_false()
+	provider.shutdown()
+
+
+func test_failed_configure_scope_resync_failure_fails_closed_with_original_error() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var initial_config := ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	bridge.configure_result = Error.ERR_INVALID_PARAMETER
+	bridge.apply_scope_results = [false]
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "staging",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+	))).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.active_configuration()).to_equal({})
+	Expect.that(bridge.current_scope_payload).to_equal({
+			"tags": {},
+			"contexts": {},
+		})
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "failed closed",
+	))).to_equal("")
+	Expect.that(provider.set_tag("mode", "ranked")).to_be_false()
+	Expect.that(provider.clear_breadcrumbs()).to_be_false()
+
+	bridge.configure_result = Error.OK
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.set_tag("fresh", "scope")).to_be_true()
 	provider.shutdown()
 
 
