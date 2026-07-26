@@ -10,13 +10,13 @@ final var _rules: Array[ObservabilityRedactionRule]
 func _init(p_rules: Array[ObservabilityRedactionRule] = []) -> void:
 	_rules = []
 	for rule: ObservabilityRedactionRule in p_rules:
-		_rules.append(rule.duplicate())
+		_rules.append(null if rule == null else rule.duplicate())
 
 
 func rules() -> Array[ObservabilityRedactionRule]:
 	var copied: Array[ObservabilityRedactionRule] = []
 	for rule: ObservabilityRedactionRule in _rules:
-		copied.append(rule.duplicate())
+		copied.append(null if rule == null else rule.duplicate())
 	return copied
 
 
@@ -26,6 +26,6 @@ func duplicate() -> ObservabilityRedactionPolicy:
 
 func is_valid() -> bool:
 	for rule: ObservabilityRedactionRule in _rules:
-		if not rule.is_valid():
+		if rule == null or not rule.is_valid():
 			return false
 	return true

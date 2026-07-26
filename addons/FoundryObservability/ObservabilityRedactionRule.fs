@@ -104,4 +104,24 @@ func _copy_replacement(value: Variant) -> Variant:
 		return value.duplicate(true)
 	if value is Array:
 		return value.duplicate(true)
+	if value is PackedByteArray:
+		return value.duplicate()
+	if value is PackedInt32Array:
+		return value.duplicate()
+	if value is PackedInt64Array:
+		return value.duplicate()
+	if value is PackedFloat32Array:
+		return value.duplicate()
+	if value is PackedFloat64Array:
+		return value.duplicate()
+	if value is PackedStringArray:
+		return value.duplicate()
+	if value is PackedVector2Array:
+		return value.duplicate()
+	if value is PackedVector3Array:
+		return value.duplicate()
+	if value is PackedVector4Array:
+		return value.duplicate()
+	if value is PackedColorArray:
+		return value.duplicate()
 	return value

@@ -1419,6 +1419,41 @@ func test_redaction_rules_copy_paths_and_structured_replacements() -> void:
 			PackedStringArray(["**", "token"]))
 
 
+func test_redaction_rules_copy_packed_replacements() -> void:
+	var path := PackedStringArray(["payload"])
+	var source := PackedStringArray(["secret"])
+	var rule := ObservabilityRedactionRule.replace_value(path, source)
+	source[0] = "changed"
+	var exposed: PackedStringArray = rule.replacement()
+	exposed[0] = "exposed change"
+
+	Expect.that(rule.replacement()).to_equal(PackedStringArray(["secret"]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedByteArray([1, 2])).replacement()).to_equal(PackedByteArray([1, 2]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedInt32Array([3, 4])).replacement()).to_equal(PackedInt32Array([3, 4]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedInt64Array([5, 6])).replacement()).to_equal(PackedInt64Array([5, 6]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedFloat32Array([7.0, 8.0])).replacement()).to_equal(
+			PackedFloat32Array([7.0, 8.0]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedFloat64Array([9.0, 10.0])).replacement()).to_equal(
+			PackedFloat64Array([9.0, 10.0]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedVector2Array([Vector2(1.0, 2.0)])).replacement()).to_equal(
+			PackedVector2Array([Vector2(1.0, 2.0)]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedVector3Array([Vector3(3.0, 4.0, 5.0)])).replacement()).to_equal(
+			PackedVector3Array([Vector3(3.0, 4.0, 5.0)]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedVector4Array([Vector4(6.0, 7.0, 8.0, 9.0)])).replacement()).to_equal(
+			PackedVector4Array([Vector4(6.0, 7.0, 8.0, 9.0)]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedColorArray([Color(0.1, 0.2, 0.3, 0.4)])).replacement()).to_equal(
+			PackedColorArray([Color(0.1, 0.2, 0.3, 0.4)]))
+
+
 func test_redaction_policy_copies_ordered_rules() -> void:
 	var rules: Array[ObservabilityRedactionRule] = [
 			ObservabilityRedactionRule.remove_field(PackedStringArray(["secret"])),
@@ -1434,6 +1469,19 @@ func test_redaction_policy_copies_ordered_rules() -> void:
 	Expect.that(policy.is_valid()).to_be_true()
 	Expect.that(copied).to_not_equal(policy)
 	Expect.that(copied.rules()).to_have_size(1)
+
+
+func test_redaction_policy_keeps_null_rules_invalid_without_crashing() -> void:
+	var malformed: Array[ObservabilityRedactionRule] = [null]
+	var policy := ObservabilityRedactionPolicy.new(malformed)
+	var copied: ObservabilityRedactionPolicy = policy.duplicate()
+
+	Expect.that(policy.rules()).to_have_size(1)
+	Expect.that(policy.rules()[0]).to_be_null()
+	Expect.that(policy.is_valid()).to_be_false()
+	Expect.that(copied.rules()).to_have_size(1)
+	Expect.that(copied.rules()[0]).to_be_null()
+	Expect.that(copied.is_valid()).to_be_false()
 
 
 func test_processing_diagnostic_preserves_payload_free_fields() -> void:
@@ -1541,6 +1589,42 @@ func test_processing_config_default_and_legacy_event_limits() -> void:
 	Expect.that(legacy.event_limits().repeated_window_msec()).to_equal(2000)
 	Expect.that(legacy.event_limits().window_count()).to_equal(30)
 	Expect.that(legacy.event_limits().window_msec()).to_equal(4000)
+
+
+func test_processing_config_derives_implicit_event_limits_from_current_legacy_fields() -> void:
+	var config := ObservabilityConfig.new()
+	config.automatic_events_per_frame = 11
+	config.automatic_repeated_error_window_msec = 12
+	config.automatic_event_throttle_count = 13
+	config.automatic_event_throttle_window_msec = 14
+
+	Expect.that(config.event_limits().per_frame()).to_equal(11)
+	Expect.that(config.event_limits().repeated_window_msec()).to_equal(12)
+	Expect.that(config.event_limits().window_count()).to_equal(13)
+	Expect.that(config.event_limits().window_msec()).to_equal(14)
+
+
+func test_processing_config_keeps_explicit_event_limits_after_legacy_mutation() -> void:
+	var limits := ObservabilitySignalLimits.new(21, 22, 23, 24)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = limits,
+	)
+	config.automatic_events_per_frame = 31
+	config.automatic_repeated_error_window_msec = 32
+	config.automatic_event_throttle_count = 33
+	config.automatic_event_throttle_window_msec = 34
+
+	Expect.that(config.event_limits()).to_not_equal(limits)
+	Expect.that(config.event_limits().per_frame()).to_equal(21)
+	Expect.that(config.event_limits().repeated_window_msec()).to_equal(22)
+	Expect.that(config.event_limits().window_count()).to_equal(23)
+	Expect.that(config.event_limits().window_msec()).to_equal(24)
 
 
 func test_byte_attachment_defensively_copies_data_and_preserves_metadata() -> void:

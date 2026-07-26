@@ -75,6 +75,7 @@ var _event_processors: Array[Callable] = []
 var _log_processors: Array[Callable] = []
 var _metric_processors: Array[Callable] = []
 var _event_limits: ObservabilitySignalLimits
+var _has_explicit_event_limits: bool = false
 var _log_limits: ObservabilitySignalLimits
 var _metric_limits: ObservabilitySignalLimits
 var _redaction_policy: ObservabilityRedactionPolicy
@@ -164,6 +165,7 @@ func _init(
 	_event_processors = _copy_processors(p_event_processors)
 	_log_processors = _copy_processors(p_log_processors)
 	_metric_processors = _copy_processors(p_metric_processors)
+	_has_explicit_event_limits = p_event_limits != null
 	_event_limits = ObservabilitySignalLimits.new(
 			automatic_events_per_frame,
 			automatic_repeated_error_window_msec,
@@ -210,6 +212,13 @@ func metric_processors() -> Array[Callable]:
 
 ## Returns a copy of the effective event limits.
 func event_limits() -> ObservabilitySignalLimits:
+	if not _has_explicit_event_limits:
+		return ObservabilitySignalLimits.new(
+				automatic_events_per_frame,
+				automatic_repeated_error_window_msec,
+				automatic_event_throttle_count,
+				automatic_event_throttle_window_msec,
+		)
 	return _event_limits.duplicate()
 
 
