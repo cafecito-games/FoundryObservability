@@ -59,7 +59,7 @@ func configure(config: ObservabilityConfig? = null) -> int:
 		return Error.ERR_INVALID_DATA
 
 	var candidate_redactor: ObservabilityRedactor = ObservabilityRedactor.new(policy)
-	if not _redactor_accepts_all_signals(candidate_redactor):
+	if not candidate_redactor.is_valid():
 		return Error.ERR_INVALID_DATA
 	var candidate_event_limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new(
 			config.event_sample_rate, event_limits)
@@ -423,29 +423,6 @@ func _valid_metric(metric: ObservabilityMetric) -> bool:
 		return metric.value() >= 0.0 and metric.value() == floorf(metric.value()) \
 			and metric.unit().is_empty()
 	return _is_valid_metric_unit(metric.unit())
-
-
-## Confirms a candidate policy can redact representative payloads for every signal.
-func _redactor_accepts_all_signals(redactor: ObservabilityRedactor) -> bool:
-	var exception: ObservabilityException = ObservabilityException.new(
-			p_type_name = "Error", p_message = "message", p_stack_trace = "stack",
-			p_attributes = {"attribute": "value"},
-	)
-	var event: ObservabilityEvent = ObservabilityEvent.new(
-			p_kind = &"message", p_message = "message", p_source = &"game",
-			p_attributes = {"attribute": "value"}, p_exception = exception,
-	)
-	var log_event: ObservabilityEvent = ObservabilityEvent.new(
-			p_kind = &"log", p_message = "message", p_source = &"game",
-			p_attributes = {"attribute": "value"},
-	)
-	var metric: ObservabilityMetric = ObservabilityMetric.new(
-			p_name = "metric", p_value = 1.0, p_unit = "unit",
-			p_attributes = {"attribute": "value"},
-	)
-	return redactor.redact_event(event, &"event").get("valid", false) == true \
-			and redactor.redact_event(log_event, &"log").get("valid", false) == true \
-			and redactor.redact_metric(metric).get("valid", false) == true
 
 
 ## Mirrors FoundryObservability metric acceptance for pre-redacted and processor result values.

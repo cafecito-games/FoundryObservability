@@ -47,6 +47,11 @@ func _init(policy: ObservabilityRedactionPolicy? = null) -> void:
 	_invalid_rule_index = invalid_rule_index
 
 
+## Returns whether the committed policy and its compiled rules are structurally valid.
+func is_valid() -> bool:
+	return _invalid_rule_index < 0
+
+
 func redact_event(event: ObservabilityEvent, p_signal: StringName) -> Dictionary:
 	var invalid_rule_index: int = _first_invalid_rule_index()
 	if invalid_rule_index >= 0:

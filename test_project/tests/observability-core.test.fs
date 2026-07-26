@@ -5643,6 +5643,36 @@ func test_processing_pipeline_configure_is_atomic_and_success_resets_state() -> 
 	Expect.that(pipeline.configure(null)).to_equal(Error.ERR_INVALID_PARAMETER)
 
 
+func test_processing_pipeline_configures_structural_rules_and_rejects_matching_payloads() -> void:
+	var matching := ObservabilityProcessingPipeline.new()
+	Expect.that(matching.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.remove_field(
+						PackedStringArray(["event", "message"])),
+			]),
+	))).to_equal(Error.OK)
+	Expect.that(matching.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(matching.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED)
+	Expect.that(matching.last_diagnostic().rule_index()).to_equal(0)
+	Expect.that(matching.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
+
+	var nonmatching := ObservabilityProcessingPipeline.new()
+	Expect.that(nonmatching.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.remove_field(
+						PackedStringArray(["other", "message"])),
+			]),
+	))).to_equal(Error.OK)
+	Expect.that(nonmatching.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+
+
 func test_processing_pipeline_records_provider_results_and_keeps_admission_consumed() -> void:
 	var pipeline := ObservabilityProcessingPipeline.new(
 			func() -> int: return 10,
