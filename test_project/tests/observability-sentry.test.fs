@@ -2469,6 +2469,82 @@ func test_invalid_redacted_builtin_attachment_is_omitted_without_dropping_event(
 	provider.shutdown()
 
 
+func test_invalid_persistent_builtin_redaction_survives_configure_and_combines() -> void:
+	var path: String = "user://persistent-secret.log"
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string("game output")
+	file.close()
+	var probe := FakeAttachmentRuntimeProbe.new()
+	probe.game_log = path
+	var root := Node.new()
+	root.name = "Root"
+	probe.tree = FakeAttachmentSceneTree.new(root)
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_game_log = true,
+			p_attach_screenshot = true,
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["attachments", "filename"]),
+						"persistent-secret.log",
+						"",
+					),
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["attachments", "filename"]),
+						"screenshot.png",
+						"",
+					),
+			]),
+		)
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
+	var configured_failures: Array = provider.last_attachment_failures()
+	Expect.that(configured_failures).to_have_size(1)
+	if not configured_failures.is_empty():
+		var configured_failure: ObservabilityAttachmentFailure = configured_failures[0]
+		Expect.that(configured_failure.handle()).to_equal("built-in:game-log")
+		Expect.that(configured_failure.filename()).to_equal("persistent-secret.log")
+		Expect.that(configured_failure.reason()).to_equal(
+				ObservabilityAttachmentFailure.REDACTED,
+			)
+		Expect.that(configured_failure.error()).to_equal(Error.ERR_INVALID_DATA)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "persistent and local failures",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads[0].has("attachments")).to_be_false()
+	var capture_failures: Array = provider.last_attachment_failures()
+	Expect.that(capture_failures).to_have_size(2)
+	if capture_failures.size() == 2:
+		var persistent_failure: ObservabilityAttachmentFailure = capture_failures[0]
+		var local_failure: ObservabilityAttachmentFailure = capture_failures[1]
+		Expect.that(persistent_failure.handle()).to_equal("built-in:game-log")
+		Expect.that(local_failure.handle()).to_equal("built-in:screenshot")
+		Expect.that(local_failure.reason()).to_equal(
+				ObservabilityAttachmentFailure.REDACTED,
+			)
+		Expect.that(local_failure.error()).to_equal(Error.ERR_INVALID_DATA)
+
+	provider.shutdown()
+	Expect.that(provider.last_attachment_failures()).to_have_size(0)
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.last_attachment_failures()).to_have_size(1)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.OK)
+	Expect.that(provider.last_attachment_failures()).to_have_size(0)
+	root.free()
+	provider.shutdown()
+
+
 func test_attachment_bridge_methods_are_optional_until_feature_or_api_is_used() -> void:
 	var bridge := CountingBreadcrumblessSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)

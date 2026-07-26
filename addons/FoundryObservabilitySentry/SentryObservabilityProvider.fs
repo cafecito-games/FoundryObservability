@@ -27,6 +27,7 @@ var _attachments: Dictionary = {}
 var _attachment_sequence: int = 0
 var _last_attachment_failures: Array[ObservabilityAttachmentFailure] = []
 var _persistent_builtin_attachments: Array[Dictionary] = []
+var _persistent_builtin_attachment_failures: Array[ObservabilityAttachmentFailure] = []
 var _native_attachment_payloads: Array[Dictionary] = []
 var _attachment_config: ObservabilityConfig
 
@@ -185,6 +186,7 @@ func configure(config: ObservabilityConfig) -> int:
 	var retained_native_attachments: Array = _native_attachment_payloads.duplicate(true)
 	var candidate_attachment_config: ObservabilityConfig = _attachment_config_from(config)
 	var candidate_persistent_builtins: Array[Dictionary] = []
+	var candidate_persistent_failures: Array[ObservabilityAttachmentFailure] = []
 	if config.enabled and bridge.has_method("replaceAttachments"):
 		var built_in_result: Dictionary = _attachment_collector.collect(
 				null,
@@ -199,6 +201,9 @@ func configure(config: ObservabilityConfig) -> int:
 					)
 				if not redacted_attachment.get("valid", false) \
 						or not (redacted_attachment.get("value") is Dictionary):
+					candidate_persistent_failures.append(
+							_redacted_attachment_failure(attachment),
+						)
 					continue
 				@warning_ignore("unsafe_cast")
 				candidate_persistent_builtins.append(
@@ -287,8 +292,13 @@ func configure(config: ObservabilityConfig) -> int:
 	_scope = ObservabilityScope.new()
 	_user = null
 	_attachments = {}
-	_last_attachment_failures.clear()
 	_persistent_builtin_attachments = candidate_persistent_builtins.duplicate(true)
+	_persistent_builtin_attachment_failures = _copy_attachment_failures(
+			candidate_persistent_failures,
+		)
+	_last_attachment_failures = _copy_attachment_failures(
+			_persistent_builtin_attachment_failures,
+		)
 	_native_attachment_payloads = candidate_persistent_builtins.duplicate(true)
 	_attachment_config = candidate_attachment_config
 	_last_config_payload = candidate_config_payload.duplicate(true)
@@ -353,7 +363,7 @@ func capture(event: ObservabilityEvent) -> String:
 		if not bridge.has_method(method):
 			return ""
 	else:
-		_last_attachment_failures.clear()
+		_reset_attachment_failures_for_capture()
 		var capture_attachments: Array = _capture_local_attachments(event)
 		if not capture_attachments.is_empty():
 			payload["attachments"] = capture_attachments
@@ -740,7 +750,7 @@ func _capture_local_attachments(event: ObservabilityEvent) -> Array:
 			)
 		if not redacted_payload.get("valid", false) \
 				or not (redacted_payload.get("value") is Dictionary):
-			_last_attachment_failures.append(
+			_append_attachment_failure_once(
 					_redacted_attachment_failure(payload),
 				)
 			continue
@@ -837,6 +847,33 @@ func _redacted_attachment_failure(
 			ObservabilityAttachmentFailure.REDACTED,
 			Error.ERR_INVALID_DATA,
 		)
+
+
+func _reset_attachment_failures_for_capture() -> void:
+	_last_attachment_failures = _copy_attachment_failures(
+			_persistent_builtin_attachment_failures,
+		)
+
+
+func _append_attachment_failure_once(
+		failure: ObservabilityAttachmentFailure,
+) -> void:
+	for existing: ObservabilityAttachmentFailure in _last_attachment_failures:
+		if existing.handle() == failure.handle() \
+				and existing.filename() == failure.filename() \
+				and existing.reason() == failure.reason() \
+				and existing.error() == failure.error():
+			return
+	_last_attachment_failures.append(failure.duplicate())
+
+
+func _copy_attachment_failures(
+		source: Array[ObservabilityAttachmentFailure],
+) -> Array[ObservabilityAttachmentFailure]:
+	var copied: Array[ObservabilityAttachmentFailure] = []
+	for failure: ObservabilityAttachmentFailure in source:
+		copied.append(failure.duplicate())
+	return copied
 
 
 func _attachment_config_from(config: ObservabilityConfig) -> ObservabilityConfig:
@@ -955,6 +992,7 @@ func _clear_attachment_state() -> void:
 	_attachments = {}
 	_last_attachment_failures.clear()
 	_persistent_builtin_attachments = []
+	_persistent_builtin_attachment_failures = []
 	_native_attachment_payloads = []
 	_attachment_config = _attachment_config_from(ObservabilityConfig.new(
 			p_enabled = false,
