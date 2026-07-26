@@ -194,6 +194,9 @@ for scope_method in \
 	rg -q "func ${scope_method}\\(" "$repo_root/docs/API.md" \
 		|| fail "API docs are missing $scope_method"
 done
+provider_outline=$(sed -n '/^class_name MyProvider$/,/^~~~$/p' "$repo_root/docs/API.md")
+grep -qx 'func clear_breadcrumbs() -> bool:' <<<"$provider_outline" \
+	|| fail "custom provider example is missing clear_breadcrumbs"
 
 command -v unzip >/dev/null 2>&1 || fail "unzip is required"
 default_dist="$probe_root/default"

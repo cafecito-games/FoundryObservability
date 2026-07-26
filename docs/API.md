@@ -1852,6 +1852,10 @@ func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
 	# Enqueue the normalized breadcrumb in the provider SDK.
 	return true
 
+func clear_breadcrumbs() -> bool:
+	# Clear the current breadcrumb trail in the provider SDK.
+	return true
+
 func capture_metric(metric: ObservabilityMetric) -> bool:
 	# Enqueue the normalized metric in the provider SDK.
 	return true
