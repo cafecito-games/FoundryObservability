@@ -109,6 +109,20 @@ func foundryAttachments(from payloads: [[String: Any]]) -> [Attachment]? {
     return attachments
 }
 
+func strictFoundryAttachments(
+    from values: [FoundryFoundationValue?]
+) -> [Attachment]? {
+    var payloads: [[String: Any]] = []
+    payloads.reserveCapacity(values.count)
+    for value in values {
+        guard let payload = value?.value as? [String: Any] else {
+            return nil
+        }
+        payloads.append(payload)
+    }
+    return foundryAttachments(from: payloads)
+}
+
 func applyFoundryAttachments(
     _ attachments: [Attachment],
     to scope: FoundryAttachmentScope

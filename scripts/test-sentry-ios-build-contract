@@ -204,6 +204,10 @@ rg -q 'func replaceAttachments\(payloads: VariantArray\) -> Bool' "$bridge_sourc
 	|| fail "bridge must expose owner-safe attachment replacement"
 rg -q 'func captureWithAttachments\(payload: VariantDictionary\) -> String' "$bridge_source" \
 	|| fail "bridge must expose capture-local attachment delivery"
+rg -q -U 'switch captureAttachmentCandidate\(from: payload\)[[:space:]]*\{(.|\n)*let values = foundationDictionary\(from: payload\)' "$bridge_source" \
+	|| fail "capture-local attachments must parse strictly before generic conversion"
+rg -q 'return strictFoundryAttachments\(from: values\)' "$bridge_source" \
+	|| fail "capture and replacement must share strict attachment array conversion"
 rg -q 'let preparation = prepareFoundrySentryCapture\(' "$bridge_source" \
 	|| fail "bridge capture must delegate to its tested preparation seam"
 rg -q 'preparation\.apply\(to: scope\)' "$bridge_source" \

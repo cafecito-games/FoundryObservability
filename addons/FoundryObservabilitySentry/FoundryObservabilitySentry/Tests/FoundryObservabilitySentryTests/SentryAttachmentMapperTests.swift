@@ -98,6 +98,24 @@ final class SentryAttachmentMapperTests: XCTestCase {
         XCTAssertEqual(foundryAttachments(from: [])?.count, 0)
     }
 
+    func testStrictBridgeCandidateRejectsDroppedOrNondictionaryElements() {
+        let valid = FoundryFoundationValue([
+            "filename": "good.bin",
+            "category": "event.attachment",
+            "bytes": Data([1]),
+        ])
+
+        XCTAssertNil(strictFoundryAttachments(from: [valid, nil]))
+        XCTAssertNil(strictFoundryAttachments(from: [
+            valid,
+            FoundryFoundationValue("unsupported"),
+        ]))
+        XCTAssertEqual(
+            strictFoundryAttachments(from: [valid])?.map(\.filename),
+            ["good.bin"]
+        )
+    }
+
     func testRealCapturePreparationHandlesMessageEventAndExceptionLocally() throws {
         let attachment = try XCTUnwrap(foundryAttachment(from: [
             "filename": "local.bin",

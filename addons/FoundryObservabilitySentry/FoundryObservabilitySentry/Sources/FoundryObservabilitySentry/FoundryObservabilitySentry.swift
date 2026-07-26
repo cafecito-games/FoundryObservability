@@ -121,35 +121,47 @@ private func dictionaryValue(_ value: Any?) -> [String: Any] {
     value as? [String: Any] ?? [:]
 }
 
-private func attachmentPayloads(_ value: Any?) -> [[String: Any]]? {
-    guard let values = value as? [Any] else {
-        return nil
-    }
-    var payloads: [[String: Any]] = []
-    payloads.reserveCapacity(values.count)
-    for value in values {
-        guard let payload = value as? [String: Any] else {
-            return nil
-        }
-        payloads.append(payload)
-    }
-    return payloads
+private enum FoundryCaptureAttachmentCandidate {
+    case absent
+    case valid([Attachment])
+    case invalid
 }
 
 private func foundryAttachments(from array: VariantArray) -> [Attachment]? {
-    var payloads: [[String: Any]] = []
-    payloads.reserveCapacity(Int(array.size()))
+    var values: [FoundryFoundationValue?] = []
+    values.reserveCapacity(Int(array.size()))
     for index in 0..<Int(array.size()) {
-        guard
-            let variant = array[index],
-            let converted = foundationValue(from: variant)?.value,
-            let payload = converted as? [String: Any]
-        else {
-            return nil
+        if let variant = array[index] {
+            values.append(foundationValue(from: variant))
+        } else {
+            values.append(nil)
         }
-        payloads.append(payload)
     }
-    return foundryAttachments(from: payloads)
+    return strictFoundryAttachments(from: values)
+}
+
+private func captureAttachmentCandidate(
+    from payload: VariantDictionary
+) -> FoundryCaptureAttachmentCandidate {
+    let keys = payload.keys()
+    for index in 0..<Int(keys.size()) {
+        guard
+            let keyVariant = keys[index],
+            let key = String(keyVariant),
+            key == "attachments"
+        else {
+            continue
+        }
+        guard
+            let valueVariant = payload.get(key: keyVariant, default: nil),
+            let array = VariantArray(valueVariant),
+            let attachments = foundryAttachments(from: array)
+        else {
+            return .invalid
+        }
+        return .valid(attachments)
+    }
+    return .absent
 }
 
 @Foundry
@@ -252,21 +264,16 @@ class SentryObservabilityBridge: RefCounted {
             return ""
         }
 
+        let attachments: [Attachment]
+        switch captureAttachmentCandidate(from: payload) {
+        case .absent:
+            attachments = []
+        case let .valid(candidate):
+            attachments = candidate
+        case .invalid:
+            return ""
+        }
         let values = foundationDictionary(from: payload)
-        guard values.keys.contains("attachments") else {
-            return capture(values: values, attachments: [])
-        }
-        guard
-            let payloads = attachmentPayloads(values["attachments"])
-        else {
-            return ""
-        }
-        if payloads.isEmpty {
-            return capture(values: values, attachments: [])
-        }
-        guard let attachments = foundryAttachments(from: payloads) else {
-            return ""
-        }
         return capture(values: values, attachments: attachments)
     }
 
