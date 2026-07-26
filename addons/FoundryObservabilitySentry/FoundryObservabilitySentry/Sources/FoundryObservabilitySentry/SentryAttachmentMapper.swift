@@ -10,17 +10,44 @@ protocol FoundryAttachmentScope: AnyObject {
 
 extension Scope: FoundryAttachmentScope {}
 
-enum FoundrySentryCaptureRoute: CaseIterable {
-    case event
-    case message
-    case exception
+struct FoundrySentryCapturePreparation {
+    let event: Event
+    private let contexts: [String: [String: Any]]
+    private let localScope: FoundryScopePayload
+    private let attachments: [Attachment]
+
+    init(
+        event: Event,
+        contexts: [String: [String: Any]],
+        localScope: FoundryScopePayload,
+        attachments: [Attachment]
+    ) {
+        self.event = event
+        self.contexts = contexts
+        self.localScope = localScope
+        self.attachments = attachments
+    }
+
+    func apply(
+        to scope: Scope,
+        addAttachment: (Scope, Attachment) -> Void = {
+            scope, attachment in
+            scope.addAttachment(attachment)
+        }
+    ) {
+        applySentryContexts(contexts, to: scope)
+        applyFoundryScope(localScope, to: scope)
+        for attachment in attachments {
+            addAttachment(scope, attachment)
+        }
+    }
 }
 
 func foundryAttachment(from payload: [String: Any]) -> Attachment? {
     guard
         !payload.isEmpty,
         let filename = payload["filename"] as? String,
-        isSafeAttachmentFilename(filename),
+        !filename.isEmpty,
         let category = payload["category"] as? String,
         let attachmentType = attachmentType(for: category)
     else {
@@ -28,13 +55,10 @@ func foundryAttachment(from payload: [String: Any]) -> Attachment? {
     }
     let contentType: String?
     if payload.keys.contains("content_type") {
-        guard
-            let candidate = payload["content_type"] as? String,
-            !candidate.isEmpty
-        else {
+        guard let candidate = payload["content_type"] as? String else {
             return nil
         }
-        contentType = candidate
+        contentType = candidate.isEmpty ? nil : candidate
     } else {
         contentType = nil
     }
@@ -94,14 +118,28 @@ func applyFoundryAttachments(
     }
 }
 
-func withFoundryCaptureAttachments(
-    _ attachments: [Attachment],
-    scope: FoundryAttachmentScope,
-    route: FoundrySentryCaptureRoute,
-    capture: (FoundrySentryCaptureRoute) -> Void
-) {
-    applyFoundryAttachments(attachments, to: scope)
-    capture(route)
+func prepareFoundrySentryCapture(
+    values: [String: Any],
+    globalAttributes: [String: Any],
+    attachments: [Attachment]
+) -> FoundrySentryCapturePreparation {
+    let event = makeSentryEvent(
+        message: captureStringValue(values["message"]),
+        level: captureIntValue(values["level"]),
+        source: captureStringValue(values["source"]),
+        kind: captureStringValue(values["kind"]),
+        timestampMsec: Int64(captureIntValue(values["timestamp_msec"])),
+        engineTicksMsec: Int64(captureIntValue(values["engine_ticks_msec"])),
+        globalAttributes: globalAttributes,
+        eventAttributes: captureDictionaryValue(values["attributes"]),
+        exception: foundryExceptionPayload(values["exception"])
+    )
+    return FoundrySentryCapturePreparation(
+        event: event,
+        contexts: foundrySentryContexts(values["contexts"]),
+        localScope: foundryScopePayload(values["scope"]),
+        attachments: attachments
+    )
 }
 
 private func attachmentType(for category: String) -> SentryAttachmentType? {
@@ -119,12 +157,23 @@ private func attachmentBytes(_ data: Data) -> Data {
     data.withUnsafeBytes { Data($0) }
 }
 
-private func isSafeAttachmentFilename(_ filename: String) -> Bool {
-    !filename.isEmpty
-        && filename != "."
-        && filename != ".."
-        && !filename.contains("/")
-        && !filename.contains("\\")
-        && !filename.contains("\0")
-        && !filename.allSatisfy(\.isWhitespace)
+private func captureStringValue(_ value: Any?) -> String {
+    value as? String ?? ""
+}
+
+private func captureIntValue(_ value: Any?) -> Int {
+    if let value = value as? Int {
+        return value
+    }
+    if let value = value as? Int64 {
+        return Int(value)
+    }
+    if let value = value as? Double {
+        return Int(value)
+    }
+    return 0
+}
+
+private func captureDictionaryValue(_ value: Any?) -> [String: Any] {
+    value as? [String: Any] ?? [:]
 }

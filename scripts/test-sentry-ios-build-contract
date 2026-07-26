@@ -204,6 +204,10 @@ rg -q 'func replaceAttachments\(payloads: VariantArray\) -> Bool' "$bridge_sourc
 	|| fail "bridge must expose owner-safe attachment replacement"
 rg -q 'func captureWithAttachments\(payload: VariantDictionary\) -> String' "$bridge_source" \
 	|| fail "bridge must expose capture-local attachment delivery"
+rg -q 'let preparation = prepareFoundrySentryCapture\(' "$bridge_source" \
+	|| fail "bridge capture must delegate to its tested preparation seam"
+rg -q 'preparation\.apply\(to: scope\)' "$bridge_source" \
+	|| fail "bridge capture must apply the tested capture-local scope preparation"
 rg -q 'PackedByteArray\(variant\)' "$bridge_source" \
 	|| fail "bridge must convert Foundry packed bytes before container mapping"
 rg -q 'static let lifecycleCoordinator' "$swift_sources/FoundryObservabilitySentry.swift" \

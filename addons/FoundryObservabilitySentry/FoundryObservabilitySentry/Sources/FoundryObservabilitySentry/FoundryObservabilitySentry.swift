@@ -274,24 +274,13 @@ class SentryObservabilityBridge: RefCounted {
         values: [String: Any],
         attachments: [Attachment]
     ) -> String {
-        let exception = foundryExceptionPayload(values["exception"])
-        let event = makeSentryEvent(
-            message: stringValue(values["message"]),
-            level: intValue(values["level"]),
-            source: stringValue(values["source"]),
-            kind: stringValue(values["kind"]),
-            timestampMsec: Int64(intValue(values["timestamp_msec"])),
-            engineTicksMsec: Int64(intValue(values["engine_ticks_msec"])),
+        let preparation = prepareFoundrySentryCapture(
+            values: values,
             globalAttributes: globalAttributes,
-            eventAttributes: dictionaryValue(values["attributes"]),
-            exception: exception
+            attachments: attachments
         )
-        let contexts = foundrySentryContexts(values["contexts"])
-        let localScope = foundryScopePayload(values["scope"])
-        let eventID = SentrySDK.capture(event: event) { scope in
-            applySentryContexts(contexts, to: scope)
-            applyFoundryScope(localScope, to: scope)
-            applyFoundryAttachments(attachments, to: scope)
+        let eventID = SentrySDK.capture(event: preparation.event) { scope in
+            preparation.apply(to: scope)
         }
         let eventIDString = eventID.sentryIdString
         return eventIDString == SentryId.empty.sentryIdString ? "" : eventIDString
