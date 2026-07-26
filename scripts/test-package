@@ -180,6 +180,20 @@ rg -q 'Automatic runtime context' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing automatic runtime context"
 rg -q 'send_default_pii' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing runtime context privacy behavior"
+for scope_type in ObservabilityUser ObservabilityScope; do
+	rg -q "^## ${scope_type}$" "$repo_root/docs/API.md" \
+		|| fail "API docs are missing $scope_type"
+done
+rg -q 'max_breadcrumbs' "$repo_root/docs/API.md" \
+	|| fail "API docs are missing max_breadcrumbs"
+for scope_method in \
+	application_user_id display_name contact_email is_valid \
+	tags contexts set_tag remove_tag clear_tags \
+	set_context remove_context clear_contexts is_empty duplicate \
+	set_user remove_user clear_breadcrumbs; do
+	rg -q "func ${scope_method}\\(" "$repo_root/docs/API.md" \
+		|| fail "API docs are missing $scope_method"
+done
 
 command -v unzip >/dev/null 2>&1 || fail "unzip is required"
 default_dist="$probe_root/default"
@@ -203,6 +217,14 @@ grep -qx 'addons/FoundryObservability/ObservabilityStartupStatus.fs' <<<"$listin
 	|| fail "package is missing startup status constants"
 grep -qx 'addons/FoundryObservability/ObservabilityStartupSettings.fs' <<<"$listing" \
 	|| fail "package is missing startup settings resolution"
+for scope_resource in \
+	ObservabilityUser ObservabilityScope ObservabilityScopeProvider; do
+	resource_path="addons/FoundryObservability/${scope_resource}.fs"
+	grep -qx "$resource_path" <<<"$listing" \
+		|| fail "package is missing ${scope_resource}.fs"
+	grep -qx "$resource_path.uid" <<<"$listing" \
+		|| fail "package is missing ${scope_resource}.fs.uid"
+done
 grep -qx 'addons/FoundryObservability/ObservabilityFeedback.fs' <<<"$listing" \
 	|| fail "package is missing the feedback value type"
 grep -qx 'addons/FoundryObservability/ObservabilityMetric.fs' <<<"$listing" \

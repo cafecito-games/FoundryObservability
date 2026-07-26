@@ -11,6 +11,8 @@ The first core slice is available now:
 - Typed messages, exceptions, events, configuration, and severity levels.
 - A null provider by default and an in-memory provider for tests and local work.
 - Provider replacement, flush, failure reporting, and idempotent shutdown.
+- Provider-neutral global tags, nested contexts, explicit application identity,
+  and isolated event-local scope with native Apple/Android Sentry mapping.
 - Automatic engine error, warning, script-error, shader-error, fatal, and
   output-message capture with independent event, breadcrumb, and log policies.
 - First-class structured logs with level filtering, optional rate limiting, and
@@ -123,10 +125,29 @@ var config := ObservabilityConfig.new(
 		p_global_attributes = {},
 		p_provider_options = {},
 		p_automatic_log_mask = ObservabilityCaptureMask.ALL_ERRORS,
+		p_max_breadcrumbs = 100,
 	)
 var provider: ObservabilityProvider = MemoryObservabilityProvider.new()
 FoundryObservability.configure(provider, config)
+FoundryObservability.set_tag("region", "iad")
+FoundryObservability.set_context("match", {
+		"mode": "ranked",
+		"party": {"size": 4},
+})
+FoundryObservability.set_user(ObservabilityUser.new(
+		p_application_user_id = "player-7",
+		p_display_name = "Mina",
+		p_contact_email = "mina@example.com",
+))
 FoundryObservability.capture_message("game started")
+var local_scope := ObservabilityScope.new()
+local_scope.set_tag("round", "final")
+FoundryObservability.capture_message(
+		"boss phase started",
+		ObservabilityLevel.INFO,
+		{},
+		local_scope,
+)
 FoundryObservability.capture_log(
 		"match started",
 		ObservabilityLevel.INFO,
@@ -145,6 +166,7 @@ FoundryObservability.capture_distribution(
 FoundryObservability.capture_feedback(ObservabilityFeedback.new(
 		p_message = "The tutorial was confusing.",
 ))
+FoundryObservability.clear_breadcrumbs()
 ```
 
 Successful enabled configuration automatically installs the engine logger.
@@ -152,7 +174,10 @@ By default, errors, script errors, and shader errors become events; every
 diagnostic category and ordinary output message becomes a breadcrumb; and no
 automatic structured logs are emitted. The example opts all error categories
 into structured logs as well. Each destination can be configured independently
-or automatic capture can be disabled entirely.
+or automatic capture can be disabled entirely. `max_breadcrumbs` defaults to
+100, while zero disables breadcrumb storage; `clear_breadcrumbs()` explicitly
+clears the current trail. Event-local scope overrides matching global tags and
+contexts for one capture without changing later events.
 
 `MemoryObservabilityProvider` is intended for tests and local integration work.
 The Sentry provider is optional and requires an export containing its native

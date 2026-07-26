@@ -216,6 +216,8 @@ Value types:
 - ObservabilityException
 - ObservabilityStackFrame
 - ObservabilityEvent
+- ObservabilityUser
+- ObservabilityScope
 - ObservabilityBreadcrumb
 - ObservabilityCaptureMask
 - ObservabilityFeedback
@@ -227,6 +229,7 @@ Optional provider capabilities:
 
 - ObservabilityMetricsProvider
 - ObservabilityBreadcrumbsProvider
+- ObservabilityScopeProvider
 
 Built-in providers:
 
@@ -250,6 +253,11 @@ Metric and breadcrumb capture methods return bool. Rejected invalid input stores
 Error.ERR_INVALID_PARAMETER, a provider without the optional metrics capability
 stores Error.ERR_UNAVAILABLE, and a provider rejection stores Error.FAILED.
 The same unavailable/rejected behavior applies to optional breadcrumb capture.
+Global scope methods also return bool: invalid names, contexts, or users store
+Error.ERR_INVALID_PARAMETER; a provider missing any part of the complete scope
+capability stores Error.ERR_UNAVAILABLE; and false or non-boolean provider
+results store Error.FAILED. Disabled no-ops return false without introducing a
+new provider error.
 
 ### Timestamps
 
@@ -335,6 +343,7 @@ ObservabilityConfig.new(
 		p_android_anr_detection_enabled: bool = true,
 		p_android_anr_timeout_msec: int = 5000,
 		p_android_anr_attach_thread_dump: bool = false,
+		p_max_breadcrumbs: int = 100,
 )
 ~~~
 
@@ -367,6 +376,7 @@ Public fields:
 | android_anr_detection_enabled | bool | Enable native Android ANR detection; enabled by default |
 | android_anr_timeout_msec | int | Pre-Android-11 watchdog threshold in milliseconds; defaults to 5000 and normalizes to at least 1000 |
 | android_anr_attach_thread_dump | bool | Request an Android 11+ ANR thread dump when available; disabled by default |
+| max_breadcrumbs | int | Maximum retained breadcrumbs; defaults to 100, negative values normalize to zero, and zero disables storage |
 
 Accessors:
 
@@ -457,6 +467,14 @@ Provider calls are guarded so an error emitted by provider configuration,
 capture, flush, or shutdown cannot recursively enter automatic capture.
 Providers should still avoid deliberately reporting their own failures through
 the same observability pipeline.
+
+`max_breadcrumbs` is a provider-neutral capacity. The memory provider and
+native Apple/Android Sentry integrations retain at most that many breadcrumbs,
+evicting the oldest first. Zero disables storage; the memory provider rejects
+capture at zero, while native Sentry retains no breadcrumb. Negative constructor
+input normalizes to zero. Memory configure/reconfigure starts a fresh trail,
+including when the new bound is smaller. `clear_breadcrumbs()` explicitly
+clears the live trail without changing the configured bound.
 
 A null config passed to FoundryObservability.configure is replaced with a
 disabled ObservabilityConfig.
@@ -584,6 +602,7 @@ ObservabilityEvent.new(
 		p_attributes: Dictionary = {},
 		p_exception: ObservabilityException? = null,
 		p_engine_ticks_msec: int = -1,
+		p_scope: ObservabilityScope? = null,
 )
 ~~~
 
@@ -599,6 +618,7 @@ Fields:
 | attributes | Structured fields copied into the event |
 | exception | Optional exception payload |
 | engine_ticks_msec | Monotonic engine tick in milliseconds; -1 means unavailable |
+| scope | Optional event-local tags and contexts |
 
 Accessors:
 
@@ -611,12 +631,118 @@ func timestamp_msec() -> int
 func engine_ticks_msec() -> int
 func attributes() -> Dictionary
 func exception() -> ObservabilityException?
+func scope() -> ObservabilityScope?
 ~~~
 
 attributes are deep-copied on construction and access. exception is optional and
-is returned as the original payload object. Every event field is final after
-construction; timestamp resolution creates a new normalized event rather than
-mutating the caller's event.
+is returned as the original payload object. The optional scope parameter was
+appended to preserve every legacy positional constructor call. It is duplicated
+on construction, and `scope()` returns another duplicate, so later caller
+mutation cannot alter a queued or captured event. Every event field is final
+after construction; timestamp resolution creates a new normalized event rather
+than mutating the caller's event.
+
+## ObservabilityUser
+
+ObservabilityUser is the explicit provider-neutral application identity DTO.
+It never discovers a device identity, IP address, account, or other PII.
+
+Constructor:
+
+~~~
+ObservabilityUser.new(
+		p_application_user_id: String = "",
+		p_display_name: String = "",
+		p_contact_email: String = "",
+)
+~~~
+
+Accessors and validation:
+
+~~~
+func application_user_id() -> String
+func display_name() -> String
+func contact_email() -> String
+func is_valid() -> bool
+~~~
+
+The three private backing fields are `final`; consumers get read-only scalar
+accessors and cannot mutate identity after construction. `is_valid()` requires
+at least one nonempty field. Each optional field may be empty, but a nonempty
+field must have no leading or trailing whitespace and no control characters.
+The core treats `contact_email` as an explicit opaque contact string; unlike
+`ObservabilityFeedback`, this DTO does not parse or infer email syntax.
+
+Only these caller-supplied fields are represented:
+
+| Foundry field | Sentry user field | Privacy behavior |
+| --- | --- | --- |
+| `application_user_id` | `id` | Sent only when explicitly supplied |
+| `display_name` | `username` | Sent only when explicitly supplied |
+| `contact_email` | `email` | Sent only when explicitly supplied |
+
+Empty optional fields remain empty in the provider-neutral payload and are not
+invented. Neither bridge sets Sentry `ip_address`, and this identity path does
+not infer default PII or enable `send_default_pii`; that separate native option
+remains opt-in. `FoundryObservability.remove_user()` removes the live explicit
+user.
+
+## ObservabilityScope
+
+ObservabilityScope carries event-local tags and named structured contexts. It
+starts empty; its final backing dictionary references are private and cannot be
+reassigned.
+
+Constructor and bounds:
+
+~~~
+ObservabilityScope.new()
+const MAX_CONTAINER_DEPTH: int = 8
+const MAX_CONTAINER_ITEMS: int = 256
+~~~
+
+Methods:
+
+~~~
+func tags() -> Dictionary
+func contexts() -> Dictionary
+func set_tag(key: String, value: String) -> bool
+func remove_tag(key: String) -> bool
+func clear_tags() -> void
+func set_context(name: String, value: Dictionary) -> bool
+func remove_context(name: String) -> bool
+func clear_contexts() -> void
+func is_empty() -> bool
+func duplicate() -> ObservabilityScope
+~~~
+
+`tags()` and `contexts()` return deep defensive copies. `duplicate()` creates
+an independent scope and deep-copies every context; tags are scalar strings.
+`is_empty()` is true only when both collections are empty. `remove_tag()` and
+`remove_context()` return false for an invalid or absent name. Clear operations
+are idempotent.
+
+Top-level tag keys and context names must be nonempty String values without
+leading or trailing whitespace or control characters. Nested dictionary keys
+may be String or StringName; both are normalized to String. A context value is
+a Dictionary whose recursive values may be:
+
+- null
+- bool
+- int
+- finite float
+- String or StringName (StringName normalizes to String)
+- Dictionary with String or StringName keys
+- Array containing any supported value
+
+Unsupported objects, nonfinite floats, non-string dictionary keys, and
+container cycles reject the whole context. A context may contain at most eight
+nested container levels and 256 examined dictionary entries/array elements in
+total. Reusing the same child container in separate non-cyclic branches is
+valid. Validation and normalization finish before assignment, so a failed
+`set_context()` is atomic and preserves the previous value. Successful
+assignment owns a deep normalized copy; later mutations of the input or of an
+accessor result do not leak back.
 
 ## ObservabilityCaptureMask
 
@@ -653,6 +779,7 @@ ObservabilityBreadcrumb.new(
 		p_category: StringName = &"",
 		p_timestamp_msec: int = 0,
 		p_attributes: Dictionary = {},
+		p_type: StringName = &"default",
 )
 ~~~
 
@@ -664,10 +791,14 @@ func level() -> int
 func category() -> StringName
 func timestamp_msec() -> int
 func attributes() -> Dictionary
+func type() -> StringName
 ~~~
 
 attributes are deep-copied on construction and access. Breadcrumb delivery is
-capability-based so event-only providers remain compatible.
+capability-based so event-only providers remain compatible. `type()` is the
+provider-neutral breadcrumb type, appended to the constructor for legacy
+positional compatibility; it defaults to `default` and maps to Sentry's native
+breadcrumb type.
 
 ## ObservabilityFeedback
 
@@ -799,12 +930,38 @@ ObservabilityBreadcrumbsProvider is an optional provider capability:
 trait_name ObservabilityBreadcrumbsProvider
 
 abstract func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool
+abstract func clear_breadcrumbs() -> bool
 ~~~
 
 A provider implements this trait when it accepts normalized breadcrumbs.
 Providers that implement only ObservabilityProvider remain compatible: their
 event, log, feedback, and metric behavior is unchanged, while breadcrumb
 capture returns false and stores Error.ERR_UNAVAILABLE.
+
+## ObservabilityScopeProvider
+
+ObservabilityScopeProvider is an all-or-nothing optional provider capability
+for live global session scope:
+
+~~~
+trait_name ObservabilityScopeProvider
+
+abstract func set_tag(key: String, value: String) -> bool
+abstract func remove_tag(key: String) -> bool
+abstract func clear_tags() -> bool
+abstract func set_context(name: String, value: Dictionary) -> bool
+abstract func remove_context(name: String) -> bool
+abstract func clear_contexts() -> bool
+abstract func set_user(user: ObservabilityUser) -> bool
+abstract func remove_user() -> bool
+~~~
+
+A provider must implement every method before the service exposes any scope
+mutation. A scopeless or partial provider remains fully compatible with
+ordinary unscoped events, logs, feedback, metrics, and breadcrumbs. Global
+scope calls return false and store `Error.ERR_UNAVAILABLE`; a nonempty
+event-local scope likewise rejects that event before provider capture. An empty
+local scope is equivalent to no local scope.
 
 ## FoundryObservabilityApi
 
@@ -824,10 +981,19 @@ abstract func is_available() -> bool
 abstract func provider_name() -> StringName
 abstract func last_error() -> int
 abstract func capture_event(event: ObservabilityEvent) -> String
-abstract func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String
-abstract func capture_log(message: String, level: int = ObservabilityLevel.INFO, source: StringName = &"game", timestamp_msec: int = -1, attributes: Dictionary = {}, engine_ticks_msec: int = -1) -> String
-abstract func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String
+abstract func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}, scope: ObservabilityScope? = null) -> String
+abstract func capture_log(message: String, level: int = ObservabilityLevel.INFO, source: StringName = &"game", timestamp_msec: int = -1, attributes: Dictionary = {}, engine_ticks_msec: int = -1, scope: ObservabilityScope? = null) -> String
+abstract func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}, scope: ObservabilityScope? = null) -> String
+abstract func set_tag(key: String, value: String) -> bool
+abstract func remove_tag(key: String) -> bool
+abstract func clear_tags() -> bool
+abstract func set_context(name: String, value: Dictionary) -> bool
+abstract func remove_context(name: String) -> bool
+abstract func clear_contexts() -> bool
+abstract func set_user(user: ObservabilityUser) -> bool
+abstract func remove_user() -> bool
 abstract func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool
+abstract func clear_breadcrumbs() -> bool
 abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
 abstract func capture_metric(metric: ObservabilityMetric) -> bool
 abstract func capture_counter(metric_name: String, value: int = 1, attributes: Dictionary = {}) -> bool
@@ -859,17 +1025,30 @@ Behavior:
 1. A null provider returns Error.FAILED and remains inactive.
 2. A null config becomes a disabled ObservabilityConfig.
 3. The candidate provider is configured before replacing the active provider.
-4. A failed candidate configuration leaves the existing provider and config
-   active and stores the returned error.
-5. Configuring the already-active provider updates its config without shutting
-   it down.
-6. Configuring a different provider shuts down the old provider once, then
-   activates the candidate and clears last_error().
+4. A failed candidate configuration leaves the existing provider, config,
+   global scope, explicit user, and breadcrumb trail active and stores the
+   returned error.
+5. Successfully configuring the already-active provider updates its config
+   without shutting it down and starts a fresh provider-owned global scope and
+   user.
+6. Successfully configuring a different provider shuts down the old provider
+   once, activates the candidate with a fresh provider-owned global scope and
+   user, and clears last_error().
 7. Successful enabled configuration installs or updates automatic capture when
    automatic_capture_enabled is true. Failed configuration does not disturb
    the current logger.
 
 The method returns the provider configure result.
+
+The session contract calls for a fresh breadcrumb trail after successful
+configure/reconfigure. The built-in memory provider implements that behavior.
+Sentry clears its Foundry-owned tags, contexts, and user on every successful
+configure. A changed native Sentry configuration restarts the SDK with a fresh
+breadcrumb trail; an equivalent owner handoff keeps the native SDK running and
+currently retains that trail. Use `clear_breadcrumbs()` when an explicit fresh
+trail is required. Failed memory or recoverable Sentry configuration preserves
+the prior live state; unrecoverable Sentry rollback fails closed as described
+under its lifecycle.
 
 When the enabled provider is `SentryObservabilityProvider`, a missing native
 bridge or a bridge without lifecycle contract version 1 returns
@@ -911,6 +1090,7 @@ func capture_message(
 		message: String,
 		level: int = ObservabilityLevel.INFO,
 		attributes: Dictionary = {},
+		scope: ObservabilityScope? = null,
 ) -> String
 ~~~
 
@@ -923,6 +1103,7 @@ Creates an event with:
 - the current Unix timestamp and monotonic engine tick, captured together
 - the supplied attributes
 - no exception payload
+- an isolated copy of the optional event-local scope
 
 It then forwards that event through capture_event.
 
@@ -948,6 +1129,7 @@ func capture_log(
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
 		engine_ticks_msec: int = -1,
+		scope: ObservabilityScope? = null,
 ) -> String
 ~~~
 
@@ -976,6 +1158,52 @@ FoundryObservability.capture_log(
 Providers that do not support structured logs may safely return an empty ID;
 the service records the failed capture status when the provider is enabled.
 
+### Global and event-local scope
+
+~~~
+func set_tag(key: String, value: String) -> bool
+func remove_tag(key: String) -> bool
+func clear_tags() -> bool
+func set_context(name: String, value: Dictionary) -> bool
+func remove_context(name: String) -> bool
+func clear_contexts() -> bool
+func set_user(user: ObservabilityUser) -> bool
+func remove_user() -> bool
+~~~
+
+These methods mutate the active provider's global session scope. Input is
+validated with the same rules as ObservabilityScope and ObservabilityUser before
+calling the provider. Invalid input returns false and stores
+`Error.ERR_INVALID_PARAMETER`. A disabled service returns false without a
+provider call. A provider must expose the complete ObservabilityScopeProvider
+contract: a scopeless or partial provider returns false and stores
+`Error.ERR_UNAVAILABLE`. A false or non-boolean provider result stores
+`Error.FAILED`; true stores `Error.OK`. Removal of an absent tag or context is a
+provider rejection, while clear operations are idempotent when the provider
+accepts them.
+
+`capture_message()`, `capture_exception()`, and `capture_log()` append an
+optional ObservabilityScope parameter, and ObservabilityEvent accepts the same
+appended constructor parameter. Existing calls remain source-compatible.
+Effective event scope is resolved as follows:
+
+- Global tags are the base; same-named local tags override them.
+- Global contexts are the base; a same-named local context wholly replaces the
+  global context, including an explicitly empty local dictionary. Contexts are
+  not field-merged.
+- The global ObservabilityUser remains attached because local scope carries no
+  user.
+- Other global entries remain present.
+
+The event snapshots local scope at construction, and providers construct a
+fresh effective scope for each capture. Mutating the original local scope later
+cannot change that event, and local overrides never mutate or leak into global
+scope or later events.
+
+Ordinary events without a local scope continue to work with providers that do
+not implement scope. A nonempty local scope requires the complete scope
+capability and otherwise returns an empty ID with `Error.ERR_UNAVAILABLE`.
+
 ### capture_breadcrumb
 
 ~~~
@@ -999,6 +1227,16 @@ automatic event destination in the same callback.
 If a provider implements breadcrumb capture but rejects an automatic
 breadcrumb, that provider failure remains observable as `Error.FAILED`, even
 when an independent event destination accepted the same diagnostic.
+
+`clear_breadcrumbs()` uses the optional provider operation:
+
+~~~
+func clear_breadcrumbs() -> bool
+~~~
+
+It returns false without a call while disabled. A missing operation returns
+false with `Error.ERR_UNAVAILABLE`; a false or non-boolean result returns false
+with `Error.FAILED`; true clears the live trail and stores `Error.OK`.
 
 ### capture_feedback
 
@@ -1109,13 +1347,15 @@ attempt delivery.
 func capture_exception(
 		exception: ObservabilityException,
 		attributes: Dictionary = {},
+		scope: ObservabilityScope? = null,
 ) -> String
 ~~~
 
 A null exception returns an empty ID and stores Error.FAILED. Otherwise it
 creates an event with kind exception, level ERROR, source game, the current Unix
 timestamp and monotonic engine tick captured together, exception.message() as
-the message, the supplied attributes, and the exception payload.
+the message, the supplied attributes, the exception payload, and an isolated
+copy of the optional event-local scope.
 
 Example:
 
@@ -1173,8 +1413,9 @@ func shutdown() -> void
 
 shutdown is idempotent. The first call flushes, shuts down the active provider,
 restores the NullObservabilityProvider, restores a disabled config, and resets
-last_error() to Error.OK. Later calls do nothing. The autoload also calls
-shutdown from _exit_tree.
+last_error() to Error.OK. Provider shutdown clears live global scope, explicit
+user, and breadcrumbs. Later calls do nothing. The autoload also calls shutdown
+from _exit_tree.
 
 ## Built-in providers
 
@@ -1205,22 +1446,31 @@ Public methods:
 
 ~~~
 func events() -> Array[ObservabilityEvent]
+func captured_scopes() -> Array[Dictionary]
 func breadcrumbs() -> Array[ObservabilityBreadcrumb]
 func feedback() -> Array[ObservabilityFeedback]
 func metrics() -> Array[ObservabilityMetric]
 func clear() -> void
-func clear_breadcrumbs() -> void
+func clear_breadcrumbs() -> bool
 func clear_feedback() -> void
 func clear_metrics() -> void
 ~~~
 
 events returns a copy of the captured event list. clear removes captured events
-without changing configuration. Successful event capture returns sequential
-IDs in the form memory:N. Breadcrumbs are stored in their own list and return
-true when accepted. Feedback is stored separately and returns IDs in the form
-memory-feedback:N. Metrics are stored in another list and return true when
-accepted. Capture returns an empty ID or false while disabled or after
+and aligned effective-scope history without changing configuration.
+`captured_scopes()` returns deep defensive snapshots of the effective tags,
+contexts, and user for each event. Successful event capture returns sequential
+IDs in the form memory:N. Breadcrumbs are stored in their own bounded FIFO list
+and return true when accepted. Feedback is stored separately and returns IDs in
+the form memory-feedback:N. Metrics are stored in another list and return true
+when accepted. Capture returns an empty ID or false while disabled or after
 shutdown.
+
+Successful configure/reconfigure, provider replacement, and shutdown clear the
+memory provider's live global scope, explicit user, and breadcrumb trail.
+Failed configure preserves them. Captured event and effective-scope history
+survives those lifecycle changes and remains available until `clear()`; feedback
+and metric histories use their own explicit clear methods.
 
 Example:
 
@@ -1377,10 +1627,18 @@ The bridge therefore uses an owner-safe lifecycle:
 - Equivalent configuration transfers ownership without restarting the SDK.
 - Changed configuration performs a bounded 2-second shutdown before starting
   the replacement.
-- If replacement startup fails, the prior owner and configuration are restored.
+- If replacement startup fails, the prior owner, configuration, and live scope
+  are restored.
 - Flush and shutdown calls from a stale owner do nothing, so an obsolete
   provider cannot stop a newer session. These idempotent no-ops return
   `Error.OK`; availability remains the observable ownership signal.
+
+The FoundryScript Sentry provider commits candidate configuration only after
+native startup and the required empty-scope reset both succeed. Recovery
+restores the last committed native configuration and the complete retained
+tags, contexts, and user. If either recovery step fails, the provider shuts down
+the owner and fails closed: availability, capture, scope mutation, and
+breadcrumb operations remain disabled until a later successful configure.
 
 Enabled configuration returns `Error.ERR_UNAVAILABLE` if the native bridge is
 missing or too old. After `Error.OK`, use
@@ -1446,6 +1704,33 @@ query volatile runtime values while recovering a previous-launch crash. Such a
 report therefore has no capture-time refresh beyond the stable snapshot that
 was installed before the crash.
 
+## Sentry scope and identity delivery
+
+The optional Sentry provider implements ObservabilityScopeProvider on Apple and
+Android. Global tags map to native Sentry tags, structured context dictionaries
+map to named native contexts without flattening nested dictionaries or arrays,
+and ObservabilityUser maps only the three explicit fields in the privacy table
+above. `remove_user()` clears the native Sentry user.
+
+Every global mutation sends the complete candidate scope to the native bridge.
+Apple and Android remove keys that existed in the previous Foundry-owned scope,
+then install the candidate atomically with owner validation. A rejected bridge
+operation leaves the prior FoundryScript and native state in place.
+
+For ordinary message and exception events, both bridges apply the
+ObservabilityScope payload only to the native capture scope. Same-named local
+tags override global tags; a same-named local context replaces the entire
+global context, including an empty dictionary; the global user remains. That
+one-shot scope does not mutate the process-global Sentry scope and cannot leak
+to later captures.
+
+Scope remains an optional provider capability. A Sentry native bridge without
+`applyScope` continues accepting unscoped events. Global scope changes and
+nonempty event-local scope are rejected rather than silently dropped; at the
+service boundary the former is an active-provider rejection
+(`Error.FAILED`), while a genuinely scopeless or partial provider is reported
+as `Error.ERR_UNAVAILABLE`.
+
 ## Sentry structured-log delivery
 
 The optional `FoundryObservabilitySentry` addon maps `kind = log` records to
@@ -1462,6 +1747,12 @@ as `foundry.kind`, `foundry.source`, `foundry.timestamp_msec`, and
 The native structured-log APIs do not accept an occurrence timestamp, so log
 timestamps are retained in the reserved metadata instead of being assigned to a
 native log timestamp field.
+
+Native Sentry Logs also cannot faithfully apply the event-local scope used by
+ordinary events. Android therefore explicitly rejects a structured log with a
+nonempty local scope. Apple currently submits the log but does not apply its
+local scope; callers must not treat that as successful scoped delivery. Global
+Sentry scope remains independent of this event-local limitation.
 
 The Sentry SDK owns batching and delivery queues; `FoundryObservability.flush()`
 forwards to the native bridge. An enabled configuration with structured logs

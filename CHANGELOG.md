@@ -5,6 +5,9 @@
 - Added project-settings Sentry initialization during observability autoload
   construction, with deterministic deployment defaults, runtime skip controls,
   debug diagnostics, and idempotent reinitialization.
+- Added provider-neutral global tags, nested contexts, explicit application
+  user identity, isolated event-local scope, bounded breadcrumb retention, and
+  native Apple/Android Sentry scope mapping for issue #10.
 - Added owner-safe native crash reporting lifecycle support for macOS, iOS, and
   Android, with explicit Apple/Android crash handlers, Android NDK scope
   synchronization, stable startup metadata, previous-launch delivery, bounded

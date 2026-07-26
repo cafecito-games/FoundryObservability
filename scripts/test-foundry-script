@@ -191,6 +191,25 @@ rg -q '^trait_name ObservabilityMetricsProvider$' "$addon/ObservabilityMetricsPr
 	|| fail "optional metrics provider contract is missing"
 rg -q 'capture_feedback' "$addon/FoundryObservabilityApi.fs" \
 	|| fail "public contract is missing capture_feedback"
+for scope_api in \
+	set_tag remove_tag clear_tags \
+	set_context remove_context clear_contexts \
+	set_user remove_user; do
+	rg -q "abstract func ${scope_api}\\(" "$addon/FoundryObservabilityApi.fs" \
+		|| fail "public contract is missing ${scope_api}"
+done
+rg -q 'p_scope: ObservabilityScope\? = null,' "$addon/ObservabilityEvent.fs" \
+	|| fail "ObservabilityEvent is missing its optional local scope"
+for scoped_capture in capture_message capture_exception capture_log; do
+	rg -Uq "abstract func ${scoped_capture}\\([^)]*scope: ObservabilityScope\\? = null," \
+		"$addon/FoundryObservabilityApi.fs" \
+		|| fail "public contract is missing local scope on ${scoped_capture}"
+done
+rg -q '^var max_breadcrumbs: int = 100$' "$addon/ObservabilityConfig.fs" \
+	|| fail "ObservabilityConfig is missing the default breadcrumb bound"
+rg -q 'abstract func clear_breadcrumbs\(\) -> bool' \
+	"$addon/FoundryObservabilityApi.fs" \
+	|| fail "public contract is missing clear_breadcrumbs"
 rg -q 'add_autoload_singleton\(' "$addon/export_plugin.fs" \
 	|| fail "editor plugin does not register the autoload"
 rg -q '^namespace foundry\.observability\.foundrylib$' "$addon/foundrylib/FoundryLibObservabilitySink.fs" \
