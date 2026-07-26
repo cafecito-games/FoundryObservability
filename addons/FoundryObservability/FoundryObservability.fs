@@ -65,6 +65,13 @@ func _new_disabled_pipeline() -> ObservabilityProcessingPipeline:
 	return pipeline
 
 
+func _configure_candidate_pipeline(
+		pipeline: ObservabilityProcessingPipeline,
+		config: ObservabilityConfig,
+) -> int:
+	return pipeline.configure(config)
+
+
 ## Rereads project settings and runs the supported startup path.
 func initialize_from_project_settings() -> int:
 	return _initialize_startup(ObservabilityStartupSettings.from_project_settings())
@@ -197,10 +204,12 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 		_last_error = Error.FAILED
 		return Error.FAILED
 	_pipeline_mutex.lock()
-	if _shutdown_requested:
+	if _shutdown_requested or _configuration_in_progress or _provider_call_count > 0:
 		_last_error = Error.ERR_BUSY
 		_pipeline_mutex.unlock()
 		return Error.ERR_BUSY
+	_configuration_in_progress = true
+	var previous_provider: ObservabilityProvider = _provider
 	_pipeline_mutex.unlock()
 
 	var candidate_config: ObservabilityConfig = config
@@ -210,22 +219,31 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 			_processing_clock,
 			_processing_frame,
 	)
-	var pipeline_result: int = candidate_pipeline.configure(candidate_config)
+	var pipeline_result: int = _configure_candidate_pipeline(
+			candidate_pipeline,
+			candidate_config,
+		)
 	if pipeline_result != Error.OK:
+		_pipeline_mutex.lock()
 		_last_error = pipeline_result
+		_configuration_in_progress = false
+		_pipeline_mutex.unlock()
+		_complete_requested_shutdown()
 		return pipeline_result
 
 	_pipeline_mutex.lock()
-	if _shutdown_requested or _configuration_in_progress or _provider_call_count > 0:
+	if _shutdown_requested:
 		_last_error = Error.ERR_BUSY
+		_configuration_in_progress = false
 		_pipeline_mutex.unlock()
+		_complete_requested_shutdown()
 		return Error.ERR_BUSY
-	_configuration_in_progress = true
-	var previous_provider: ObservabilityProvider = _provider
 	_pipeline_mutex.unlock()
 
 	var result: int = provider.configure(candidate_config)
 	if result != Error.OK:
+		if provider != previous_provider:
+			provider.shutdown()
 		_pipeline_mutex.lock()
 		_last_error = result
 		_configuration_in_progress = false
@@ -1181,7 +1199,8 @@ func _record_capture_result_locked(error: int) -> void:
 func try_begin_automatic_capture() -> bool:
 	if not _pipeline_mutex.try_lock():
 		return false
-	if _shutdown_requested or _configuration_in_progress or _provider_call_count > 0:
+	if _shutdown or _shutdown_requested \
+			or _configuration_in_progress or _provider_call_count > 0:
 		_pipeline_mutex.unlock()
 		return false
 	_provider_call_count += 1
@@ -1248,7 +1267,7 @@ func flush(timeout_msec: int = 2000) -> int:
 ## Flushes and shuts down once, then restores the disabled null-provider state.
 func shutdown() -> void:
 	_pipeline_mutex.lock()
-	if _shutdown:
+	if _shutdown and not _configuration_in_progress:
 		_pipeline_mutex.unlock()
 		return
 	_shutdown_requested = true
@@ -1261,10 +1280,14 @@ func shutdown() -> void:
 
 func _complete_requested_shutdown() -> void:
 	_pipeline_mutex.lock()
-	if _shutdown \
-			or not _shutdown_requested \
+	if not _shutdown_requested \
 			or _configuration_in_progress \
 			or _provider_call_count > 0:
+		_pipeline_mutex.unlock()
+		return
+	if _shutdown:
+		_shutdown_requested = false
+		_last_error = Error.OK
 		_pipeline_mutex.unlock()
 		return
 	_configuration_in_progress = true

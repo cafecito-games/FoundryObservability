@@ -133,6 +133,20 @@ class ReconfiguringReservationService extends \
 		reconfigure_result = configure(provider, replacement_config)
 
 
+class ShutdownDuringCandidatePreparationService extends \
+		"res://addons/FoundryObservability/FoundryObservability.fs":
+	var shutdown_during_preparation: bool = false
+
+	func _configure_candidate_pipeline(
+			pipeline: ObservabilityProcessingPipeline,
+			config: ObservabilityConfig,
+	) -> int:
+		if shutdown_during_preparation:
+			shutdown_during_preparation = false
+			shutdown()
+		return pipeline.configure(config)
+
+
 class RecordingScopeProvider extends RefCounted:
 	uses ObservabilityProvider, ObservabilityScopeProvider, ObservabilityBreadcrumbsProvider
 
@@ -3837,13 +3851,14 @@ func test_automatic_logger_bounds_identity_state_and_resets_limits() -> void:
 
 
 func test_automatic_capture_reservation_is_atomic() -> void:
-	var service: FoundryObservability = _service()
+	var service := _processing_service()
 
 	Expect.that(service.try_begin_automatic_capture()).to_be_true()
 	Expect.that(service.try_begin_automatic_capture()).to_be_false()
 	service.end_automatic_capture()
 	Expect.that(service.try_begin_automatic_capture()).to_be_true()
 	service.end_automatic_capture()
+	_shutdown_processing_service(service)
 
 
 func test_automatic_capture_skips_missing_optional_breadcrumb_capability() -> void:
@@ -4507,6 +4522,77 @@ func test_shutdown_requested_during_configure_cleans_committed_candidate() -> vo
 	service.shutdown()
 	Expect.that(replacement.shutdown_count).to_equal(1)
 	service.free()
+
+
+func test_shutdown_during_candidate_preparation_cannot_resurrect_configuration() -> void:
+	var service := ShutdownDuringCandidatePreparationService.new(
+			ObservabilityStartupSettings.new(),
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs",
+			Callable(self, "_service_processing_clock"),
+			Callable(self, "_service_processing_frame"),
+		)
+	var active := MemoryObservabilityProvider.new()
+	var replacement := ConfigureCountingMemoryProvider.new()
+	Expect.that(service.configure(
+			active,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	service.shutdown_during_preparation = true
+
+	Expect.that(service.configure(
+			replacement,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.ERR_BUSY)
+	Expect.that(service.shutdown_during_preparation).to_be_false()
+	Expect.that(replacement.configure_calls).to_equal(0)
+	Expect.that(replacement.shutdown_count).to_equal(0)
+	Expect.that(active.flush_count).to_equal(1)
+	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+
+	service.shutdown()
+	Expect.that(active.shutdown_count).to_equal(1)
+	service.free()
+
+
+func test_failed_replacement_requesting_shutdown_cleans_both_providers_once() -> void:
+	var service := _processing_service()
+	var active := MemoryObservabilityProvider.new()
+	var replacement := ReentrantConfigureMemoryProvider.new()
+	Expect.that(service.configure(
+			active,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	replacement.service = service
+	replacement.request_shutdown = true
+	replacement.configure_result = Error.FAILED
+
+	Expect.that(service.configure(
+			replacement,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.FAILED)
+	Expect.that(replacement.flush_count).to_equal(0)
+	Expect.that(replacement.shutdown_count).to_equal(1)
+	Expect.that(active.flush_count).to_equal(1)
+	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+
+	service.shutdown()
+	Expect.that(replacement.shutdown_count).to_equal(1)
+	Expect.that(active.shutdown_count).to_equal(1)
+	service.free()
+
+
+func test_automatic_capture_rejects_completed_shutdown() -> void:
+	var service: FoundryObservability = _service()
+	service.shutdown()
+
+	var reserved: bool = service.try_begin_automatic_capture()
+	Expect.that(reserved).to_be_false()
+	if reserved:
+		service.end_automatic_capture()
 
 
 func test_service_normalizes_final_processor_replacement_before_delivery() -> void:
