@@ -122,7 +122,9 @@ func is_valid() -> bool:
 		return false
 	if not _is_safe_nonempty(_path) or not _is_supported_path(_path):
 		return false
-	return _filename.is_empty() or _is_safe_nonempty(_filename)
+	if _filename.is_empty():
+		return _is_safe_nonempty(_path.get_file())
+	return _is_safe_nonempty(_filename)
 
 
 func _is_valid_content_type() -> bool:

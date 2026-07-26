@@ -1406,6 +1406,12 @@ func test_path_attachment_preserves_path_and_derives_effective_filename() -> voi
 func test_attachment_factories_reject_invalid_inputs() -> void:
 	Expect.that(ObservabilityAttachment.from_path("")).to_be_null()
 	Expect.that(ObservabilityAttachment.from_path("diagnostics/game.log")).to_be_null()
+	Expect.that(ObservabilityAttachment.from_path("user://")).to_be_null()
+	Expect.that(ObservabilityAttachment.from_path("res://")).to_be_null()
+	Expect.that(ObservabilityAttachment.from_path("/")).to_be_null()
+	Expect.that(ObservabilityAttachment.from_path(
+			"user://diagnostics/",
+		)).to_be_null()
 	Expect.that(ObservabilityAttachment.from_path(
 			"user://game.log",
 			"bad\nname.log",
@@ -1431,6 +1437,10 @@ func test_attachment_factories_reject_invalid_inputs() -> void:
 			"",
 			&"event.minidump",
 		)).to_be_null()
+	Expect.that(ObservabilityAttachment.from_path(
+			"user://diagnostics/",
+			"diagnostics.log",
+		)).not_().to_be_null()
 
 
 func test_attachment_failure_preserves_diagnostic_fields() -> void:
