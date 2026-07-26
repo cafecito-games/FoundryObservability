@@ -206,7 +206,7 @@ for field in _type _name _value _unit _attributes; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityMetric.fs" \
 		|| fail "ObservabilityMetric field must be immutable: ${field}"
 done
-for field in _policy _compiled_patterns; do
+for field in _policy _rules _rule_paths _compiled_patterns _invalid_rule_index; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityRedactor.fs" \
 		|| fail "ObservabilityRedactor field must be immutable: ${field}"
 done

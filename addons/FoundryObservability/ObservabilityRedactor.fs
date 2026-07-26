@@ -4,8 +4,18 @@ namespace foundry.observability
 class_name ObservabilityRedactor
 extends RefCounted
 
+## Maximum nested Dictionary and Array depth examined in one payload tree.
+const MAX_CONTAINER_DEPTH: int = 64
+## Maximum total values examined in one public redaction call.
+const MAX_VISITED_ITEMS: int = 10_000
+## Maximum canonical path segments accepted by one committed rule.
+const MAX_RULE_PATH_SEGMENTS: int = 256
+
 final var _policy: ObservabilityRedactionPolicy
+final var _rules: Array[ObservabilityRedactionRule]
+final var _rule_paths: Array[PackedStringArray]
 final var _compiled_patterns: Array[RegEx] = []
+final var _invalid_rule_index: int
 
 
 func _init(policy: ObservabilityRedactionPolicy? = null) -> void:
@@ -14,13 +24,27 @@ func _init(policy: ObservabilityRedactionPolicy? = null) -> void:
 			if policy != null
 			else ObservabilityRedactionPolicy.new()
 		)
-	for rule: ObservabilityRedactionRule in _policy.rules():
+	_rules = _policy.rules()
+	_rule_paths = []
+	var invalid_rule_index: int = -1
+	for rule_index: int in range(_rules.size()):
+		var rule: ObservabilityRedactionRule = _rules[rule_index]
 		var compiled: RegEx = RegEx.new()
-		if rule != null \
-				and rule.action() == ObservabilityRedactionRule.REPLACE_TEXT \
-				and not rule.pattern().is_empty():
-			compiled.compile(rule.pattern())
+		var path: PackedStringArray = PackedStringArray()
+		if rule == null:
+			if invalid_rule_index < 0:
+				invalid_rule_index = rule_index
+		else:
+			path = rule.path()
+			if (not rule.is_valid() or path.size() > MAX_RULE_PATH_SEGMENTS) \
+					and invalid_rule_index < 0:
+				invalid_rule_index = rule_index
+			if rule.action() == ObservabilityRedactionRule.REPLACE_TEXT \
+					and not rule.pattern().is_empty():
+				compiled.compile(rule.pattern())
+		_rule_paths.append(path)
 		_compiled_patterns.append(compiled)
+	_invalid_rule_index = invalid_rule_index
 
 
 func redact_event(event: ObservabilityEvent, p_signal: StringName) -> Dictionary:
@@ -30,8 +54,7 @@ func redact_event(event: ObservabilityEvent, p_signal: StringName) -> Dictionary
 	if event == null or (p_signal != &"event" and p_signal != &"log"):
 		return _failure(-1)
 	var root_name: String = String(p_signal)
-	var tree: Dictionary = {
-		root_name: {
+	var redacted: Dictionary = _redact_root(root_name, {
 			"kind": String(event.kind()),
 			"level": event.level(),
 			"message": event.message(),
@@ -41,13 +64,7 @@ func redact_event(event: ObservabilityEvent, p_signal: StringName) -> Dictionary
 			"exception": _exception_to_dictionary(event.exception()),
 			"engine_ticks_msec": event.engine_ticks_msec(),
 			"scope": _scope_to_dictionary(event.scope()),
-		},
-	}
-	var redacted: Dictionary = _redact_value(
-			tree,
-			PackedStringArray(),
-			false,
-		)
+		})
 	if not redacted["valid"]:
 		return redacted
 	if not (redacted["value"] is Dictionary):
@@ -266,9 +283,10 @@ func redact_attachment_payload(payload: Dictionary) -> Dictionary:
 		return _failure(-1)
 	var metadata: Dictionary = {
 		"filename": payload["filename"],
-		"content_type": payload["content_type"],
 		"category": payload["category"],
 	}
+	if payload.has("content_type"):
+		metadata["content_type"] = payload["content_type"]
 	var redacted: Dictionary = _redact_root("attachments", metadata)
 	if not redacted["valid"]:
 		return redacted
@@ -276,12 +294,15 @@ func redact_attachment_payload(payload: Dictionary) -> Dictionary:
 	if not data_result["valid"]:
 		return data_result
 	var data: Dictionary = data_result["value"]
-	if not _valid_attachment_metadata(data):
+	if not _valid_attachment_payload_metadata(data):
 		return _typed_failure(redacted)
 	var rebuilt: Dictionary = payload.duplicate(true)
 	rebuilt["filename"] = data["filename"]
-	rebuilt["content_type"] = data["content_type"]
 	rebuilt["category"] = data["category"]
+	if data.has("content_type"):
+		rebuilt["content_type"] = data["content_type"]
+	else:
+		rebuilt.erase("content_type")
 	if rebuilt.has("bytes"):
 		var source_bytes: PackedByteArray = payload["bytes"]
 		rebuilt["bytes"] = source_bytes.duplicate()
@@ -289,26 +310,81 @@ func redact_attachment_payload(payload: Dictionary) -> Dictionary:
 
 
 func _redact_root(root_name: String, value: Variant) -> Dictionary:
+	var source_root: Dictionary = {root_name: value}
+	var validation: Dictionary = {
+		"remaining": MAX_VISITED_ITEMS,
+		"active_containers": [],
+	}
+	if not _validate_source_tree(source_root, validation, 0):
+		return _failure(-1)
+	var traversal: Dictionary = {
+		"remaining": MAX_VISITED_ITEMS,
+		"active_containers": [],
+	}
 	return _redact_value(
-			{root_name: value},
+			source_root,
 			PackedStringArray(),
 			false,
+			traversal,
+			0,
 		)
+
+
+func _validate_source_tree(
+		value: Variant,
+		traversal: Dictionary,
+		container_depth: int,
+) -> bool:
+	if not _consume_traversal_item(traversal):
+		return false
+	if not (value is Dictionary) and not (value is Array):
+		return true
+	if container_depth > MAX_CONTAINER_DEPTH:
+		return false
+	@warning_ignore("unsafe_cast")
+	var active_containers: Array = traversal["active_containers"] as Array
+	if not _enter_active_container(value, active_containers):
+		return false
+	if value is Dictionary:
+		for key: Variant in value:
+			if not _validate_source_tree(
+					value[key],
+					traversal,
+					container_depth + 1,
+				):
+				active_containers.pop_back()
+				return false
+	else:
+		for child: Variant in value:
+			if not _validate_source_tree(
+					child,
+					traversal,
+					container_depth + 1,
+				):
+				active_containers.pop_back()
+				return false
+	active_containers.pop_back()
+	return true
 
 
 func _redact_value(
 		source_value: Variant,
 		path: PackedStringArray,
 		parent_is_dictionary: bool,
+		traversal: Dictionary,
+		container_depth: int,
 ) -> Dictionary:
+	if not _consume_traversal_item(traversal):
+		return _failure(-1)
+	@warning_ignore("unsafe_cast")
+	var active_containers: Array = traversal["active_containers"] as Array
 	var value: Variant = source_value
 	var applied_rule_index: int = -1
-	var rules: Array[ObservabilityRedactionRule] = _policy.rules()
-	for rule_index: int in range(rules.size()):
-		var rule: ObservabilityRedactionRule = rules[rule_index]
-		if rule == null or not rule.is_valid():
+	for rule_index: int in range(_rules.size()):
+		var rule: ObservabilityRedactionRule = _rules[rule_index]
+		if rule == null:
 			return _failure(rule_index)
-		if not _path_matches(rule.path(), path):
+		if not _path_matches(_rule_paths[rule_index], path):
 			continue
 		if rule.action() == ObservabilityRedactionRule.REMOVE_FIELD:
 			if not parent_is_dictionary:
@@ -322,24 +398,32 @@ func _redact_value(
 			var replacement: Variant = rule.replacement()
 			if not _runtime_types_are_compatible(value, replacement):
 				return _failure(rule_index)
-			value = replacement
-			if applied_rule_index < 0:
+			if value != replacement:
+				value = replacement
 				applied_rule_index = rule_index
 			continue
 		if value is String or value is StringName:
 			var replacement_text: String = str(rule.replacement())
+			var redacted_text: String
 			if rule.pattern().is_empty():
-				value = replacement_text
+				redacted_text = replacement_text
 			else:
-				value = _compiled_patterns[rule_index].sub(
+				redacted_text = _compiled_patterns[rule_index].sub(
 						str(value),
 						replacement_text,
 						true,
 					)
-			if applied_rule_index < 0:
+			if redacted_text != str(value):
+				value = redacted_text
 				applied_rule_index = rule_index
 
 	if value is Dictionary:
+		if container_depth > MAX_CONTAINER_DEPTH \
+				or not _enter_active_container(
+						value,
+						active_containers,
+					):
+			return _failure(-1)
 		var rebuilt_dictionary: Dictionary = {}
 		var removed_rule_index: int = -1
 		for key: Variant in value:
@@ -349,8 +433,11 @@ func _redact_value(
 					value[key],
 					child_path,
 					true,
+					traversal,
+					container_depth + 1,
 				)
 			if not child_result["valid"]:
+				active_containers.pop_back()
 				return child_result
 			if child_result.get("removed", false) == true:
 				if removed_rule_index < 0:
@@ -358,20 +445,30 @@ func _redact_value(
 					removed_rule_index = int(child_result.get("rule_index", -1))
 				continue
 			rebuilt_dictionary[_copy_dictionary_key(key)] = child_result["value"]
-			if applied_rule_index < 0 \
-					and child_result.get("rule_index", -1) >= 0:
-				applied_rule_index = child_result["rule_index"]
+			if child_result.get("rule_index", -1) >= 0:
+				@warning_ignore("unsafe_call_argument")
+				applied_rule_index = maxi(
+						applied_rule_index,
+						int(child_result["rule_index"]),
+					)
 			if removed_rule_index < 0 \
 					and child_result.get("removed_rule_index", -1) >= 0:
 				@warning_ignore("unsafe_call_argument")
 				removed_rule_index = int(
 						child_result.get("removed_rule_index", -1))
+		active_containers.pop_back()
 		return _traversal_success(
 				rebuilt_dictionary,
 				applied_rule_index,
 				removed_rule_index,
 			)
 	if value is Array:
+		if container_depth > MAX_CONTAINER_DEPTH \
+				or not _enter_active_container(
+						value,
+						active_containers,
+					):
+			return _failure(-1)
 		var rebuilt_array: Array = []
 		for index: int in range(value.size()):
 			var child_path: PackedStringArray = path.duplicate()
@@ -380,16 +477,24 @@ func _redact_value(
 					value[index],
 					child_path,
 					false,
+					traversal,
+					container_depth + 1,
 				)
 			if not child_result["valid"]:
+				active_containers.pop_back()
 				return child_result
 			if child_result.get("removed", false) == true:
+				active_containers.pop_back()
 				@warning_ignore("unsafe_call_argument")
 				return _failure(int(child_result.get("rule_index", -1)))
 			rebuilt_array.append(child_result["value"])
-			if applied_rule_index < 0 \
-					and child_result.get("rule_index", -1) >= 0:
-				applied_rule_index = child_result["rule_index"]
+			if child_result.get("rule_index", -1) >= 0:
+				@warning_ignore("unsafe_call_argument")
+				applied_rule_index = maxi(
+						applied_rule_index,
+						int(child_result["rule_index"]),
+					)
+		active_containers.pop_back()
 		return _success_with_rule(rebuilt_array, applied_rule_index)
 	return _success_with_rule(_copy_leaf(value), applied_rule_index)
 
@@ -397,26 +502,33 @@ func _redact_value(
 func _path_matches(
 		pattern: PackedStringArray,
 		path: PackedStringArray,
-		pattern_index: int = 0,
-		path_index: int = 0,
 ) -> bool:
-	if pattern_index == pattern.size():
-		return path_index == path.size()
-	var segment: String = pattern[pattern_index]
-	if segment == "**":
-		if _path_matches(pattern, path, pattern_index + 1, path_index):
-			return true
-		return path_index < path.size() and _path_matches(
-				pattern,
-				path,
-				pattern_index,
-				path_index + 1,
-			)
-	if path_index == path.size():
-		return false
-	if segment != "*" and segment.to_lower() != path[path_index].to_lower():
-		return false
-	return _path_matches(pattern, path, pattern_index + 1, path_index + 1)
+	var pattern_index: int = 0
+	var path_index: int = 0
+	var wildcard_index: int = -1
+	var wildcard_path_index: int = -1
+	while path_index < path.size():
+		if pattern_index < pattern.size() and pattern[pattern_index] != "**" \
+				and (
+					pattern[pattern_index] == "*"
+					or pattern[pattern_index].to_lower() \
+							== path[path_index].to_lower()
+				):
+			pattern_index += 1
+			path_index += 1
+		elif pattern_index < pattern.size() and pattern[pattern_index] == "**":
+			wildcard_index = pattern_index
+			wildcard_path_index = path_index
+			pattern_index += 1
+		elif wildcard_index >= 0:
+			wildcard_path_index += 1
+			path_index = wildcard_path_index
+			pattern_index = wildcard_index + 1
+		else:
+			return false
+	while pattern_index < pattern.size() and pattern[pattern_index] == "**":
+		pattern_index += 1
+	return pattern_index == pattern.size()
 
 
 func _exception_to_dictionary(exception: ObservabilityException?) -> Variant:
@@ -545,15 +657,27 @@ func _root_dictionary(redacted: Dictionary, root_name: String) -> Dictionary:
 
 
 func _first_invalid_rule_index() -> int:
-	var rules: Array[ObservabilityRedactionRule] = _policy.rules()
-	for rule_index: int in range(rules.size()):
-		if rules[rule_index] == null or not rules[rule_index].is_valid():
-			return rule_index
-	return -1
+	return _invalid_rule_index
 
 
 func _runtime_types_are_compatible(current: Variant, replacement: Variant) -> bool:
 	return typeof(current) == typeof(replacement)
+
+
+func _consume_traversal_item(traversal: Dictionary) -> bool:
+	var remaining: int = traversal["remaining"]
+	if remaining <= 0:
+		return false
+	traversal["remaining"] = remaining - 1
+	return true
+
+
+func _enter_active_container(container: Variant, active_containers: Array) -> bool:
+	for active_container: Variant in active_containers:
+		if is_same(container, active_container):
+			return false
+	active_containers.append(container)
+	return true
 
 
 func _has_type(data: Dictionary, key: String, expected_type: int) -> bool:
@@ -576,13 +700,31 @@ func _valid_attachment_metadata(data: Dictionary) -> bool:
 
 
 func _valid_attachment_payload_source(payload: Dictionary) -> bool:
-	if not _valid_attachment_metadata(payload):
+	if not _valid_attachment_payload_metadata(payload):
 		return false
-	if payload.has("path") and not (payload["path"] is String):
+	var has_path: bool = payload.has("path")
+	var has_bytes: bool = payload.has("bytes")
+	if has_path == has_bytes:
 		return false
-	if payload.has("bytes") and not (payload["bytes"] is PackedByteArray):
+	if has_path:
+		return payload["path"] is String \
+				and not str(payload["path"]).is_empty() \
+				and str(payload["path"]).begins_with("/")
+	@warning_ignore("unsafe_cast")
+	return payload["bytes"] is PackedByteArray \
+			and not (payload["bytes"] as PackedByteArray).is_empty()
+
+
+func _valid_attachment_payload_metadata(payload: Dictionary) -> bool:
+	if not _has_type(payload, "filename", TYPE_STRING) \
+			or str(payload["filename"]).is_empty() \
+			or not _has_type(payload, "category", TYPE_STRING):
 		return false
-	return not (payload.has("path") and payload.has("bytes"))
+	var category: String = payload["category"]
+	if category != "event.attachment" and category != "event.view_hierarchy":
+		return false
+	return not payload.has("content_type") \
+			or payload["content_type"] is String
 
 
 func _copy_dictionary_key(key: Variant) -> Variant:

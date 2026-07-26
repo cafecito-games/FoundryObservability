@@ -1741,7 +1741,7 @@ func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
 		"path": "/tmp/secret-source.log",
 		"filename": "secret.log",
 		"content_type": "secret/plain",
-		"category": "secret-category",
+		"category": "event.attachment",
 		"persistent": true,
 	}
 	var payload_result: Dictionary = redactor.redact_attachment_payload(payload_source)
@@ -1749,7 +1749,7 @@ func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
 	Expect.that(payload_result["value"]["path"]).to_equal("/tmp/secret-source.log")
 	Expect.that(payload_result["value"]["filename"]).to_equal("safe.log")
 	Expect.that(payload_result["value"]["content_type"]).to_equal("safe/plain")
-	Expect.that(payload_result["value"]["category"]).to_equal("safe-category")
+	Expect.that(payload_result["value"]["category"]).to_equal("event.attachment")
 	Expect.that(payload_result["value"]["persistent"]).to_be_true()
 	Expect.that(payload_source["filename"]).to_equal("secret.log")
 
@@ -1758,7 +1758,7 @@ func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
 		"bytes": payload_bytes,
 		"filename": "secret.data",
 		"content_type": "secret/binary",
-		"category": "secret-category",
+		"category": "event.view_hierarchy",
 	})
 	payload_bytes[0] = 9
 	Expect.that(byte_payload_result["valid"]).to_be_true()
@@ -1889,6 +1889,193 @@ func test_redactor_remove_field_only_removes_dictionary_children() -> void:
 			p_message = "sensitive-message",
 		), &"event")
 	Expect.that(ordered_result).to_equal({"valid": false, "rule_index": 1})
+
+
+func test_redactor_rejects_cyclic_contexts_without_retaining_payloads() -> void:
+	var self_cycle: Dictionary = {}
+	self_cycle["self"] = self_cycle
+	var self_result: Dictionary = ObservabilityRedactor.new().redact_contexts({
+		"cycle": self_cycle,
+	})
+	Expect.that(self_result).to_equal({"valid": false, "rule_index": -1})
+	var replacement_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["contexts", "cycle"]),
+				{"replacement": "safe"},
+			),
+	])
+	var concealed_result: Dictionary = ObservabilityRedactor.new(
+			replacement_policy,
+		).redact_contexts({"cycle": self_cycle})
+	Expect.that(concealed_result).to_equal({"valid": false, "rule_index": -1})
+
+	var mutual_array: Array = []
+	var mutual_dictionary: Dictionary = {"array": mutual_array}
+	mutual_array.append(mutual_dictionary)
+	var mutual_result: Dictionary = ObservabilityRedactor.new().redact_contexts({
+		"cycle": mutual_dictionary,
+	})
+	Expect.that(mutual_result).to_equal({"valid": false, "rule_index": -1})
+
+
+func test_redactor_bounds_container_depth_and_visited_items_per_call() -> void:
+	var deep: Dictionary = {"value": "kept"}
+	for _index: int in range(70):
+		deep = {"child": deep}
+	var deep_result: Dictionary = ObservabilityRedactor.new().redact_event(
+			ObservabilityEvent.new(p_attributes = deep),
+			&"event",
+		)
+	Expect.that(deep_result).to_equal({"valid": false, "rule_index": -1})
+
+	var flooded: Array = []
+	for index: int in range(10_010):
+		flooded.append(index)
+	var redactor := ObservabilityRedactor.new()
+	var flooded_result: Dictionary = redactor.redact_event(
+			ObservabilityEvent.new(p_attributes = {"items": flooded}),
+			&"event",
+		)
+	Expect.that(flooded_result).to_equal({"valid": false, "rule_index": -1})
+
+	var recovery_result: Dictionary = redactor.redact_event(
+			ObservabilityEvent.new(p_attributes = {"value": "kept"}),
+			&"event",
+		)
+	Expect.that(recovery_result["valid"]).to_be_true()
+
+
+func test_redactor_allows_repeated_acyclic_context_containers() -> void:
+	var shared: Dictionary = {"value": "secret"}
+	var source: Dictionary = {"first": shared, "second": shared}
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["contexts", "**"]),
+				"secret",
+				"safe",
+			),
+	])
+	var result: Dictionary = ObservabilityRedactor.new(policy).redact_contexts(source)
+
+	Expect.that(result["valid"]).to_be_true()
+	Expect.that(result["value"]).to_equal({
+		"first": {"value": "safe"},
+		"second": {"value": "safe"},
+	})
+	Expect.that(source).to_equal({
+		"first": {"value": "secret"},
+		"second": {"value": "secret"},
+	})
+
+
+func test_redactor_attachment_payload_matches_native_mapper_contract() -> void:
+	var redactor := ObservabilityRedactor.new()
+	var invalid_payloads: Array[Dictionary] = [
+		{},
+		{"filename": "a", "category": "event.attachment"},
+		{
+			"filename": "a",
+			"category": "event.attachment",
+			"path": "/tmp/a",
+			"bytes": PackedByteArray([1]),
+		},
+		{"filename": "a", "category": "event.attachment", "path": ""},
+		{"filename": "a", "category": "event.attachment", "path": "relative/a"},
+		{"filename": "a", "category": "event.attachment", "bytes": PackedByteArray()},
+		{"filename": "", "category": "event.attachment", "path": "/tmp/a"},
+		{"filename": "a", "category": "", "path": "/tmp/a"},
+		{"filename": "a", "category": "other", "path": "/tmp/a"},
+		{
+			"filename": "a",
+			"category": "event.attachment",
+			"path": "/tmp/a",
+			"content_type": 12,
+		},
+	]
+	for payload: Dictionary in invalid_payloads:
+		Expect.that(redactor.redact_attachment_payload(payload)).to_equal({
+			"valid": false,
+			"rule_index": -1,
+		})
+
+	var path_result: Dictionary = redactor.redact_attachment_payload({
+		"filename": "path.log",
+		"category": "event.attachment",
+		"path": "/tmp/path.log",
+	})
+	Expect.that(path_result["valid"]).to_be_true()
+	Expect.that(path_result["value"]).to_equal({
+		"filename": "path.log",
+		"category": "event.attachment",
+		"path": "/tmp/path.log",
+	})
+
+	var source_bytes := PackedByteArray([1, 2, 3])
+	var bytes_result: Dictionary = redactor.redact_attachment_payload({
+		"filename": "view.json",
+		"content_type": "",
+		"category": "event.view_hierarchy",
+		"bytes": source_bytes,
+	})
+	source_bytes[0] = 9
+	Expect.that(bytes_result["valid"]).to_be_true()
+	Expect.that(bytes_result["value"]["bytes"]).to_equal(PackedByteArray([1, 2, 3]))
+	Expect.that(bytes_result["value"]["content_type"]).to_equal("")
+
+
+func test_redactor_reports_latest_effective_rule_for_invalid_metadata() -> void:
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["attachments", "filename"]),
+				"does-not-match",
+				"unused",
+			),
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["attachments", "category"]),
+				"invalid",
+			),
+	])
+	var source: Dictionary = {
+		"filename": "safe.log",
+		"content_type": "text/plain",
+		"category": "event.attachment",
+		"path": "/tmp/safe.log",
+	}
+	var result: Dictionary = ObservabilityRedactor.new(
+			policy,
+		).redact_attachment_payload(source)
+
+	Expect.that(result).to_equal({"valid": false, "rule_index": 1})
+	Expect.that(source["category"]).to_equal("event.attachment")
+
+	var no_op_result: Dictionary = ObservabilityRedactor.new(
+			ObservabilityRedactionPolicy.new([policy.rules()[0]]),
+		).redact_attachment_payload(source)
+	Expect.that(no_op_result["valid"]).to_be_true()
+	Expect.that(no_op_result["value"]["filename"]).to_equal("safe.log")
+
+
+func test_redactor_fails_closed_on_adversarial_rule_paths() -> void:
+	var adversarial_path := PackedStringArray()
+	for _index: int in range(257):
+		adversarial_path.append("**")
+	adversarial_path.append("filename")
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				adversarial_path,
+				"safe",
+				"changed",
+			),
+	])
+	var result: Dictionary = ObservabilityRedactor.new(
+			policy,
+		).redact_attachment_payload({
+			"filename": "safe.log",
+			"category": "event.attachment",
+			"path": "/tmp/safe.log",
+		})
+
+	Expect.that(result).to_equal({"valid": false, "rule_index": 0})
 
 
 func test_processing_diagnostic_preserves_payload_free_fields() -> void:
