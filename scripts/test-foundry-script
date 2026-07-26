@@ -257,6 +257,15 @@ rg -Fq 'OS.get_thread_caller_id()' "$addon/ObservabilityProcessingPipeline.fs" \
 	|| fail "processing pipeline must default ownership to the current caller thread"
 rg -Fq '"operation_token"' "$addon/ObservabilityProcessingPipeline.fs" \
 	|| fail "processing pipeline accepted results must expose an opaque operation token"
+rg -q '^const MAX_PENDING_PROVIDER_RESULTS: int = 1024$' \
+	"$addon/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline pending provider results must have a conservative fixed bound"
+pending_result_bound_references=$( \
+	rg -Fo 'MAX_PENDING_PROVIDER_RESULTS' "$addon/ObservabilityProcessingPipeline.fs" \
+		| wc -l | tr -d ' ' \
+)
+(( pending_result_bound_references >= 2 )) \
+	|| fail "processing pipeline pending provider result bound must be enforced"
 rg -Fq '_is_active_container(value, active_containers)' \
 	"$addon/ObservabilityRedactionRule.fs" \
 	|| fail "ObservabilityRedactionRule must detect active replacement containers"

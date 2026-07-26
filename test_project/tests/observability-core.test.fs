@@ -5869,15 +5869,63 @@ func test_processing_pipeline_pairs_provider_results_to_current_pending_tokens()
 			ObservabilityProcessingDiagnostic.ACCEPTED)
 	Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.OK)
 
-	var ambiguous_first: Dictionary = pipeline.process_event(ObservabilityEvent.new())
-	var ambiguous_second: Dictionary = pipeline.process_event(ObservabilityEvent.new())
-	var before_ambiguous: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+
+func test_processing_pipeline_keeps_only_latest_pending_result_per_owner_and_signal() -> void:
+	_processing_owner_id = 1
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
+	var first: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	var latest: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+
+	Expect.that(pipeline._pending_provider_results).to_have_size(1)
+	Expect.that(pipeline._pending_provider_results.has(latest["operation_token"])).to_be_true()
+	Expect.that(pipeline._pending_provider_results.has(first["operation_token"])).to_be_false()
+	pipeline.record_provider_result(&"event", false, Error.FAILED, first["operation_token"])
+	Expect.that(pipeline.last_diagnostic()).to_be_null()
+
+	pipeline.record_provider_result(&"event", true, Error.FAILED)
+	var accepted: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	Expect.that(accepted.outcome()).to_equal(ObservabilityProcessingDiagnostic.ACCEPTED)
+	Expect.that(pipeline._pending_provider_results).to_have_size(0)
+	pipeline.record_provider_result(&"event", false, Error.FAILED, latest["operation_token"])
 	pipeline.record_provider_result(&"event", false, Error.FAILED)
-	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(before_ambiguous.sequence())
-	pipeline.record_provider_result(
-			&"event", true, Error.OK, ambiguous_first["operation_token"])
-	pipeline.record_provider_result(
-			&"event", true, Error.OK, ambiguous_second["operation_token"])
+	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(accepted.sequence())
+
+
+func test_processing_pipeline_bounds_pending_results_and_evicts_oldest_token() -> void:
+	_processing_owner_id = 1
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
+	var oldest: Dictionary = {}
+	var newest: Dictionary = {}
+	for owner_id: int in range(1, 1026):
+		_processing_owner_id = owner_id
+		var result: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+		Expect.that(result["accepted"]).to_be_true()
+		if oldest.is_empty():
+			oldest = result
+		newest = result
+
+	Expect.that(pipeline._pending_provider_results).to_have_size(1024)
+	Expect.that(pipeline._pending_provider_results.has(oldest["operation_token"])).to_be_false()
+	Expect.that(pipeline._pending_provider_results.has(newest["operation_token"])).to_be_true()
+	Expect.that(pipeline._processing_depth).to_equal(0)
+	Expect.that(pipeline._active_operations).to_have_size(0)
+	Expect.that(pipeline.recursive_drop_count()).to_equal(0)
+
+	pipeline.record_provider_result(&"event", false, Error.FAILED, oldest["operation_token"])
+	Expect.that(pipeline.last_diagnostic()).to_be_null()
+	pipeline.record_provider_result(&"event", true, Error.FAILED, newest["operation_token"])
+	Expect.that(pipeline.last_diagnostic().outcome()).to_equal(
+			ObservabilityProcessingDiagnostic.ACCEPTED)
 
 
 func test_processing_pipeline_identity_excludes_attributes_but_includes_message() -> void:

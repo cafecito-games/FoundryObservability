@@ -8,6 +8,8 @@ extends RefCounted
 const _MAX_METRIC_NAME_LENGTH: int = 200
 const _MAX_METRIC_UNIT_LENGTH: int = 64
 const _MAX_METRIC_ATTRIBUTE_KEY_LENGTH: int = 200
+## Caps payload-free provider completion tokens retained between processing and delivery.
+const MAX_PENDING_PROVIDER_RESULTS: int = 1024
 
 var _clock: Callable
 var _frame: Callable
@@ -370,11 +372,8 @@ func _finish_success(
 		_state_mutex.unlock()
 		return _rejected(p_signal)
 	var operation_token: int = _int_value(snapshot, "operation_token", -1)
-	_pending_provider_results[operation_token] = {
-		"generation": generation,
-		"signal": p_signal,
-		"owner": _int_value(snapshot, "owner", -1),
-	}
+	_register_pending_result_locked(
+			operation_token, generation, p_signal, _int_value(snapshot, "owner", -1))
 	_state_mutex.unlock()
 	return {
 		"accepted": true,
@@ -444,6 +443,32 @@ func _admit(snapshot: Dictionary, identity: String) -> Dictionary:
 	var admission: Dictionary = limiter.admit(identity, now_msec, frame_index)
 	limiter_mutex.unlock()
 	return admission
+
+
+func _register_pending_result_locked(
+		operation_token: int,
+		generation: int,
+		p_signal: StringName,
+		owner_id: int,
+) -> void:
+	var oldest_token: int = operation_token
+	for key: Variant in _pending_provider_results.keys():
+		if not (key is int):
+			continue
+		var token: int = key
+		var pending: Dictionary = _pending_provider_results[key]
+		if _int_value(pending, "owner", -1) == owner_id \
+				and StringName(str(pending.get("signal", &""))) == p_signal:
+			_pending_provider_results.erase(key)
+			continue
+		oldest_token = mini(oldest_token, token)
+	_pending_provider_results[operation_token] = {
+		"generation": generation,
+		"signal": p_signal,
+		"owner": owner_id,
+	}
+	if _pending_provider_results.size() > MAX_PENDING_PROVIDER_RESULTS:
+		_pending_provider_results.erase(oldest_token)
 
 
 func _unambiguous_pending_token_locked(owner_id: int, p_signal: StringName) -> int:
