@@ -6,6 +6,7 @@ import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
   static final long SHUTDOWN_TIMEOUT_MSEC = 2_000L;
@@ -103,6 +104,16 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
       Set<String> previousContextKeys) {
     boolean[] applied = {false};
     Sentry.configureScope(scope -> {
+      if (hasUnownedCollision(
+              candidate.tags.keySet(),
+              previousTagKeys,
+              scope.getTags()::containsKey)
+          || hasUnownedCollision(
+              candidate.contexts.keySet(),
+              previousContextKeys,
+              scope.getContexts()::containsKey)) {
+        return;
+      }
       for (String key : previousTagKeys) {
         scope.removeTag(key);
       }
@@ -114,6 +125,18 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
       applied[0] = true;
     });
     return applied[0];
+  }
+
+  private static boolean hasUnownedCollision(
+      Set<String> candidateKeys,
+      Set<String> previousKeys,
+      Predicate<String> currentContainsKey) {
+    for (String key : candidateKeys) {
+      if (!previousKeys.contains(key) && currentContainsKey.test(key)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   static boolean clearBreadcrumbs() {

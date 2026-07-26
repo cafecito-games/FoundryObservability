@@ -447,6 +447,48 @@ public class SentryObservabilityBridgeTest {
   }
 
   @Test
+  public void applyScopeRejectsLiveNativeCollisionsAtomicallyAndRetainsOwnership() {
+    SentryObservabilityBridge bridge = configuredBridge();
+    Dictionary initial = new Dictionary();
+    initial.put("tags", Map.of("owned-tag-0", "owned", "stale", "keep-on-rejection"));
+    initial.put("contexts", Map.of("owned-context-0", Map.of("value", 0)));
+    initial.put("user", Map.of("id", "player-0"));
+    assertTrue(bridge.applyScope(initial));
+
+    List<String> tagCollisions = List.of("native-tag");
+    List<String> contextCollisions = List.of("device", "foundry", "foundry_engine");
+    int index = 0;
+    for (String collisionKey : tagCollisions) {
+      configureCurrentScope(scope -> scope.setTag(collisionKey, "native"));
+      index = assertCollisionRejectedAndSafeReplacementSucceeds(
+          bridge, collisionKey, true, index);
+    }
+    for (String collisionKey : contextCollisions) {
+      if ("device".equals(collisionKey)) {
+        configureCurrentScope(scope -> scope.setContexts(collisionKey, Collections.emptyMap()));
+      } else if (!"foundry".equals(collisionKey)) {
+        configureCurrentScope(
+            scope -> scope.setContexts(collisionKey, Map.of("owner", "native")));
+      }
+      index = assertCollisionRejectedAndSafeReplacementSucceeds(
+          bridge, collisionKey, false, index);
+    }
+
+    assertTrue(bridge.applyScope(new Dictionary()));
+    IScope cleared = currentScope();
+    assertFalse(cleared.getTags().containsKey("owned-tag-" + index));
+    assertFalse(cleared.getContexts().containsKey("owned-context-" + index));
+    assertEquals("native", cleared.getTags().get("native-tag"));
+    assertEquals(Collections.emptyMap(), cleared.getContexts().get("device"));
+    assertTrue(cleared.getContexts().containsKey("foundry"));
+    assertEquals(
+        "native",
+        ((Map<?, ?>) cleared.getContexts().get("foundry_engine")).get("owner"));
+
+    bridge.shutdown(OWNER);
+  }
+
+  @Test
   public void clearBreadcrumbsClearsCurrentScopeAndBothMethodsHonorOwnerAvailability() {
     SentryObservabilityBridge unavailable = newBridge();
     assertFalse(unavailable.applyScope(new Dictionary()));
@@ -547,6 +589,76 @@ public class SentryObservabilityBridgeTest {
     configuration.put("lifecycle_owner", OWNER);
     assertEquals(0, bridge.configure(configuration));
     return bridge;
+  }
+
+  private static int assertCollisionRejectedAndSafeReplacementSucceeds(
+      SentryObservabilityBridge bridge,
+      String collisionKey,
+      boolean tagCollision,
+      int previousIndex) {
+    Object nativeValue = tagCollision
+        ? currentScope().getTags().get(collisionKey)
+        : currentScope().getContexts().get(collisionKey);
+    Dictionary rejected = new Dictionary();
+    rejected.put(
+        "tags",
+        tagCollision
+            ? Map.of(collisionKey, "foundry", "rejected-tag", "must-not-install")
+            : Map.of("rejected-tag", "must-not-install"));
+    rejected.put(
+        "contexts",
+        tagCollision
+            ? Map.of("rejected-context", Map.of("value", "must-not-install"))
+            : Map.of(
+                collisionKey,
+                Map.of("owner", "foundry"),
+                "rejected-context",
+                Map.of("value", "must-not-install")));
+    rejected.put("user", Map.of("id", "player-rejected"));
+
+    assertFalse(bridge.applyScope(rejected));
+    IScope unchanged = currentScope();
+    assertEquals("owned", unchanged.getTags().get("owned-tag-" + previousIndex));
+    if (previousIndex == 0) {
+      assertEquals("keep-on-rejection", unchanged.getTags().get("stale"));
+    }
+    assertEquals(
+        previousIndex,
+        ((Map<?, ?>) unchanged.getContexts().get("owned-context-" + previousIndex))
+            .get("value"));
+    assertEquals("player-" + previousIndex, unchanged.getUser().getId());
+    assertFalse(unchanged.getTags().containsKey("rejected-tag"));
+    assertFalse(unchanged.getContexts().containsKey("rejected-context"));
+    if (tagCollision) {
+      assertEquals(nativeValue, unchanged.getTags().get(collisionKey));
+    } else {
+      assertEquals(nativeValue, unchanged.getContexts().get(collisionKey));
+    }
+
+    int nextIndex = previousIndex + 1;
+    Dictionary safe = new Dictionary();
+    safe.put("tags", Map.of("owned-tag-" + nextIndex, "owned"));
+    safe.put(
+        "contexts",
+        Map.of("owned-context-" + nextIndex, Map.of("value", nextIndex)));
+    safe.put("user", Map.of("id", "player-" + nextIndex));
+    assertTrue(bridge.applyScope(safe));
+
+    IScope replaced = currentScope();
+    assertFalse(replaced.getTags().containsKey("owned-tag-" + previousIndex));
+    assertFalse(replaced.getContexts().containsKey("owned-context-" + previousIndex));
+    assertEquals("owned", replaced.getTags().get("owned-tag-" + nextIndex));
+    assertEquals(
+        nextIndex,
+        ((Map<?, ?>) replaced.getContexts().get("owned-context-" + nextIndex))
+            .get("value"));
+    assertEquals("player-" + nextIndex, replaced.getUser().getId());
+    if (tagCollision) {
+      assertEquals(nativeValue, replaced.getTags().get(collisionKey));
+    } else {
+      assertEquals(nativeValue, replaced.getContexts().get(collisionKey));
+    }
+    return nextIndex;
   }
 
   private static void configureCurrentScope(io.sentry.ScopeCallback callback) {

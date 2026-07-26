@@ -327,7 +327,7 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertNil(user?["name"])
     }
 
-    func testReplacingFoundryScopeRemovesStaleKeysAndPreservesUnownedValues() {
+    func testReplacingFoundryScopeRemovesStaleKeysAndPreservesUnownedValues() throws {
         let scope = Scope()
         scope.setTag(value: "native", key: "native-tag")
         scope.setContext(value: ["os": "macOS"], key: "device")
@@ -339,10 +339,12 @@ final class SentryEventMapperTests: XCTestCase {
             ],
             "user": ["id": "player-7"],
         ])
-        let firstKeys = replaceFoundryScope(
-            first,
-            previousKeys: FoundryInstalledScopeKeys(),
-            on: scope
+        let firstKeys = try XCTUnwrap(
+            replaceFoundryScope(
+                first,
+                previousKeys: FoundryInstalledScopeKeys(),
+                on: scope
+            )
         )
         let second = foundryScopePayload([
             "tags": ["region": "fra"],
@@ -350,10 +352,12 @@ final class SentryEventMapperTests: XCTestCase {
             "user": ["id": "player-8"],
         ])
 
-        let secondKeys = replaceFoundryScope(
-            second,
-            previousKeys: firstKeys,
-            on: scope
+        let secondKeys = try XCTUnwrap(
+            replaceFoundryScope(
+                second,
+                previousKeys: firstKeys,
+                on: scope
+            )
         )
 
         let serialized = scope.serialize()
@@ -379,22 +383,26 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(secondKeys.contextKeys, ["match"])
     }
 
-    func testEmptyFoundryScopeRemovesPreviouslyInstalledValues() {
+    func testEmptyFoundryScopeRemovesPreviouslyInstalledValues() throws {
         let scope = Scope()
-        let installedKeys = replaceFoundryScope(
-            foundryScopePayload([
-                "tags": ["region": "iad"],
-                "contexts": ["match": ["id": "match-9"]],
-                "user": ["id": "player-7"],
-            ]),
-            previousKeys: FoundryInstalledScopeKeys(),
-            on: scope
+        let installedKeys = try XCTUnwrap(
+            replaceFoundryScope(
+                foundryScopePayload([
+                    "tags": ["region": "iad"],
+                    "contexts": ["match": ["id": "match-9"]],
+                    "user": ["id": "player-7"],
+                ]),
+                previousKeys: FoundryInstalledScopeKeys(),
+                on: scope
+            )
         )
 
-        let emptyKeys = replaceFoundryScope(
-            foundryScopePayload([:]),
-            previousKeys: installedKeys,
-            on: scope
+        let emptyKeys = try XCTUnwrap(
+            replaceFoundryScope(
+                foundryScopePayload([:]),
+                previousKeys: installedKeys,
+                on: scope
+            )
         )
 
         let serialized = scope.serialize()
@@ -403,6 +411,139 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertNil(serialized["user"])
         XCTAssertTrue(emptyKeys.tagKeys.isEmpty)
         XCTAssertTrue(emptyKeys.contextKeys.isEmpty)
+    }
+
+    func testReplacingFoundryScopeRejectsLiveNativeCollisionsAtomically() throws {
+        let collisions: [(tagKey: String?, contextKey: String?)] = [
+            ("native-tag", nil),
+            (nil, "device"),
+            (nil, "foundry"),
+            (nil, "foundry_engine"),
+            (nil, "third_party_empty"),
+        ]
+
+        for (index, collision) in collisions.enumerated() {
+            let scope = Scope()
+            let installedKeys = try XCTUnwrap(
+                replaceFoundryScope(
+                    foundryScopePayload([
+                        "tags": ["region": "iad", "stale": "keep-on-rejection"],
+                        "contexts": ["match": ["id": "match-9"]],
+                        "user": ["id": "player-7"],
+                    ]),
+                    previousKeys: FoundryInstalledScopeKeys(),
+                    on: scope
+                )
+            )
+            if let tagKey = collision.tagKey {
+                scope.setTag(value: "native", key: tagKey)
+            }
+            if let contextKey = collision.contextKey {
+                scope.setContext(
+                    value: contextKey == "third_party_empty" ? [:] : ["owner": "native"],
+                    key: contextKey
+                )
+            }
+
+            var rejectedTags = ["new-tag": "must-not-install"]
+            if let tagKey = collision.tagKey {
+                rejectedTags[tagKey] = "foundry"
+            }
+            var rejectedContexts: [String: [String: Any]] = [
+                "new-context": ["value": "must-not-install"]
+            ]
+            if let contextKey = collision.contextKey {
+                rejectedContexts[contextKey] = ["owner": "foundry"]
+            }
+            let rejectedKeys = replaceFoundryScope(
+                FoundryScopePayload(
+                    tags: rejectedTags,
+                    contexts: rejectedContexts,
+                    user: ["id": "player-rejected"]
+                ),
+                previousKeys: installedKeys,
+                on: scope
+            )
+
+            XCTAssertNil(rejectedKeys, "Expected collision \(index) to reject")
+            let rejected = scope.serialize()
+            XCTAssertEqual((rejected["tags"] as? [String: String])?["region"], "iad")
+            XCTAssertEqual(
+                (rejected["tags"] as? [String: String])?["stale"],
+                "keep-on-rejection"
+            )
+            XCTAssertNil((rejected["tags"] as? [String: String])?["new-tag"])
+            XCTAssertEqual(
+                ((rejected["context"] as? [String: Any])?["match"] as? [String: Any])?["id"]
+                    as? String,
+                "match-9"
+            )
+            XCTAssertNil((rejected["context"] as? [String: Any])?["new-context"])
+            XCTAssertEqual(
+                (rejected["user"] as? [String: Any])?["id"] as? String,
+                "player-7"
+            )
+            if let tagKey = collision.tagKey {
+                XCTAssertEqual(
+                    (rejected["tags"] as? [String: String])?[tagKey],
+                    "native"
+                )
+            }
+            if let contextKey = collision.contextKey {
+                let nativeContext =
+                    (rejected["context"] as? [String: Any])?[contextKey]
+                        as? [String: Any]
+                if contextKey == "third_party_empty" {
+                    XCTAssertEqual(nativeContext?.count, 0)
+                } else {
+                    XCTAssertEqual(nativeContext?["owner"] as? String, "native")
+                }
+            }
+
+            let safeKeys = replaceFoundryScope(
+                foundryScopePayload([
+                    "tags": ["safe-tag": "safe-\(index)"],
+                    "contexts": ["safe-context": ["value": index]],
+                    "user": ["id": "player-safe-\(index)"],
+                ]),
+                previousKeys: installedKeys,
+                on: scope
+            )
+
+            XCTAssertNotNil(safeKeys)
+            let safe = scope.serialize()
+            XCTAssertNil((safe["tags"] as? [String: String])?["region"])
+            XCTAssertNil((safe["tags"] as? [String: String])?["stale"])
+            XCTAssertEqual(
+                (safe["tags"] as? [String: String])?["safe-tag"],
+                "safe-\(index)"
+            )
+            XCTAssertNil((safe["context"] as? [String: Any])?["match"])
+            XCTAssertEqual(
+                (
+                    (safe["context"] as? [String: Any])?["safe-context"]
+                        as? [String: Any]
+                )?["value"] as? Int,
+                index
+            )
+            XCTAssertEqual(
+                (safe["user"] as? [String: Any])?["id"] as? String,
+                "player-safe-\(index)"
+            )
+            if let tagKey = collision.tagKey {
+                XCTAssertEqual((safe["tags"] as? [String: String])?[tagKey], "native")
+            }
+            if let contextKey = collision.contextKey {
+                let nativeContext =
+                    (safe["context"] as? [String: Any])?[contextKey]
+                        as? [String: Any]
+                if contextKey == "third_party_empty" {
+                    XCTAssertEqual(nativeContext?.count, 0)
+                } else {
+                    XCTAssertEqual(nativeContext?["owner"] as? String, "native")
+                }
+            }
+        }
     }
 
     func testEventLocalScopeOverlaysGlobalWithoutRemovingOrMutatingIt() {

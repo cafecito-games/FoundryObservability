@@ -353,7 +353,21 @@ func replaceFoundryScope(
     _ payload: FoundryScopePayload,
     previousKeys: FoundryInstalledScopeKeys,
     on scope: Scope
-) -> FoundryInstalledScopeKeys {
+) -> FoundryInstalledScopeKeys? {
+    let serialized = scope.serialize()
+    let currentTagKeys = sentryScopeDictionaryKeys(serialized["tags"])
+    let currentContextKeys = sentryScopeDictionaryKeys(serialized["context"])
+    let unownedCandidateTagKeys =
+        Set(payload.tags.keys).subtracting(previousKeys.tagKeys)
+    let unownedCandidateContextKeys =
+        Set(payload.contexts.keys).subtracting(previousKeys.contextKeys)
+    guard
+        currentTagKeys.isDisjoint(with: unownedCandidateTagKeys),
+        currentContextKeys.isDisjoint(with: unownedCandidateContextKeys)
+    else {
+        return nil
+    }
+
     for key in previousKeys.tagKeys {
         scope.removeTag(key: key)
     }
@@ -366,6 +380,13 @@ func replaceFoundryScope(
         tagKeys: Set(payload.tags.keys),
         contextKeys: Set(payload.contexts.keys)
     )
+}
+
+private func sentryScopeDictionaryKeys(_ value: Any?) -> Set<String> {
+    guard let dictionary = value as? NSDictionary else {
+        return []
+    }
+    return Set(dictionary.allKeys.compactMap { $0 as? String })
 }
 
 private func foundryScopeTags(_ value: Any?) -> [String: String] {
