@@ -29,6 +29,112 @@ class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/Obser
 		return {"public accessor": true}
 
 
+class RecordingScopeProvider extends RefCounted:
+	uses ObservabilityProvider, ObservabilityScopeProvider, ObservabilityBreadcrumbsProvider
+
+	var operation_result: bool = true
+	var calls: Array[StringName] = []
+	var captured_events: Array[ObservabilityEvent] = []
+	var _enabled: bool = false
+	var _shutdown: bool = false
+
+	func provider_name() -> StringName:
+		return &"recording-scope"
+
+	func is_available() -> bool:
+		return _enabled and not _shutdown
+
+	func configure(config: ObservabilityConfig) -> int:
+		_enabled = config.enabled
+		_shutdown = false
+		return Error.OK
+
+	func capture(event: ObservabilityEvent) -> String:
+		if not is_available():
+			return ""
+		calls.append(&"capture")
+		captured_events.append(event)
+		return "recording-scope:%s" % captured_events.size()
+
+	func capture_feedback(_feedback: ObservabilityFeedback) -> String:
+		return ""
+
+	func capture_breadcrumb(_breadcrumb: ObservabilityBreadcrumb) -> bool:
+		return true
+
+	func set_tag(_key: String, _value: String) -> bool:
+		calls.append(&"set_tag")
+		return operation_result
+
+	func remove_tag(_key: String) -> bool:
+		calls.append(&"remove_tag")
+		return operation_result
+
+	func clear_tags() -> bool:
+		calls.append(&"clear_tags")
+		return operation_result
+
+	func set_context(_name: String, _value: Dictionary) -> bool:
+		calls.append(&"set_context")
+		return operation_result
+
+	func remove_context(_name: String) -> bool:
+		calls.append(&"remove_context")
+		return operation_result
+
+	func clear_contexts() -> bool:
+		calls.append(&"clear_contexts")
+		return operation_result
+
+	func set_user(_user: ObservabilityUser) -> bool:
+		calls.append(&"set_user")
+		return operation_result
+
+	func remove_user() -> bool:
+		calls.append(&"remove_user")
+		return operation_result
+
+	func clear_breadcrumbs() -> bool:
+		calls.append(&"clear_breadcrumbs")
+		return operation_result
+
+	func flush(_timeout_msec: int = 2000) -> int:
+		return Error.OK
+
+	func shutdown() -> void:
+		_shutdown = true
+		_enabled = false
+
+
+class NonBooleanScopeProvider extends "res://tests/support/scopeless_observability_provider.notest.fs":
+	func set_tag(_key: String, _value: String) -> String:
+		return "not a bool"
+
+	func remove_tag(_key: String) -> String:
+		return "not a bool"
+
+	func clear_tags() -> String:
+		return "not a bool"
+
+	func set_context(_name: String, _value: Dictionary) -> String:
+		return "not a bool"
+
+	func remove_context(_name: String) -> String:
+		return "not a bool"
+
+	func clear_contexts() -> String:
+		return "not a bool"
+
+	func set_user(_user: ObservabilityUser) -> String:
+		return "not a bool"
+
+	func remove_user() -> String:
+		return "not a bool"
+
+	func clear_breadcrumbs() -> String:
+		return "not a bool"
+
+
 func test_levels_are_ordered_and_named() -> void:
 	Expect.that(ObservabilityLevel.TRACE).to_be_less_than(ObservabilityLevel.DEBUG)
 	Expect.that(ObservabilityLevel.DEBUG).to_be_less_than(ObservabilityLevel.INFO)
@@ -227,6 +333,270 @@ func test_observability_breadcrumb_appends_type_without_changing_existing_positi
 	Expect.that(legacy.attributes()).to_equal({"door": "north"})
 	Expect.that(legacy.type()).to_equal(&"default")
 	Expect.that(typed.type()).to_equal(&"http")
+
+
+func test_global_scope_operations_delegate_and_clear_prior_errors() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.set_tag("", "invalid")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.set_tag("region", "iad")).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.remove_tag("region")).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.clear_tags()).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.set_context("match", {
+		"id": "m-1",
+		"teams": [{"name": "red"}, {"name": "blue"}],
+	})).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.remove_context("match")).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.clear_contexts()).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.set_user(
+			ObservabilityUser.new("player-7", "Mina", "mina@example.com"),
+		)).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.remove_user()).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(provider.calls).to_equal([
+		&"set_tag",
+		&"remove_tag",
+		&"clear_tags",
+		&"set_context",
+		&"remove_context",
+		&"clear_contexts",
+		&"set_user",
+		&"remove_user",
+	])
+	service.shutdown()
+
+
+func test_global_scope_operations_validate_before_calling_provider() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.set_tag(" padded", "iad")).to_be_false()
+	Expect.that(service.remove_tag("bad\nname")).to_be_false()
+	Expect.that(service.set_context("match", {"bad": NAN})).to_be_false()
+	Expect.that(service.set_context(" padded", {})).to_be_false()
+	Expect.that(service.remove_context("bad\tname")).to_be_false()
+	Expect.that(service.set_user(null)).to_be_false()
+	Expect.that(service.set_user(ObservabilityUser.new())).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(provider.calls).to_have_size(0)
+	service.shutdown()
+
+
+func test_global_scope_requires_complete_capability_without_blocking_events() -> void:
+	var service: FoundryObservability = _service()
+	var provider := ScopelessObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.set_tag(" invalid", "iad")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.set_tag("region", "iad")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(service.capture_message("still works")).to_equal("scopeless:1")
+	Expect.that(provider.capture_count).to_equal(1)
+	service.shutdown()
+
+
+func test_global_scope_provider_false_and_non_boolean_results_fail() -> void:
+	var service: FoundryObservability = _service()
+	var rejecting := RecordingScopeProvider.new()
+	Expect.that(service.configure(rejecting, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	rejecting.operation_result = false
+	Expect.that(service.set_tag("region", "iad")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	service.shutdown()
+
+	var non_boolean_service: FoundryObservability = _service()
+	var non_boolean := NonBooleanScopeProvider.new()
+	Expect.that(non_boolean_service.configure(non_boolean, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	Expect.that(non_boolean_service.set_tag("region", "iad")).to_be_false()
+	Expect.that(non_boolean_service.last_error()).to_equal(Error.FAILED)
+	non_boolean_service.shutdown()
+
+
+func test_disabled_scope_operations_do_not_call_provider() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_enabled = false,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.set_tag("region", "iad")).to_be_false()
+	Expect.that(service.remove_tag("region")).to_be_false()
+	Expect.that(service.clear_tags()).to_be_false()
+	Expect.that(service.set_context("match", {"id": "m-1"})).to_be_false()
+	Expect.that(service.remove_context("match")).to_be_false()
+	Expect.that(service.clear_contexts()).to_be_false()
+	Expect.that(service.set_user(ObservabilityUser.new("player-7"))).to_be_false()
+	Expect.that(service.remove_user()).to_be_false()
+	Expect.that(service.clear_breadcrumbs()).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(provider.calls).to_have_size(0)
+	service.shutdown()
+
+
+func test_scopeless_provider_rejects_nonempty_event_scope_but_accepts_empty_scope() -> void:
+	var service: FoundryObservability = _service()
+	var provider := ScopelessObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	var nonempty_scope := ObservabilityScope.new()
+	Expect.that(nonempty_scope.set_tag("region", "iad")).to_be_true()
+
+	Expect.that(service.capture_event(ObservabilityEvent.new(
+			p_message = "scoped",
+			p_attributes = {},
+			p_scope = nonempty_scope,
+		))).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(provider.capture_count).to_equal(0)
+
+	Expect.that(service.capture_event(ObservabilityEvent.new(
+			p_message = "empty scope",
+			p_attributes = {},
+			p_scope = ObservabilityScope.new(),
+		))).to_equal("scopeless:1")
+	Expect.that(provider.capture_count).to_equal(1)
+	service.shutdown()
+
+
+func test_convenience_capture_methods_append_and_preserve_event_scope() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	var scope := ObservabilityScope.new()
+	Expect.that(scope.set_tag("region", "iad")).to_be_true()
+
+	Expect.that(service.capture_message(
+			"message", ObservabilityLevel.INFO, {"kind": "message"}, scope,
+		)).to_equal("recording-scope:1")
+	Expect.that(service.capture_exception(
+			ObservabilityException.new("Failure", "exception", "stack", {}),
+			{"kind": "exception"},
+			scope,
+		)).to_equal("recording-scope:2")
+	Expect.that(service.capture_log(
+			"log", ObservabilityLevel.WARN, &"game", -1, {"kind": "log"}, 1234, scope,
+		)).to_equal("recording-scope:3")
+
+	for event: ObservabilityEvent in provider.captured_events:
+		Expect.that(event.scope().tags()).to_equal({"region": "iad"})
+	service.shutdown()
+
+
+func test_timestamp_and_exception_normalization_preserve_scope_snapshots() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	var scope := ObservabilityScope.new()
+	Expect.that(scope.set_context("match", {"id": "m-1"})).to_be_true()
+
+	Expect.that(service.capture_event(ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_message = "failure",
+			p_exception = ObservabilityException.new(
+				p_type_name = "Failure",
+				p_message = "failure",
+				p_attributes = {},
+				p_frames = [ObservabilityStackFrame.new(p_function = "run")],
+			),
+			p_attributes = {},
+			p_scope = scope,
+		))).to_equal("recording-scope:1")
+	scope.set_context("match", {"id": "changed"})
+
+	var captured: ObservabilityEvent = provider.captured_events[0]
+	Expect.that(captured.timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(captured.exception().frames()).to_have_size(1)
+	Expect.that(captured.scope().contexts()).to_equal({"match": {"id": "m-1"}})
+	service.shutdown()
+
+
+func test_clear_breadcrumbs_reports_capability_results() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.clear_breadcrumbs()).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	provider.operation_result = false
+	Expect.that(service.clear_breadcrumbs()).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	service.shutdown()
+
+	var missing_service: FoundryObservability = _service()
+	Expect.that(missing_service.configure(
+			ScopelessObservabilityProvider.new(),
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture_enabled = false,
+			),
+		)).to_equal(Error.OK)
+	Expect.that(missing_service.clear_breadcrumbs()).to_be_false()
+	Expect.that(missing_service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	missing_service.shutdown()
+
+	var non_boolean_service: FoundryObservability = _service()
+	Expect.that(non_boolean_service.configure(
+			NonBooleanScopeProvider.new(),
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture_enabled = false,
+			),
+		)).to_equal(Error.OK)
+	Expect.that(non_boolean_service.clear_breadcrumbs()).to_be_false()
+	Expect.that(non_boolean_service.last_error()).to_equal(Error.FAILED)
+	non_boolean_service.shutdown()
 
 
 func test_exception_and_event_copy_attributes() -> void:

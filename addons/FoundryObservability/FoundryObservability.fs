@@ -276,7 +276,12 @@ func capture_event(event: ObservabilityEvent) -> String:
 
 
 ## Creates a game-sourced message event using the current wall-clock and engine times.
-func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String:
+func capture_message(
+		message: String,
+		level: int = ObservabilityLevel.INFO,
+		attributes: Dictionary = {},
+		scope: ObservabilityScope? = null,
+) -> String:
 	return capture_event(
 		ObservabilityEvent.new(
 			p_kind = &"message",
@@ -284,12 +289,17 @@ func capture_message(message: String, level: int = ObservabilityLevel.INFO, attr
 			p_message = message,
 			p_source = &"game",
 			p_attributes = attributes,
+			p_scope = scope,
 		),
 	)
 
 
 ## Creates a game-sourced ERROR event containing the supplied exception payload.
-func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String:
+func capture_exception(
+		exception: ObservabilityException,
+		attributes: Dictionary = {},
+		scope: ObservabilityScope? = null,
+) -> String:
 	if exception == null:
 		_last_error = Error.FAILED
 		return ""
@@ -301,6 +311,7 @@ func capture_exception(exception: ObservabilityException, attributes: Dictionary
 			p_source = &"game",
 			p_attributes = attributes,
 			p_exception = exception,
+			p_scope = scope,
 		),
 	)
 
@@ -313,6 +324,7 @@ func capture_log(
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
 		engine_ticks_msec: int = -1,
+		scope: ObservabilityScope? = null,
 ) -> String:
 	return capture_event(ObservabilityEvent.new(
 			p_kind = &"log",
@@ -322,12 +334,113 @@ func capture_log(
 			p_timestamp_msec = timestamp_msec,
 			p_attributes = attributes,
 			p_engine_ticks_msec = engine_ticks_msec,
+			p_scope = scope,
 	))
+
+
+## Sets a provider-owned global session tag.
+func set_tag(key: String, value: String) -> bool:
+	var validation: ObservabilityScope = ObservabilityScope.new()
+	if not validation.set_tag(key, value):
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return false
+	return _call_scope_operation(&"set_tag", [key, value])
+
+
+## Removes a provider-owned global session tag.
+func remove_tag(key: String) -> bool:
+	var validation: ObservabilityScope = ObservabilityScope.new()
+	if not validation.set_tag(key, ""):
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return false
+	return _call_scope_operation(&"remove_tag", [key])
+
+
+## Clears all provider-owned global session tags.
+func clear_tags() -> bool:
+	return _call_scope_operation(&"clear_tags", [])
+
+
+## Sets a provider-owned global structured context.
+func set_context(context_name: String, value: Dictionary) -> bool:
+	var validation: ObservabilityScope = ObservabilityScope.new()
+	if not validation.set_context(context_name, value):
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return false
+	return _call_scope_operation(&"set_context", [context_name, value])
+
+
+## Removes a provider-owned global structured context.
+func remove_context(context_name: String) -> bool:
+	var validation: ObservabilityScope = ObservabilityScope.new()
+	if not validation.set_context(context_name, {}):
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return false
+	return _call_scope_operation(&"remove_context", [context_name])
+
+
+## Clears all provider-owned global structured contexts.
+func clear_contexts() -> bool:
+	return _call_scope_operation(&"clear_contexts", [])
+
+
+## Sets the explicit provider-owned application user.
+func set_user(user: ObservabilityUser) -> bool:
+	if user == null or not user.is_valid():
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return false
+	return _call_scope_operation(&"set_user", [user])
+
+
+## Removes the explicit provider-owned application user.
+func remove_user() -> bool:
+	return _call_scope_operation(&"remove_user", [])
+
+
+func _call_scope_operation(method_name: StringName, arguments: Array) -> bool:
+	if not is_enabled() or _provider == null:
+		return false
+	if not _has_scope_capability(_provider):
+		_last_error = Error.ERR_UNAVAILABLE
+		return false
+	return _call_provider_bool(method_name, arguments)
+
+
+func _has_scope_capability(provider: ObservabilityProvider) -> bool:
+	return provider.has_method("set_tag") \
+			and provider.has_method("remove_tag") \
+			and provider.has_method("clear_tags") \
+			and provider.has_method("set_context") \
+			and provider.has_method("remove_context") \
+			and provider.has_method("clear_contexts") \
+			and provider.has_method("set_user") \
+			and provider.has_method("remove_user")
+
+
+func _call_provider_bool(method_name: StringName, arguments: Array) -> bool:
+	_begin_provider_call()
+	var result: Variant = _provider.callv(method_name, arguments)
+	_end_provider_call()
+	if not (result is bool) or not result:
+		_last_error = Error.FAILED
+		return false
+	_last_error = Error.OK
+	return true
 
 
 ## Captures a breadcrumb when the active provider supports the optional capability.
 func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
 	return _capture_breadcrumb(breadcrumb, true, true)
+
+
+## Clears breadcrumbs when the active provider supports the explicit optional operation.
+func clear_breadcrumbs() -> bool:
+	if not is_enabled() or _provider == null:
+		return false
+	if not _provider.has_method("clear_breadcrumbs"):
+		_last_error = Error.ERR_UNAVAILABLE
+		return false
+	return _call_provider_bool(&"clear_breadcrumbs", [])
 
 
 ## Captures an automatic breadcrumb without treating an absent optional capability as an error.
@@ -480,6 +593,7 @@ func _resolved_event_timestamp(
 			p_attributes = event.attributes(),
 			p_exception = event.exception(),
 			p_engine_ticks_msec = resolved_engine_ticks_msec,
+			p_scope = event.scope(),
 		)
 
 
@@ -581,6 +695,12 @@ func _reset_metric_sampling() -> void:
 func _capture_event(event: ObservabilityEvent) -> String:
 	if not is_enabled() or _provider == null:
 		return ""
+	var event_scope: ObservabilityScope? = event.scope()
+	if event_scope != null \
+			and not event_scope.is_empty() \
+			and not _has_scope_capability(_provider):
+		_last_error = Error.ERR_UNAVAILABLE
+		return ""
 
 	_begin_provider_call()
 	var event_id: String = _provider.capture(_normalized_exception_event(event))
@@ -603,7 +723,8 @@ func _normalized_exception_event(event: ObservabilityEvent) -> ObservabilityEven
 			p_attributes = event.attributes(),
 			p_exception = _normalized_exception(exception),
 			p_engine_ticks_msec = event.engine_ticks_msec(),
-	)
+			p_scope = event.scope(),
+		)
 
 
 func _normalized_exception(exception: ObservabilityException) -> ObservabilityException:
