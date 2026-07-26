@@ -124,6 +124,14 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/ObservabilityBreadcrumbsProvider.fs" ]] \
 	|| fail "ObservabilityBreadcrumbsProvider.fs is missing"
 [[ -f "$addon/ObservabilityMetric.fs" ]] || fail "ObservabilityMetric.fs is missing"
+[[ -f "$addon/ObservabilitySignalLimits.fs" ]] \
+	|| fail "ObservabilitySignalLimits.fs is missing"
+[[ -f "$addon/ObservabilityRedactionRule.fs" ]] \
+	|| fail "ObservabilityRedactionRule.fs is missing"
+[[ -f "$addon/ObservabilityRedactionPolicy.fs" ]] \
+	|| fail "ObservabilityRedactionPolicy.fs is missing"
+[[ -f "$addon/ObservabilityProcessingDiagnostic.fs" ]] \
+	|| fail "ObservabilityProcessingDiagnostic.fs is missing"
 [[ -f "$addon/ObservabilityStackFrame.fs" ]] || fail "ObservabilityStackFrame.fs is missing"
 [[ -f "$addon/ObservabilityMetricType.fs" ]] || fail "ObservabilityMetricType.fs is missing"
 [[ -f "$addon/ObservabilityMetricsProvider.fs" ]] || fail "ObservabilityMetricsProvider.fs is missing"
@@ -148,6 +156,14 @@ for attachment_resource in \
 	ObservabilityAttachmentsProvider; do
 	[[ -s "$addon/${attachment_resource}.fs.uid" ]] \
 		|| fail "${attachment_resource}.fs.uid is missing or empty"
+done
+for processing_resource in \
+	ObservabilitySignalLimits \
+	ObservabilityRedactionRule \
+	ObservabilityRedactionPolicy \
+	ObservabilityProcessingDiagnostic; do
+	[[ -s "$addon/${processing_resource}.fs.uid" ]] \
+		|| fail "${processing_resource}.fs.uid is missing or empty"
 done
 for sentry_attachment_resource in \
 	SentryAttachmentRuntimeProbe \
@@ -180,6 +196,10 @@ done
 for field in _path _bytes _filename _content_type _category; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityAttachment.fs" \
 		|| fail "ObservabilityAttachment field must be immutable: ${field}"
+done
+for field in _type _name _value _unit _attributes; do
+	rg -q "^final var ${field}:" "$addon/ObservabilityMetric.fs" \
+		|| fail "ObservabilityMetric field must be immutable: ${field}"
 done
 for field in _handle _filename _reason _error; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityAttachmentFailure.fs" \

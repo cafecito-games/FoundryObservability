@@ -64,9 +64,20 @@ var attach_game_log: bool = false
 var attach_screenshot: bool = false
 ## Attaches the current scene tree to provider captures when supported.
 var attach_scene_tree: bool = false
+## Deterministic fraction of otherwise accepted events to retain.
+var event_sample_rate: float = 1.0
+## Deterministic fraction of otherwise accepted logs to retain.
+var log_sample_rate: float = 1.0
 var _global_attributes: Dictionary = {}
 var _provider_options: Dictionary = {}
 var _automatic_message_filter_prefixes: PackedStringArray = PackedStringArray()
+var _event_processors: Array[Callable] = []
+var _log_processors: Array[Callable] = []
+var _metric_processors: Array[Callable] = []
+var _event_limits: ObservabilitySignalLimits
+var _log_limits: ObservabilitySignalLimits?
+var _metric_limits: ObservabilitySignalLimits?
+var _redaction_policy: ObservabilityRedactionPolicy
 
 
 ## Creates configuration with enabled metadata, copied attributes, and opaque provider options.
@@ -105,6 +116,15 @@ func _init(
 		p_attach_game_log: bool = false,
 		p_attach_screenshot: bool = false,
 		p_attach_scene_tree: bool = false,
+		p_event_sample_rate: float = 1.0,
+		p_log_sample_rate: float = 1.0,
+		p_event_processors: Array[Callable] = [],
+		p_log_processors: Array[Callable] = [],
+		p_metric_processors: Array[Callable] = [],
+		p_event_limits: ObservabilitySignalLimits? = null,
+		p_log_limits: ObservabilitySignalLimits? = null,
+		p_metric_limits: ObservabilitySignalLimits? = null,
+		p_redaction_policy: ObservabilityRedactionPolicy? = null,
 ) -> void:
 	enabled = p_enabled
 	environment = p_environment
@@ -136,9 +156,24 @@ func _init(
 	attach_game_log = p_attach_game_log
 	attach_screenshot = p_attach_screenshot
 	attach_scene_tree = p_attach_scene_tree
+	event_sample_rate = p_event_sample_rate
+	log_sample_rate = p_log_sample_rate
 	_global_attributes = p_global_attributes.duplicate(true)
 	_provider_options = p_provider_options.duplicate(true)
 	_automatic_message_filter_prefixes = p_automatic_message_filter_prefixes.duplicate()
+	_event_processors = _copy_processors(p_event_processors)
+	_log_processors = _copy_processors(p_log_processors)
+	_metric_processors = _copy_processors(p_metric_processors)
+	_event_limits = ObservabilitySignalLimits.new(
+			automatic_events_per_frame,
+			automatic_repeated_error_window_msec,
+			automatic_event_throttle_count,
+			automatic_event_throttle_window_msec,
+	) if p_event_limits == null else p_event_limits.duplicate()
+	_log_limits = null if p_log_limits == null else p_log_limits.duplicate()
+	_metric_limits = null if p_metric_limits == null else p_metric_limits.duplicate()
+	_redaction_policy = ObservabilityRedactionPolicy.new() \
+			if p_redaction_policy == null else p_redaction_policy.duplicate()
 
 
 ## Returns a deep copy of attributes applied by provider integrations.
@@ -154,3 +189,45 @@ func provider_options() -> Dictionary:
 ## Returns copied prefixes excluded from automatic output-message capture.
 func automatic_message_filter_prefixes() -> PackedStringArray:
 	return _automatic_message_filter_prefixes.duplicate()
+
+
+## Returns copied event processors for later atomic configuration validation.
+func event_processors() -> Array[Callable]:
+	return _copy_processors(_event_processors)
+
+
+## Returns copied log processors for later atomic configuration validation.
+func log_processors() -> Array[Callable]:
+	return _copy_processors(_log_processors)
+
+
+## Returns copied metric processors for later atomic configuration validation.
+func metric_processors() -> Array[Callable]:
+	return _copy_processors(_metric_processors)
+
+
+## Returns a copy of the effective event limits.
+func event_limits() -> ObservabilitySignalLimits:
+	return _event_limits.duplicate()
+
+
+## Returns copied log limits, or null when log limits are disabled.
+func log_limits() -> ObservabilitySignalLimits?:
+	return null if _log_limits == null else _log_limits.duplicate()
+
+
+## Returns copied metric limits, or null when metric limits are disabled.
+func metric_limits() -> ObservabilitySignalLimits?:
+	return null if _metric_limits == null else _metric_limits.duplicate()
+
+
+## Returns a copy of the ordered redaction policy.
+func redaction_policy() -> ObservabilityRedactionPolicy:
+	return _redaction_policy.duplicate()
+
+
+func _copy_processors(source: Array[Callable]) -> Array[Callable]:
+	var copied: Array[Callable] = []
+	for processor: Callable in source:
+		copied.append(processor)
+	return copied
