@@ -142,7 +142,18 @@ applicable capture, including a capture with no failures. Calls that do not
 produce an event envelope—structured logs, metrics, feedback, flush, and scope
 mutations—do not replace the list.
 
-The optional provider contract mirrors those four methods. Providers generate
+The optional provider contract uses:
+
+```text
+add_attachment(attachment: ObservabilityAttachment) -> String
+remove_attachment(handle: String) -> int
+clear_attachments() -> bool
+last_attachment_failures() -> Array
+```
+
+The capability returns an engine `Error` from removal so the public service can
+distinguish `Error.OK`, `Error.ERR_DOES_NOT_EXIST`, and a provider failure while
+still exposing the convenient boolean public result. Providers generate
 handles because they own attachment state and session lifecycle.
 
 The service follows existing error conventions:
