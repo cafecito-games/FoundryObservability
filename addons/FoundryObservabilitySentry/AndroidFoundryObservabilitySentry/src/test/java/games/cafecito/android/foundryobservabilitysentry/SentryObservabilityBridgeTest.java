@@ -422,6 +422,8 @@ public class SentryObservabilityBridgeTest {
   @Test
   public void replaceAttachmentsIsCompleteAtomicAndOwnerGuarded() {
     SentryObservabilityBridge first = configuredBridge();
+    currentScope().addAttachment(
+        new Attachment(new byte[] {8}, "current-only.bin"));
     Object[] initial = {
         attachmentPayload("first.bin", new byte[] {1}),
         Map.of(
@@ -434,6 +436,9 @@ public class SentryObservabilityBridgeTest {
     assertTrue(first.replaceAttachments(initial));
     assertEquals(
         List.of("first.bin", "second.txt"),
+        attachmentFilenames(globalScope()));
+    assertEquals(
+        List.of("current-only.bin"),
         attachmentFilenames(currentScope()));
 
     Object[] malformed = {
@@ -444,14 +449,14 @@ public class SentryObservabilityBridgeTest {
     assertFalse(first.replaceAttachments(malformed));
     assertEquals(
         List.of("first.bin", "second.txt"),
-        attachmentFilenames(currentScope()));
+        attachmentFilenames(globalScope()));
     assertFalse(first.replaceAttachments(new Object[] {
         attachmentPayload("new.bin", new byte[] {2}),
         null
     }));
     assertEquals(
         List.of("first.bin", "second.txt"),
-        attachmentFilenames(currentScope()));
+        attachmentFilenames(globalScope()));
 
     SentryObservabilityBridge replacement = newBridge();
     Dictionary configuration = configuration("replacement-owner");
@@ -460,10 +465,13 @@ public class SentryObservabilityBridgeTest {
         new Object[] {attachmentPayload("stale.bin", new byte[] {9})}));
     assertEquals(
         List.of("first.bin", "second.txt"),
-        attachmentFilenames(currentScope()));
+        attachmentFilenames(globalScope()));
     assertTrue(replacement.replaceAttachments(
         new Object[] {attachmentPayload("current.bin", new byte[] {4})}));
-    assertEquals(List.of("current.bin"), attachmentFilenames(currentScope()));
+    assertEquals(List.of("current.bin"), attachmentFilenames(globalScope()));
+    assertEquals(
+        List.of("current-only.bin"),
+        attachmentFilenames(currentScope()));
 
     replacement.shutdown("replacement-owner");
   }
@@ -473,7 +481,7 @@ public class SentryObservabilityBridgeTest {
     SentryObservabilityBridge bridge = configuredBridge();
     assertTrue(bridge.replaceAttachments(
         new Object[] {attachmentPayload("before-restart.bin", new byte[] {1})}));
-    IScope priorScope = currentScope();
+    IScope priorScope = globalScope();
     assertEquals(List.of("before-restart.bin"), attachmentFilenames(priorScope));
 
     Dictionary changed = configuration(OWNER);
@@ -481,10 +489,10 @@ public class SentryObservabilityBridgeTest {
     assertEquals(0, bridge.configure(changed));
 
     assertTrue(priorScope.getAttachments().isEmpty());
-    assertTrue(currentScope().getAttachments().isEmpty());
+    assertTrue(globalScope().getAttachments().isEmpty());
     assertTrue(bridge.replaceAttachments(
         new Object[] {attachmentPayload("before-shutdown.bin", new byte[] {2})}));
-    IScope shutdownScope = currentScope();
+    IScope shutdownScope = globalScope();
 
     bridge.shutdown(OWNER);
 
@@ -538,7 +546,7 @@ public class SentryObservabilityBridgeTest {
           ((Map<?, ?>) scope.getContexts().get("foundry_runtime")).get("scene"));
     }
     assertEquals("InvalidState", capturer.events.get(2).getExceptions().get(0).getType());
-    assertEquals(List.of("global.bin"), attachmentFilenames(currentScope()));
+    assertEquals(List.of("global.bin"), attachmentFilenames(globalScope()));
 
     Dictionary mixed = new Dictionary();
     mixed.put("kind", "message");
@@ -554,7 +562,7 @@ public class SentryObservabilityBridgeTest {
         });
     assertEquals("", bridge.captureWithAttachments(mixed));
     assertEquals(3, capturer.events.size());
-    assertEquals(List.of("global.bin"), attachmentFilenames(currentScope()));
+    assertEquals(List.of("global.bin"), attachmentFilenames(globalScope()));
 
     Dictionary absent = new Dictionary();
     absent.put("kind", "message");
@@ -568,7 +576,7 @@ public class SentryObservabilityBridgeTest {
     assertEquals(
         List.of("global.bin"),
         attachmentFilenames(capturer.scopes.get(4)));
-    assertEquals(List.of("global.bin"), attachmentFilenames(currentScope()));
+    assertEquals(List.of("global.bin"), attachmentFilenames(globalScope()));
 
     bridge.shutdown(OWNER);
   }
@@ -1009,6 +1017,10 @@ public class SentryObservabilityBridgeTest {
     return result.get();
   }
 
+  private static IScope globalScope() {
+    return Sentry.getGlobalScope();
+  }
+
   private static IScope scope(ScopeType scopeType) {
     AtomicReference<IScope> result = new AtomicReference<>();
     Sentry.configureScope(scopeType, result::set);
@@ -1053,7 +1065,7 @@ public class SentryObservabilityBridgeTest {
 
     @Override
     public SentryId capture(SentryEvent event, io.sentry.ScopeCallback callback) {
-      IScope scope = currentScope().clone();
+      IScope scope = globalScope().clone();
       callback.run(scope);
       events.add(event);
       scopes.add(scope);

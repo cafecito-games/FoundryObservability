@@ -88,6 +88,27 @@ dependency_report=$(
 )
 rg -q 'io\.sentry:sentry-android-ndk:8\.50\.1' <<<"$dependency_report" \
 	|| fail "Sentry Android release runtime must include NDK crash handling"
+"$android_source/gradlew" -q -p "$android_source" compileReleaseJavaWithJavac
+bridge_class=$(
+	find "$android_source/build/intermediates/javac/release" \
+		-type f \
+		-path '*/classes/games/cafecito/android/foundryobservabilitysentry/SentryObservabilityBridge.class' \
+		-print -quit
+)
+[[ -n "$bridge_class" ]] || fail "compiled Android bridge class is missing"
+bridge_api=$(javap "$bridge_class")
+rg -Fxq \
+	'  public java.lang.String capture(games.cafecito.foundry.Dictionary);' \
+	<<<"$bridge_api" \
+	|| fail "compiled Android bridge has an incompatible capture signature"
+rg -Fxq \
+	'  public java.lang.String captureWithAttachments(games.cafecito.foundry.Dictionary);' \
+	<<<"$bridge_api" \
+	|| fail "compiled Android bridge has an incompatible attachment capture signature"
+rg -Fxq \
+	'  public boolean replaceAttachments(java.lang.Object[]);' \
+	<<<"$bridge_api" \
+	|| fail "compiled Android bridge has an incompatible attachment replacement signature"
 rg -q '^[[:space:]]*options\.setAnrEnabled\(' "$bridge_source" \
 	|| fail "Android bridge must configure native ANR detection"
 rg -q '^[[:space:]]*options\.setAnrTimeoutIntervalMillis\(' "$bridge_source" \

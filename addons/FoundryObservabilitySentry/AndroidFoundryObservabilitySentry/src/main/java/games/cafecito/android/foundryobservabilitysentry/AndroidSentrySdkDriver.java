@@ -115,15 +115,16 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
   }
 
   static boolean replaceAttachments(List<Attachment> attachments) {
-    boolean[] replaced = {false};
-    Sentry.configureScope(scope -> {
+    IScope scope = Sentry.getGlobalScope();
+    try {
       scope.clearAttachments();
       for (Attachment attachment : attachments) {
         scope.addAttachment(attachment);
       }
-      replaced[0] = true;
-    });
-    return replaced[0];
+      return true;
+    } catch (RuntimeException exception) {
+      return false;
+    }
   }
 
   static boolean replaceFoundryScope(
