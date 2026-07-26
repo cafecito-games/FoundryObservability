@@ -4,6 +4,11 @@ namespace foundry.observability
 class_name ObservabilityProcessingPipeline
 extends RefCounted
 
+## These values intentionally mirror FoundryObservability's metric normalization contract.
+const _MAX_METRIC_NAME_LENGTH: int = 200
+const _MAX_METRIC_UNIT_LENGTH: int = 64
+const _MAX_METRIC_ATTRIBUTE_KEY_LENGTH: int = 200
+
 var _clock: Callable
 var _frame: Callable
 var _redactor: ObservabilityRedactor = ObservabilityRedactor.new()
@@ -54,6 +59,8 @@ func configure(config: ObservabilityConfig? = null) -> int:
 		return Error.ERR_INVALID_DATA
 
 	var candidate_redactor: ObservabilityRedactor = ObservabilityRedactor.new(policy)
+	if not _redactor_accepts_all_signals(candidate_redactor):
+		return Error.ERR_INVALID_DATA
 	var candidate_event_limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new(
 			config.event_sample_rate, event_limits)
 	var candidate_log_limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new(
@@ -405,8 +412,9 @@ func _valid_event(event: ObservabilityEvent, p_signal: StringName) -> bool:
 
 
 func _valid_metric(metric: ObservabilityMetric) -> bool:
-	if metric == null or metric.name().is_empty() or metric.name().strip_edges() != metric.name() \
-			or not is_finite(metric.value()):
+	if metric == null or not _is_valid_metric_name(metric.name()) \
+			or not is_finite(metric.value()) \
+			or not _is_valid_metric_attributes(metric.attributes()):
 		return false
 	if metric.type() < ObservabilityMetricType.COUNTER \
 			or metric.type() > ObservabilityMetricType.DISTRIBUTION:
@@ -414,7 +422,86 @@ func _valid_metric(metric: ObservabilityMetric) -> bool:
 	if metric.type() == ObservabilityMetricType.COUNTER:
 		return metric.value() >= 0.0 and metric.value() == floorf(metric.value()) \
 			and metric.unit().is_empty()
-	return not metric.unit().contains(" ")
+	return _is_valid_metric_unit(metric.unit())
+
+
+## Confirms a candidate policy can redact representative payloads for every signal.
+func _redactor_accepts_all_signals(redactor: ObservabilityRedactor) -> bool:
+	var exception: ObservabilityException = ObservabilityException.new(
+			p_type_name = "Error", p_message = "message", p_stack_trace = "stack",
+			p_attributes = {"attribute": "value"},
+	)
+	var event: ObservabilityEvent = ObservabilityEvent.new(
+			p_kind = &"message", p_message = "message", p_source = &"game",
+			p_attributes = {"attribute": "value"}, p_exception = exception,
+	)
+	var log_event: ObservabilityEvent = ObservabilityEvent.new(
+			p_kind = &"log", p_message = "message", p_source = &"game",
+			p_attributes = {"attribute": "value"},
+	)
+	var metric: ObservabilityMetric = ObservabilityMetric.new(
+			p_name = "metric", p_value = 1.0, p_unit = "unit",
+			p_attributes = {"attribute": "value"},
+	)
+	return redactor.redact_event(event, &"event").get("valid", false) == true \
+			and redactor.redact_event(log_event, &"log").get("valid", false) == true \
+			and redactor.redact_metric(metric).get("valid", false) == true
+
+
+## Mirrors FoundryObservability metric acceptance for pre-redacted and processor result values.
+func _is_valid_metric_name(value: String) -> bool:
+	return not value.is_empty() \
+			and value.length() <= _MAX_METRIC_NAME_LENGTH \
+			and value.strip_edges() == value \
+			and not _has_control_character(value)
+
+
+func _is_valid_metric_unit(value: String) -> bool:
+	return value.length() <= _MAX_METRIC_UNIT_LENGTH \
+			and not _has_control_character(value) \
+			and not _has_whitespace(value)
+
+
+func _is_valid_metric_attributes(attributes: Dictionary) -> bool:
+	for key: Variant in attributes.keys():
+		if not (key is String) and not (key is StringName):
+			return false
+		var key_string: String = str(key)
+		if key_string.is_empty() \
+				or key_string.length() > _MAX_METRIC_ATTRIBUTE_KEY_LENGTH \
+				or key_string.strip_edges() != key_string \
+				or _has_control_character(key_string):
+			return false
+		if not _is_valid_metric_attribute_value(attributes[key]):
+			return false
+	return true
+
+
+func _is_valid_metric_attribute_value(value: Variant) -> bool:
+	if value is bool or value is int or value is String or value is StringName:
+		return true
+	if value is float:
+		return is_finite(value)
+	return false
+
+
+func _has_whitespace(value: String) -> bool:
+	for index: int in range(value.length()):
+		var codepoint: int = value.unicode_at(index)
+		if codepoint == 32 or codepoint == 160 \
+				or (codepoint >= 8192 and codepoint <= 8202) \
+				or codepoint == 8232 or codepoint == 8233 \
+				or codepoint == 8239 or codepoint == 8287 or codepoint == 12288:
+			return true
+	return false
+
+
+func _has_control_character(value: String) -> bool:
+	for index: int in range(value.length()):
+		var codepoint: int = value.unicode_at(index)
+		if codepoint < 32 or codepoint == 127:
+			return true
+	return false
 
 
 func _event_identity(event: ObservabilityEvent, p_signal: StringName) -> String:

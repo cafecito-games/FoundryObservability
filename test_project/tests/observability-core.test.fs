@@ -5618,6 +5618,18 @@ func test_processing_pipeline_configure_is_atomic_and_success_resets_state() -> 
 			p_redaction_policy = ObservabilityRedactionPolicy.new([null]),
 	)
 	Expect.that(pipeline.configure(invalid_rule)).to_equal(Error.ERR_INVALID_DATA)
+	var overlong_path := PackedStringArray()
+	for _index: int in range(ObservabilityRedactor.MAX_RULE_PATH_SEGMENTS + 1):
+		overlong_path.append("segment")
+	var overlong_policy := ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_text(overlong_path, "", "safe"),
+			]),
+	)
+	Expect.that(pipeline.configure(overlong_policy)).to_equal(Error.ERR_INVALID_DATA)
 	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(prior.sequence())
 	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
@@ -5676,6 +5688,153 @@ func test_processing_pipeline_identity_excludes_attributes_but_includes_message(
 	))["accepted"]).to_be_true()
 
 
+func test_processing_pipeline_rejects_event_to_log_processor_crossing() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_processing_event_to_log")],
+			p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+	Expect.that(pipeline.last_diagnostic().processor_index()).to_equal(0)
+	Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
+
+
+func test_processing_pipeline_rejects_invalid_metric_processor_replacements() -> void:
+	var invalid_replacements: Array[Callable] = [
+		Callable(self, "_processing_metric_too_long_name"),
+		Callable(self, "_processing_metric_control_name"),
+		Callable(self, "_processing_metric_control_unit"),
+		Callable(self, "_processing_metric_invalid_unit"),
+		Callable(self, "_processing_metric_invalid_attribute_key"),
+		Callable(self, "_processing_metric_invalid_attribute_value"),
+		Callable(self, "_processing_metric_nonfinite_attribute"),
+	]
+	for processor: Callable in invalid_replacements:
+		var pipeline := ObservabilityProcessingPipeline.new()
+		Expect.that(pipeline.configure(ObservabilityConfig.new(
+				p_global_attributes = {}, p_provider_options = {},
+				p_automatic_message_filter_prefixes = PackedStringArray(),
+				p_event_processors = [], p_log_processors = [],
+				p_metric_processors = [processor],
+				p_metric_limits = ObservabilitySignalLimits.new(),
+		))).to_equal(Error.OK)
+		Expect.that(pipeline.process_metric(ObservabilityMetric.new(
+				p_name = "metric", p_value = 1.0,
+		))["accepted"]).to_be_false()
+		Expect.that(pipeline.last_diagnostic().reason()).to_equal(
+				ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+		Expect.that(pipeline.last_diagnostic().processor_index()).to_equal(0)
+		Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
+
+
+func test_processing_pipeline_reports_metric_processor_drop_and_wrong_type() -> void:
+	var dropped := ObservabilityProcessingPipeline.new()
+	Expect.that(dropped.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [],
+			p_metric_processors = [Callable(self, "_processing_metric_drop")],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(dropped.process_metric(ObservabilityMetric.new(
+			p_name = "metric", p_value = 1.0,
+	))["accepted"]).to_be_false()
+	Expect.that(dropped.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.PROCESSOR)
+	Expect.that(dropped.last_diagnostic().processor_index()).to_equal(0)
+	Expect.that(dropped.last_diagnostic().error()).to_equal(Error.OK)
+
+	var wrong_type := ObservabilityProcessingPipeline.new()
+	Expect.that(wrong_type.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [],
+			p_metric_processors = [Callable(self, "_processing_metric_wrong_type")],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(wrong_type.process_metric(ObservabilityMetric.new(
+			p_name = "metric", p_value = 1.0,
+	))["accepted"]).to_be_false()
+	Expect.that(wrong_type.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+	Expect.that(wrong_type.last_diagnostic().processor_index()).to_equal(0)
+	Expect.that(wrong_type.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
+
+
+func test_processing_pipeline_event_identity_matrix_excludes_attributes_and_scope() -> void:
+	var excluded := _processing_repeated_pipeline()
+	Expect.that(excluded.process_event(ObservabilityEvent.new(
+			p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO,
+			p_message = "same", p_attributes = {"one": 1}, p_scope = ObservabilityScope.new(),
+	))["accepted"]).to_be_true()
+	var changed_scope := ObservabilityScope.new()
+	changed_scope.set_tag("region", "iad")
+	Expect.that(excluded.process_event(ObservabilityEvent.new(
+			p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO,
+			p_message = "same", p_attributes = {"two": 2}, p_scope = changed_scope,
+	))["accepted"]).to_be_false()
+
+	for event: ObservabilityEvent in [
+		ObservabilityEvent.new(p_kind = &"exception", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same"),
+		ObservabilityEvent.new(p_kind = &"message", p_source = &"other", p_level = ObservabilityLevel.INFO, p_message = "same"),
+		ObservabilityEvent.new(p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.WARN, p_message = "same"),
+		ObservabilityEvent.new(p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "other"),
+		ObservabilityEvent.new(p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same", p_attributes = {}, p_exception = ObservabilityException.new("Type", "message", "stack", {})),
+	]:
+		var pipeline := _processing_repeated_pipeline()
+		Expect.that(pipeline.process_event(ObservabilityEvent.new(
+			p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same",
+		))["accepted"]).to_be_true()
+		Expect.that(pipeline.process_event(event)["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_log_and_metric_identity_matrices() -> void:
+	var excluded_log := _processing_repeated_pipeline()
+	Expect.that(excluded_log.process_event(ObservabilityEvent.new(
+			p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO,
+			p_message = "same", p_attributes = {"one": 1}, p_engine_ticks_msec = 1,
+	))["accepted"]).to_be_true()
+	Expect.that(excluded_log.process_event(ObservabilityEvent.new(
+			p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO,
+			p_message = "same", p_attributes = {"two": 2}, p_engine_ticks_msec = 2,
+	))["accepted"]).to_be_false()
+	for event: ObservabilityEvent in [
+		ObservabilityEvent.new(p_kind = &"log", p_source = &"other", p_level = ObservabilityLevel.INFO, p_message = "same"),
+		ObservabilityEvent.new(p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.WARN, p_message = "same"),
+		ObservabilityEvent.new(p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "other"),
+	]:
+		var pipeline := _processing_repeated_pipeline()
+		Expect.that(pipeline.process_event(ObservabilityEvent.new(
+			p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same",
+		))["accepted"]).to_be_true()
+		Expect.that(pipeline.process_event(event)["accepted"]).to_be_true()
+
+	var excluded_metric := _processing_repeated_pipeline()
+	Expect.that(excluded_metric.process_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0,
+			p_unit = "count", p_attributes = {"one": 1},
+	))["accepted"]).to_be_true()
+	Expect.that(excluded_metric.process_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 2.0,
+			p_unit = "count", p_attributes = {"two": 2},
+	))["accepted"]).to_be_false()
+	for metric: ObservabilityMetric in [
+		ObservabilityMetric.new(p_type = ObservabilityMetricType.DISTRIBUTION, p_name = "metric", p_value = 1.0, p_unit = "count"),
+		ObservabilityMetric.new(p_type = ObservabilityMetricType.GAUGE, p_name = "other", p_value = 1.0, p_unit = "count"),
+		ObservabilityMetric.new(p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0, p_unit = "other"),
+	]:
+		var pipeline := _processing_repeated_pipeline()
+		Expect.that(pipeline.process_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0, p_unit = "count",
+		))["accepted"]).to_be_true()
+		Expect.that(pipeline.process_metric(metric)["accepted"]).to_be_true()
+
+
 func _processing_replace_first(event: ObservabilityEvent) -> ObservabilityEvent:
 	_processing_order.append("first")
 	return _processing_event_with_message(event, event.message() + "-first")
@@ -5703,6 +5862,10 @@ func _processing_log_marker(event: ObservabilityEvent) -> ObservabilityEvent:
 
 func _processing_log_to_event(event: ObservabilityEvent) -> ObservabilityEvent:
 	return ObservabilityEvent.new(p_kind = &"message", p_message = event.message())
+
+
+func _processing_event_to_log(event: ObservabilityEvent) -> ObservabilityEvent:
+	return ObservabilityEvent.new(p_kind = &"log", p_message = event.message())
 
 
 func _processing_drop(_event: ObservabilityEvent) -> Variant:
@@ -5740,6 +5903,64 @@ func _processing_metric_marker(metric: ObservabilityMetric) -> ObservabilityMetr
 	_processing_order.append("metric")
 	return ObservabilityMetric.new(
 			metric.type(), metric.name() + "-processed", metric.value(), metric.unit(), metric.attributes())
+
+
+func _processing_metric_drop(_metric: ObservabilityMetric) -> Variant:
+	return null
+
+
+func _processing_metric_wrong_type(_metric: ObservabilityMetric) -> Variant:
+	return ObservabilityEvent.new()
+
+
+func _processing_metric_too_long_name(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(p_name = _repeated("n", 201), p_value = 1.0)
+
+
+func _processing_metric_control_name(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(p_name = "bad\nname", p_value = 1.0)
+
+
+func _processing_metric_invalid_unit(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0,
+			p_unit = "bad\u00a0unit",
+	)
+
+
+func _processing_metric_control_unit(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0,
+			p_unit = "bad\nunit",
+	)
+
+
+func _processing_metric_invalid_attribute_key(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(p_name = "metric", p_value = 1.0, p_attributes = {"bad\nkey": 1})
+
+
+func _processing_metric_invalid_attribute_value(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(p_name = "metric", p_value = 1.0, p_attributes = {"valid": []})
+
+
+func _processing_metric_nonfinite_attribute(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(p_name = "metric", p_value = 1.0, p_attributes = {"valid": NAN})
+
+
+func _processing_repeated_pipeline() -> ObservabilityProcessingPipeline:
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+	)
+	pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(0, 1000),
+			p_log_limits = ObservabilitySignalLimits.new(0, 1000),
+			p_metric_limits = ObservabilitySignalLimits.new(0, 1000),
+	))
+	return pipeline
 
 
 func _processing_reenter_metric(event: ObservabilityEvent) -> ObservabilityEvent:
