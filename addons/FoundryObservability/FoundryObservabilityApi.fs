@@ -19,6 +19,14 @@ abstract func is_available() -> bool
 abstract func provider_name() -> StringName
 ## Returns the most recent stored provider or capture error.
 abstract func last_error() -> int
+## Adds a persistent diagnostic attachment and returns its provider-local handle.
+abstract func add_attachment(attachment: ObservabilityAttachment) -> String
+## Removes a persistent diagnostic attachment by provider-local handle.
+abstract func remove_attachment(handle: String) -> bool
+## Clears all persistent diagnostic attachments.
+abstract func clear_attachments() -> bool
+## Returns isolated failures from the latest attachment-bearing event.
+abstract func last_attachment_failures() -> Array
 ## Captures an event and returns a provider ID, or an empty string on no-op/failure.
 abstract func capture_event(event: ObservabilityEvent) -> String
 ## Creates and captures a game-sourced message event.

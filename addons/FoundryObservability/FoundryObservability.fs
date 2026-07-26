@@ -251,6 +251,108 @@ func last_error() -> int:
 	return _last_error
 
 
+## Adds one persistent diagnostic attachment through an optional provider capability.
+func add_attachment(attachment: ObservabilityAttachment) -> String:
+	if not is_enabled() or _provider == null:
+		return ""
+	if attachment == null or not attachment.is_valid():
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return ""
+	var attachments_provider: ObservabilityProvider? = _attachments_provider()
+	if attachments_provider == null:
+		_last_error = Error.ERR_UNAVAILABLE
+		return ""
+
+	_begin_provider_call()
+	var result: Variant = attachments_provider.call(
+			"add_attachment",
+			attachment,
+	)
+	_end_provider_call()
+	if not (result is String):
+		_last_error = Error.FAILED
+		return ""
+	var handle: String = str(result)
+	if handle.is_empty():
+		_last_error = Error.FAILED
+		return ""
+	_last_error = Error.OK
+	return handle
+
+
+## Removes one persistent diagnostic attachment through an optional provider capability.
+func remove_attachment(handle: String) -> bool:
+	if not is_enabled() or _provider == null:
+		return false
+	if handle.is_empty() or handle.strip_edges() != handle or _has_control_character(handle):
+		_last_error = Error.ERR_INVALID_PARAMETER
+		return false
+	var attachments_provider: ObservabilityProvider? = _attachments_provider()
+	if attachments_provider == null:
+		_last_error = Error.ERR_UNAVAILABLE
+		return false
+
+	_begin_provider_call()
+	var result: Variant = attachments_provider.call("remove_attachment", handle)
+	_end_provider_call()
+	if not (result is int):
+		_last_error = Error.FAILED
+		return false
+	var error: int = result
+	_last_error = error
+	return error == Error.OK
+
+
+## Clears all persistent diagnostic attachments through an optional provider capability.
+func clear_attachments() -> bool:
+	if not is_enabled() or _provider == null:
+		return false
+	var attachments_provider: ObservabilityProvider? = _attachments_provider()
+	if attachments_provider == null:
+		_last_error = Error.ERR_UNAVAILABLE
+		return false
+
+	_begin_provider_call()
+	var result: Variant = attachments_provider.call("clear_attachments")
+	_end_provider_call()
+	if not (result is bool) or not result:
+		_last_error = Error.FAILED
+		return false
+	_last_error = Error.OK
+	return true
+
+
+## Returns isolated failures from the latest attachment-bearing provider event.
+## This diagnostic accessor intentionally leaves last_error unchanged.
+func last_attachment_failures() -> Array:
+	var attachments_provider: ObservabilityProvider? = _attachments_provider()
+	if attachments_provider == null:
+		return []
+	_begin_provider_call()
+	var result: Variant = attachments_provider.call("last_attachment_failures")
+	_end_provider_call()
+	if not (result is Array):
+		return []
+	var failures: Array = []
+	for item: Variant in result:
+		if item is ObservabilityAttachmentFailure:
+			@warning_ignore("unsafe_cast")
+			var failure: ObservabilityAttachmentFailure = item as ObservabilityAttachmentFailure
+			failures.append(failure.duplicate())
+	return failures
+
+
+func _attachments_provider() -> ObservabilityProvider?:
+	if _provider == null:
+		return null
+	if not _provider.has_method("add_attachment") \
+			or not _provider.has_method("remove_attachment") \
+			or not _provider.has_method("clear_attachments") \
+			or not _provider.has_method("last_attachment_failures"):
+		return null
+	return _provider
+
+
 ## Captures an event and returns its provider ID, or an empty string on no-op or failure.
 func capture_event(event: ObservabilityEvent) -> String:
 	if event == null:

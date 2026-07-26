@@ -135,6 +135,25 @@ class NonBooleanScopeProvider extends "res://tests/support/scopeless_observabili
 		return "not a bool"
 
 
+class MalformedAttachmentsProvider extends "res://tests/support/attachmentless_observability_provider.notest.fs":
+	var add_result: Variant = 7
+	var remove_result: Variant = "not an error"
+	var clear_result: Variant = "not a bool"
+	var failures_result: Variant = ["not a failure"]
+
+	func add_attachment(_attachment: ObservabilityAttachment) -> Variant:
+		return add_result
+
+	func remove_attachment(_handle: String) -> Variant:
+		return remove_result
+
+	func clear_attachments() -> Variant:
+		return clear_result
+
+	func last_attachment_failures() -> Variant:
+		return failures_result
+
+
 func test_levels_are_ordered_and_named() -> void:
 	Expect.that(ObservabilityLevel.TRACE).to_be_less_than(ObservabilityLevel.DEBUG)
 	Expect.that(ObservabilityLevel.DEBUG).to_be_less_than(ObservabilityLevel.INFO)
@@ -3979,6 +3998,360 @@ func test_startup_failure_preserves_working_provider_and_diagnostics() -> void:
 	service.shutdown()
 	service.free()
 	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_attachment_service_validates_and_maps_provider_results() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+	))).to_equal(Error.OK)
+	var attachment := ObservabilityAttachment.from_bytes(
+			PackedByteArray([1, 2, 3]),
+			"diagnostics.bin",
+	)
+	Expect.that(attachment).not_().to_be_null()
+	if attachment == null:
+		return
+
+	Expect.that(service.add_attachment(null)).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.add_attachment(ObservabilityAttachment.new())).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	for invalid_handle: String in ["", " padded", "padded ", "bad\nhandle"]:
+		Expect.that(service.remove_attachment(invalid_handle)).to_be_false()
+		Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+
+	var handle: String = service.add_attachment(attachment)
+	Expect.that(handle.begins_with("memory-attachment:")).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.remove_attachment("memory-attachment:missing")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_DOES_NOT_EXIST)
+	Expect.that(service.remove_attachment(handle)).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.remove_attachment(handle)).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_DOES_NOT_EXIST)
+	Expect.that(service.clear_attachments()).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	service.shutdown()
+
+
+func test_attachment_capability_is_optional_and_malformed_results_fail_safely() -> void:
+	var service: FoundryObservability = _service()
+	var attachmentless := AttachmentlessObservabilityProvider.new()
+	Expect.that(service.configure(attachmentless, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+	))).to_equal(Error.OK)
+	var attachment := ObservabilityAttachment.from_bytes(
+			PackedByteArray([7]),
+			"optional.bin",
+	)
+	Expect.that(attachment).not_().to_be_null()
+	if attachment == null:
+		return
+
+	Expect.that(service.add_attachment(attachment)).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(service.remove_attachment("valid-handle")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(service.clear_attachments()).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(service.capture_message("events still work")).to_equal("attachmentless:1")
+
+	var malformed := MalformedAttachmentsProvider.new()
+	Expect.that(service.configure(malformed, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+	))).to_equal(Error.OK)
+	Expect.that(service.add_attachment(attachment)).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	Expect.that(service.remove_attachment("valid-handle")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	Expect.that(service.clear_attachments()).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	var prior_error: int = service.last_error()
+	Expect.that(service.last_attachment_failures()).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(prior_error)
+	Expect.that(service.capture_message("malformed attachments do not block events")).to_equal(
+			"attachmentless:1",
+	)
+	service.shutdown()
+
+
+func test_memory_byte_attachments_persist_snapshot_and_isolate_mutation() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+	))).to_equal(Error.OK)
+	var source: PackedByteArray = PackedByteArray([1, 2, 3])
+	var attachment := ObservabilityAttachment.from_bytes(
+			source,
+			"diagnostics.bin",
+			"application/x-diagnostics",
+			ObservabilityAttachment.VIEW_HIERARCHY_CATEGORY,
+	)
+	Expect.that(attachment).not_().to_be_null()
+	if attachment == null:
+		return
+	var handle: String = service.add_attachment(attachment)
+	source[0] = 99
+
+	Expect.that(service.capture_message("first")).to_equal("memory:1")
+	Expect.that(service.capture_message("second")).to_equal("memory:2")
+	var snapshots: Array[Array] = provider.captured_attachments()
+	Expect.that(snapshots).to_have_size(2)
+	for snapshot: Array in snapshots:
+		Expect.that(snapshot).to_equal([{
+			"bytes": PackedByteArray([1, 2, 3]),
+			"filename": "diagnostics.bin",
+			"content_type": "application/x-diagnostics",
+			"category": ObservabilityAttachment.VIEW_HIERARCHY_CATEGORY,
+			"path": "",
+		}])
+
+	snapshots[0][0]["bytes"][0] = 88
+	snapshots[0][0]["filename"] = "mutated.bin"
+	Expect.that(provider.captured_attachments()[0][0]).to_equal({
+		"bytes": PackedByteArray([1, 2, 3]),
+		"filename": "diagnostics.bin",
+		"content_type": "application/x-diagnostics",
+		"category": ObservabilityAttachment.VIEW_HIERARCHY_CATEGORY,
+		"path": "",
+	})
+
+	Expect.that(service.remove_attachment(handle)).to_be_true()
+	Expect.that(service.capture_message("removed")).to_equal("memory:3")
+	Expect.that(provider.captured_attachments()[2]).to_have_size(0)
+	var second := ObservabilityAttachment.from_bytes(PackedByteArray([4]), "second.bin")
+	Expect.that(second).not_().to_be_null()
+	if second == null:
+		return
+	Expect.that(service.add_attachment(second)).not_().to_equal("")
+	Expect.that(service.clear_attachments()).to_be_true()
+	Expect.that(service.capture_message("cleared")).to_equal("memory:4")
+	Expect.that(provider.captured_attachments()[3]).to_have_size(0)
+	service.shutdown()
+
+
+func test_memory_path_attachments_are_lazy_and_report_isolated_event_failures() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var path: String = "user://foundry-observability-attachment-test.bin"
+	var global_path: String = ProjectSettings.globalize_path(path)
+	DirAccess.remove_absolute(global_path)
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	Expect.that(file).not_().to_be_null()
+	if file == null:
+		return
+	file.store_buffer(PackedByteArray([1, 2]))
+	file.close()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_attachment_bytes = 2,
+	))).to_equal(Error.OK)
+	var attachment := ObservabilityAttachment.from_path(
+			path,
+			"lazy.bin",
+			"application/x-lazy",
+	)
+	Expect.that(attachment).not_().to_be_null()
+	if attachment == null:
+		return
+	var handle: String = service.add_attachment(attachment)
+
+	Expect.that(service.capture_message("accepted")).to_equal("memory:1")
+	Expect.that(provider.captured_attachments()[0][0]["bytes"]).to_equal(
+			PackedByteArray([1, 2]),
+	)
+	Expect.that(provider.captured_attachments()[0][0]["path"]).to_equal(path)
+	Expect.that(service.last_attachment_failures()).to_have_size(0)
+
+	file = FileAccess.open(path, FileAccess.WRITE)
+	Expect.that(file).not_().to_be_null()
+	if file == null:
+		return
+	file.store_buffer(PackedByteArray([3, 4, 5]))
+	file.close()
+	Expect.that(service.capture_message("oversized")).to_equal("memory:2")
+	Expect.that(provider.captured_attachments()[1]).to_have_size(0)
+	var oversized_failures: Array = service.last_attachment_failures()
+	@warning_ignore("unsafe_cast")
+	var oversized_failure: ObservabilityAttachmentFailure = (
+			oversized_failures[0] as ObservabilityAttachmentFailure
+	)
+	Expect.that(oversized_failures).to_have_size(1)
+	Expect.that(oversized_failure.handle()).to_equal(handle)
+	Expect.that(oversized_failure.filename()).to_equal("lazy.bin")
+	Expect.that(oversized_failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.OVERSIZED,
+	)
+	Expect.that(oversized_failure.error()).to_equal(Error.FAILED)
+	var prior_error: int = service.last_error()
+
+	var temporary := ObservabilityAttachment.from_bytes(
+			PackedByteArray([9]),
+			"temporary.bin",
+	)
+	Expect.that(temporary).not_().to_be_null()
+	if temporary == null:
+		return
+	var temporary_handle: String = service.add_attachment(temporary)
+	Expect.that(temporary_handle).not_().to_equal("")
+	Expect.that(service.last_attachment_failures()).to_have_size(1)
+	Expect.that(service.remove_attachment(temporary_handle)).to_be_true()
+	Expect.that(service.last_attachment_failures()).to_have_size(1)
+	Expect.that(service.clear_attachments()).to_be_true()
+	Expect.that(service.last_attachment_failures()).to_have_size(1)
+	handle = service.add_attachment(attachment)
+	Expect.that(handle).not_().to_equal("")
+	Expect.that(service.last_attachment_failures()).to_have_size(1)
+
+	Expect.that(service.capture_feedback(
+			ObservabilityFeedback.new(p_message = "feedback"),
+	)).not_().to_equal("")
+	Expect.that(service.capture_counter("attachment.stability")).to_be_true()
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "breadcrumb"),
+	)).to_be_true()
+	DirAccess.remove_absolute(global_path)
+	Expect.that(service.capture_log("log")).not_().to_equal("")
+	Expect.that(provider.captured_attachments()[2]).to_have_size(0)
+	Expect.that(service.flush()).to_equal(Error.OK)
+	var stable_failures: Array = service.last_attachment_failures()
+	@warning_ignore("unsafe_cast")
+	var stable_failure: ObservabilityAttachmentFailure = (
+			stable_failures[0] as ObservabilityAttachmentFailure
+	)
+	Expect.that(stable_failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.OVERSIZED,
+	)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+
+	oversized_failures[0] = null
+	Expect.that(service.last_attachment_failures()[0]).not_().to_be_null()
+	Expect.that(service.capture_message("missing")).to_equal("memory:4")
+	var missing_failures: Array = service.last_attachment_failures()
+	@warning_ignore("unsafe_cast")
+	var missing_failure: ObservabilityAttachmentFailure = (
+			missing_failures[0] as ObservabilityAttachmentFailure
+	)
+	Expect.that(missing_failures).to_have_size(1)
+	Expect.that(missing_failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.MISSING_FILE,
+	)
+	Expect.that(missing_failure.error()).to_equal(Error.ERR_FILE_NOT_FOUND)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(prior_error).to_equal(Error.OK)
+	service.shutdown()
+
+
+func test_memory_attachment_session_boundaries_are_atomic() -> void:
+	var service: FoundryObservability = _service()
+	var first := MemoryObservabilityProvider.new()
+	var second := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+	)
+	Expect.that(service.configure(first, config)).to_equal(Error.OK)
+	var attachment := ObservabilityAttachment.from_bytes(
+			PackedByteArray([1]),
+			"session.bin",
+	)
+	Expect.that(attachment).not_().to_be_null()
+	if attachment == null:
+		return
+	var original_handle: String = service.add_attachment(attachment)
+
+	first.configure_result = Error.FAILED
+	Expect.that(service.configure(first, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_attachment_bytes = 0,
+	))).to_equal(Error.FAILED)
+	Expect.that(service.capture_message("failed reconfigure preserves")).to_equal("memory:1")
+	Expect.that(first.captured_attachments()[0]).to_have_size(1)
+	Expect.that(service.remove_attachment(original_handle)).to_be_true()
+	var replacement_handle: String = service.add_attachment(attachment)
+
+	first.configure_result = Error.OK
+	Expect.that(service.configure(first, config)).to_equal(Error.OK)
+	Expect.that(service.remove_attachment(replacement_handle)).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_DOES_NOT_EXIST)
+	var current_handle: String = service.add_attachment(attachment)
+	config.enabled = false
+	Expect.that(service.add_attachment(attachment)).to_equal("")
+	Expect.that(service.remove_attachment(current_handle)).to_be_false()
+	Expect.that(service.clear_attachments()).to_be_false()
+	config.enabled = true
+	Expect.that(service.capture_message("disabled operations preserved")).to_equal("memory:2")
+	Expect.that(first.captured_attachments()[1]).to_have_size(1)
+
+	Expect.that(service.configure(second, config)).to_equal(Error.OK)
+	Expect.that(first.remove_attachment(current_handle)).to_equal(Error.FAILED)
+	Expect.that(first.clear_attachments()).to_be_false()
+	Expect.that(service.capture_message("replacement starts empty")).to_equal("memory:1")
+	Expect.that(second.captured_attachments()[0]).to_have_size(0)
+	service.shutdown()
+
+
+func test_memory_attachment_zero_limit_clear_history_and_shutdown_state() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_attachment_bytes = 0,
+	))).to_equal(Error.OK)
+	var empty := ObservabilityAttachment.from_bytes(PackedByteArray(), "empty.bin")
+	var positive := ObservabilityAttachment.from_bytes(PackedByteArray([1]), "positive.bin")
+	Expect.that(empty).not_().to_be_null()
+	Expect.that(positive).not_().to_be_null()
+	if empty == null or positive == null:
+		return
+	Expect.that(service.add_attachment(empty)).not_().to_equal("")
+	Expect.that(service.add_attachment(positive)).not_().to_equal("")
+
+	Expect.that(service.capture_message("zero limit")).to_equal("memory:1")
+	Expect.that(provider.captured_attachments()[0]).to_have_size(1)
+	Expect.that(provider.captured_attachments()[0][0]["filename"]).to_equal("empty.bin")
+	var zero_limit_failures: Array = service.last_attachment_failures()
+	@warning_ignore("unsafe_cast")
+	var zero_limit_failure: ObservabilityAttachmentFailure = (
+			zero_limit_failures[0] as ObservabilityAttachmentFailure
+	)
+	Expect.that(zero_limit_failures).to_have_size(1)
+	Expect.that(zero_limit_failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.OVERSIZED,
+	)
+	provider.clear()
+	Expect.that(provider.captured_attachments()).to_have_size(0)
+	Expect.that(service.capture_message("live attachments remain")).to_equal("memory:2")
+	Expect.that(provider.captured_attachments()[0]).to_have_size(1)
+
+	service.shutdown()
+	Expect.that(provider.remove_attachment("memory-attachment:1")).to_equal(Error.FAILED)
+	Expect.that(provider.clear_attachments()).to_be_false()
+	Expect.that(provider.last_attachment_failures()).to_have_size(0)
 
 
 func _service() -> FoundryObservability:

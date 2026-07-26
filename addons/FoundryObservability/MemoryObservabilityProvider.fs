@@ -3,7 +3,9 @@ namespace foundry.observability
 ## Deterministic provider for tests and local integration work.
 class_name MemoryObservabilityProvider
 extends RefCounted
-uses ObservabilityProvider, ObservabilityMetricsProvider, ObservabilityBreadcrumbsProvider, ObservabilityScopeProvider
+uses ObservabilityProvider, ObservabilityMetricsProvider, ObservabilityBreadcrumbsProvider, ObservabilityScopeProvider, ObservabilityAttachmentsProvider
+
+const DEFAULT_MAX_ATTACHMENT_BYTES: int = 20 * 1024 * 1024
 
 ## Result returned by the next configure call.
 var configure_result: int = Error.OK
@@ -20,6 +22,9 @@ var metric_capture_result: bool = true
 
 var _events: Array[ObservabilityEvent] = []
 var _captured_scopes: Array[Dictionary] = []
+var _attachments: Dictionary = {}
+var _captured_attachments: Array[Array] = []
+var _last_attachment_failures: Array[ObservabilityAttachmentFailure] = []
 var _breadcrumbs: Array[ObservabilityBreadcrumb] = []
 var _feedback: Array[ObservabilityFeedback] = []
 var _metrics: Array[ObservabilityMetric] = []
@@ -27,7 +32,9 @@ var _scope: ObservabilityScope = ObservabilityScope.new()
 var _user: ObservabilityUser? = null
 var _max_breadcrumbs: int = 100
 var _event_sequence: int = 0
+var _attachment_sequence: int = 0
 var _feedback_sequence: int = 0
+var _max_attachment_bytes: int = DEFAULT_MAX_ATTACHMENT_BYTES
 var _enabled: bool = false
 var _shutdown: bool = false
 
@@ -49,7 +56,10 @@ func configure(config: ObservabilityConfig) -> int:
 	_scope = ObservabilityScope.new()
 	_user = null
 	_breadcrumbs.clear()
+	_attachments.clear()
+	_last_attachment_failures.clear()
 	_max_breadcrumbs = maxi(0, config.max_breadcrumbs)
+	_max_attachment_bytes = maxi(0, config.max_attachment_bytes)
 	_enabled = config.enabled
 	_shutdown = false
 	return Error.OK
@@ -59,6 +69,10 @@ func configure(config: ObservabilityConfig) -> int:
 func capture(event: ObservabilityEvent) -> String:
 	if event == null or not _enabled or _shutdown:
 		return ""
+	var attachment_snapshot: Array = []
+	if event.kind() != &"log":
+		_last_attachment_failures.clear()
+		attachment_snapshot = _materialize_attachments()
 	var effective_tags: Dictionary = _scope.tags()
 	var effective_contexts: Dictionary = _scope.contexts()
 	var event_scope: ObservabilityScope? = event.scope()
@@ -83,8 +97,138 @@ func capture(event: ObservabilityEvent) -> String:
 	}
 	_events.append(event)
 	_captured_scopes.append(captured_scope)
+	_captured_attachments.append(attachment_snapshot)
 	_event_sequence += 1
 	return "memory:%s" % _event_sequence
+
+
+## Retains a defensive attachment value for subsequent event captures.
+func add_attachment(attachment: ObservabilityAttachment) -> String:
+	if not _enabled or _shutdown or attachment == null or not attachment.is_valid():
+		return ""
+	_attachment_sequence += 1
+	var handle: String = "memory-attachment:%s" % _attachment_sequence
+	_attachments[handle] = attachment.duplicate()
+	return handle
+
+
+## Removes a retained attachment, distinguishing inactive and unknown handles.
+func remove_attachment(handle: String) -> int:
+	if not _enabled or _shutdown:
+		return Error.FAILED
+	if not _attachments.has(handle):
+		return Error.ERR_DOES_NOT_EXIST
+	_attachments.erase(handle)
+	return Error.OK
+
+
+## Clears all retained attachments while the provider is active.
+func clear_attachments() -> bool:
+	if not _enabled or _shutdown:
+		return false
+	_attachments.clear()
+	return true
+
+
+## Returns isolated attachment failures from the latest captured event.
+func last_attachment_failures() -> Array:
+	var failures: Array = []
+	for failure: ObservabilityAttachmentFailure in _last_attachment_failures:
+		failures.append(failure.duplicate())
+	return failures
+
+
+func _materialize_attachments() -> Array:
+	var snapshot: Array = []
+	for handle: String in _attachments:
+		var attachment: ObservabilityAttachment = _attachments[handle]
+		var bytes: PackedByteArray = attachment.bytes()
+		if attachment.is_path():
+			var materialized: Dictionary = _read_attachment_path(handle, attachment)
+			if not materialized["accepted"]:
+				continue
+			bytes = materialized["bytes"]
+		elif bytes.size() > _max_attachment_bytes:
+			_append_attachment_failure(
+					handle,
+					attachment,
+					ObservabilityAttachmentFailure.OVERSIZED,
+					Error.FAILED,
+			)
+			continue
+		snapshot.append({
+			"bytes": bytes.duplicate(),
+			"filename": attachment.effective_filename(),
+			"content_type": attachment.content_type(),
+			"category": attachment.category(),
+			"path": attachment.path(),
+		})
+	return snapshot
+
+
+func _read_attachment_path(
+		handle: String,
+		attachment: ObservabilityAttachment,
+) -> Dictionary:
+	var original_path: String = attachment.path()
+	var readable_path: String = original_path
+	if readable_path.begins_with("user://"):
+		readable_path = ProjectSettings.globalize_path(readable_path)
+	if not FileAccess.file_exists(readable_path):
+		_append_attachment_failure(
+				handle,
+				attachment,
+				ObservabilityAttachmentFailure.MISSING_FILE,
+				Error.ERR_FILE_NOT_FOUND,
+		)
+		return {"accepted": false}
+	var file: FileAccess = FileAccess.open(readable_path, FileAccess.READ)
+	if file == null:
+		_append_attachment_failure(
+				handle,
+				attachment,
+				ObservabilityAttachmentFailure.UNREADABLE_FILE,
+				Error.ERR_FILE_CANT_OPEN,
+		)
+		return {"accepted": false}
+	var length: int = file.get_length()
+	if length > _max_attachment_bytes:
+		file.close()
+		_append_attachment_failure(
+				handle,
+				attachment,
+				ObservabilityAttachmentFailure.OVERSIZED,
+				Error.FAILED,
+		)
+		return {"accepted": false}
+	var bytes: PackedByteArray = file.get_buffer(length)
+	file.close()
+	if bytes.size() != length:
+		_append_attachment_failure(
+				handle,
+				attachment,
+				ObservabilityAttachmentFailure.UNREADABLE_FILE,
+				Error.ERR_FILE_CANT_READ,
+		)
+		return {"accepted": false}
+	return {
+		"accepted": true,
+		"bytes": bytes,
+	}
+
+
+func _append_attachment_failure(
+		handle: String,
+		attachment: ObservabilityAttachment,
+		reason: StringName,
+		error: int,
+) -> void:
+	_last_attachment_failures.append(ObservabilityAttachmentFailure.new(
+			handle,
+			attachment.effective_filename(),
+			reason,
+			error,
+	))
 
 
 ## Stores a breadcrumb within the configured bound when enabled.
@@ -214,7 +358,10 @@ func shutdown() -> void:
 	_scope = ObservabilityScope.new()
 	_user = null
 	_breadcrumbs.clear()
+	_attachments.clear()
+	_last_attachment_failures.clear()
 	_max_breadcrumbs = 100
+	_max_attachment_bytes = DEFAULT_MAX_ATTACHMENT_BYTES
 	shutdown_count += 1
 
 
@@ -226,6 +373,11 @@ func events() -> Array[ObservabilityEvent]:
 ## Returns defensive effective scope snapshots aligned with captured events.
 func captured_scopes() -> Array[Dictionary]:
 	return _captured_scopes.duplicate(true)
+
+
+## Returns defensive attachment snapshots aligned with captured events.
+func captured_attachments() -> Array[Array]:
+	return _captured_attachments.duplicate(true)
 
 
 ## Returns a shallow copy of captured breadcrumbs.
@@ -247,6 +399,7 @@ func metrics() -> Array[ObservabilityMetric]:
 func clear() -> void:
 	_events.clear()
 	_captured_scopes.clear()
+	_captured_attachments.clear()
 
 
 ## Removes captured breadcrumbs without changing provider configuration.

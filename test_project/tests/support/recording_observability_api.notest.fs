@@ -44,6 +44,22 @@ func last_error() -> int:
 	return Error.OK
 
 
+func add_attachment(_attachment: ObservabilityAttachment) -> String:
+	return "recording-attachment:1"
+
+
+func remove_attachment(_handle: String) -> bool:
+	return true
+
+
+func clear_attachments() -> bool:
+	return true
+
+
+func last_attachment_failures() -> Array:
+	return []
+
+
 func capture_event(event: ObservabilityEvent) -> String:
 	captured_events.append(event)
 	return "event:1"
