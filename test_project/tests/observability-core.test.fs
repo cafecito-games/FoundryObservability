@@ -1981,7 +1981,7 @@ func test_redactor_attachment_payload_matches_native_mapper_contract() -> void:
 		},
 		{"filename": "a", "category": "event.attachment", "path": ""},
 		{"filename": "a", "category": "event.attachment", "path": "relative/a"},
-		{"filename": "a", "category": "event.attachment", "bytes": PackedByteArray()},
+		{"filename": "a", "category": "event.attachment", "bytes": [1, 2]},
 		{"filename": "", "category": "event.attachment", "path": "/tmp/a"},
 		{"filename": "a", "category": "", "path": "/tmp/a"},
 		{"filename": "a", "category": "other", "path": "/tmp/a"},
@@ -2008,6 +2008,20 @@ func test_redactor_attachment_payload_matches_native_mapper_contract() -> void:
 		"filename": "path.log",
 		"category": "event.attachment",
 		"path": "/tmp/path.log",
+	})
+
+	var empty_bytes_result: Dictionary = redactor.redact_attachment_payload({
+		"filename": "empty.bin",
+		"category": "event.attachment",
+		"bytes": PackedByteArray(),
+	})
+	Expect.that(empty_bytes_result).to_equal({
+		"valid": true,
+		"value": {
+			"filename": "empty.bin",
+			"category": "event.attachment",
+			"bytes": PackedByteArray(),
+		},
 	})
 
 	var source_bytes := PackedByteArray([1, 2, 3])
@@ -2053,6 +2067,30 @@ func test_redactor_reports_latest_effective_rule_for_invalid_metadata() -> void:
 		).redact_attachment_payload(source)
 	Expect.that(no_op_result["valid"]).to_be_true()
 	Expect.that(no_op_result["value"]["filename"]).to_equal("safe.log")
+
+	var mixed_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["attachments", "content_type"]),
+			),
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["attachments", "category"]),
+				"invalid",
+			),
+	])
+	var mixed_result: Dictionary = ObservabilityRedactor.new(
+			mixed_policy,
+		).redact_attachment_payload(source)
+	Expect.that(mixed_result).to_equal({"valid": false, "rule_index": 1})
+
+	var removal_only_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["attachments", "filename"]),
+			),
+	])
+	var removal_only_result: Dictionary = ObservabilityRedactor.new(
+			removal_only_policy,
+		).redact_attachment_payload(source)
+	Expect.that(removal_only_result).to_equal({"valid": false, "rule_index": 0})
 
 
 func test_redactor_fails_closed_on_adversarial_rule_paths() -> void:

@@ -440,9 +440,11 @@ func _redact_value(
 				active_containers.pop_back()
 				return child_result
 			if child_result.get("removed", false) == true:
-				if removed_rule_index < 0:
-					@warning_ignore("unsafe_call_argument")
-					removed_rule_index = int(child_result.get("rule_index", -1))
+				@warning_ignore("unsafe_call_argument")
+				removed_rule_index = maxi(
+						removed_rule_index,
+						int(child_result.get("rule_index", -1)),
+					)
 				continue
 			rebuilt_dictionary[_copy_dictionary_key(key)] = child_result["value"]
 			if child_result.get("rule_index", -1) >= 0:
@@ -451,11 +453,12 @@ func _redact_value(
 						applied_rule_index,
 						int(child_result["rule_index"]),
 					)
-			if removed_rule_index < 0 \
-					and child_result.get("removed_rule_index", -1) >= 0:
+			if child_result.get("removed_rule_index", -1) >= 0:
 				@warning_ignore("unsafe_call_argument")
-				removed_rule_index = int(
-						child_result.get("removed_rule_index", -1))
+				removed_rule_index = maxi(
+						removed_rule_index,
+						int(child_result.get("removed_rule_index", -1)),
+					)
 		active_containers.pop_back()
 		return _traversal_success(
 				rebuilt_dictionary,
@@ -710,9 +713,7 @@ func _valid_attachment_payload_source(payload: Dictionary) -> bool:
 		return payload["path"] is String \
 				and not str(payload["path"]).is_empty() \
 				and str(payload["path"]).begins_with("/")
-	@warning_ignore("unsafe_cast")
-	return payload["bytes"] is PackedByteArray \
-			and not (payload["bytes"] as PackedByteArray).is_empty()
+	return payload["bytes"] is PackedByteArray
 
 
 func _valid_attachment_payload_metadata(payload: Dictionary) -> bool:
@@ -777,10 +778,10 @@ func _copy_leaf(value: Variant) -> Variant:
 
 func _typed_failure(redacted: Dictionary) -> Dictionary:
 	@warning_ignore("unsafe_call_argument")
-	return _failure(int(redacted.get(
-			"removed_rule_index",
-			redacted.get("rule_index", -1),
-		)))
+	var applied_rule_index: int = int(redacted.get("rule_index", -1))
+	@warning_ignore("unsafe_call_argument")
+	var removed_rule_index: int = int(redacted.get("removed_rule_index", -1))
+	return _failure(maxi(applied_rule_index, removed_rule_index))
 
 
 func _failure(rule_index: int) -> Dictionary:
