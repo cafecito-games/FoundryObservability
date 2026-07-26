@@ -1057,10 +1057,12 @@ After native configure succeeds, an empty-scope reset failure uses the same
 preservation-safety rule and also requires successful rollback of the committed
 configuration and scope. Breadcrumb-clear recovery is narrower: the result
 must be the exact boolean `false`, the prior committed session must be enabled,
-the candidate must be deeply equivalent, and configuration/scope rollback
-must succeed. A malformed clear result, an unsafe materially changed
-breadcrumb-capable session, or any unsuccessful or unprovable restoration
-fails closed. A later valid configure can establish a fresh session.
+configuration/scope rollback must succeed, and the preservation-safety rule
+must hold: either no live fully breadcrumb-capable prior session existed or the
+candidate is deeply equivalent. A malformed clear result, an unsafe materially
+changed breadcrumb-capable session, or any unsuccessful or unprovable
+restoration fails closed. A later valid configure can establish a fresh
+session.
 
 When the enabled provider is `SentryObservabilityProvider`, a missing native
 bridge or a bridge without lifecycle contract version 1 returns
@@ -1654,12 +1656,13 @@ native startup, the required empty-scope reset, and adapter breadcrumb clearing
 all succeed. Scope-reset failure uses the same preservation-safety rule as an
 integer configure error and additionally requires successful rollback of the
 committed configuration and scope. Breadcrumb-clear rollback requires an exact
-boolean `false`, a prior enabled committed session, deeply equivalent
-configuration, and successful configuration/scope rollback. A malformed
-clear, an unsafe materially changed breadcrumb-capable session, or any
-unsuccessful or unprovable restoration shuts down the owner and fails closed:
-availability, capture, scope mutation, and breadcrumb operations remain
-disabled until a later successful configure.
+boolean `false`, a prior enabled committed session, successful
+configuration/scope rollback, and the preservation-safety rule: either no live
+fully breadcrumb-capable prior session existed or the candidate is deeply
+equivalent. A malformed clear, an unsafe materially changed breadcrumb-capable
+session, or any unsuccessful or unprovable restoration shuts down the owner
+and fails closed: availability, capture, scope mutation, and breadcrumb
+operations remain disabled until a later successful configure.
 
 Enabled configuration returns `Error.ERR_UNAVAILABLE` if the native bridge is
 missing or too old. After `Error.OK`, use
