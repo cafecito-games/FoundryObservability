@@ -1480,6 +1480,44 @@ func test_redaction_rules_copy_nested_packed_replacements() -> void:
 	])
 
 
+func test_redaction_rules_reject_cyclic_replacements_without_retaining_payloads() -> void:
+	var path := PackedStringArray(["payload"])
+	var self_cycle: Dictionary = {}
+	self_cycle["self"] = self_cycle
+	var self_rule := ObservabilityRedactionRule.replace_value(path, self_cycle)
+	self_cycle["later"] = "source mutation"
+
+	var first: Array = []
+	var second: Dictionary = {"first": first}
+	first.append(second)
+	var mutual_rule := ObservabilityRedactionRule.replace_value(path, first)
+	second["later"] = "source mutation"
+
+	Expect.that(self_rule.is_valid()).to_be_false()
+	Expect.that(self_rule.replacement()).to_be_null()
+	Expect.that(self_rule.duplicate().is_valid()).to_be_false()
+	Expect.that(self_rule.duplicate().replacement()).to_be_null()
+	Expect.that(mutual_rule.is_valid()).to_be_false()
+	Expect.that(mutual_rule.replacement()).to_be_null()
+	Expect.that(mutual_rule.duplicate().is_valid()).to_be_false()
+	Expect.that(mutual_rule.duplicate().replacement()).to_be_null()
+
+
+func test_redaction_rules_allow_repeated_acyclic_replacement_containers() -> void:
+	var path := PackedStringArray(["payload"])
+	var shared := {"packed": PackedStringArray(["secret"])}
+	var source: Array = [shared, shared]
+	var rule := ObservabilityRedactionRule.replace_value(path, source)
+	var source_packed: PackedStringArray = shared["packed"]
+	source_packed[0] = "changed"
+
+	Expect.that(rule.is_valid()).to_be_true()
+	Expect.that(rule.replacement()).to_equal([
+			{"packed": PackedStringArray(["secret"])},
+			{"packed": PackedStringArray(["secret"])},
+	])
+
+
 func test_redaction_policy_copies_ordered_rules() -> void:
 	var rules: Array[ObservabilityRedactionRule] = [
 			ObservabilityRedactionRule.remove_field(PackedStringArray(["secret"])),

@@ -12,6 +12,7 @@ final var _path: PackedStringArray
 final var _action: int
 final var _pattern: String
 final var _replacement: Variant
+final var _replacement_is_cyclic: bool
 
 
 func _init(
@@ -19,11 +20,14 @@ func _init(
 		p_action: int = REMOVE_FIELD,
 		p_pattern: String = "",
 		p_replacement: Variant = null,
+		p_replacement_is_cyclic: bool = false,
 ) -> void:
 	_path = p_path.duplicate()
 	_action = p_action
 	_pattern = p_pattern
-	_replacement = _copy_replacement(p_replacement)
+	var copied: Dictionary = _copy_replacement(p_replacement, [])
+	_replacement_is_cyclic = p_replacement_is_cyclic or not copied["valid"]
+	_replacement = null if _replacement_is_cyclic else copied["value"]
 
 
 static func remove_field(p_path: PackedStringArray) -> ObservabilityRedactionRule:
@@ -66,15 +70,24 @@ func pattern() -> String:
 
 
 func replacement() -> Variant:
-	return _copy_replacement(_replacement)
+	if _replacement_is_cyclic:
+		return null
+	var copied: Dictionary = _copy_replacement(_replacement, [])
+	return null if not copied["valid"] else copied["value"]
 
 
 func duplicate() -> ObservabilityRedactionRule:
-	return ObservabilityRedactionRule.new(_path, _action, _pattern, _replacement)
+	return ObservabilityRedactionRule.new(
+			_path,
+			_action,
+			_pattern,
+			_replacement,
+			_replacement_is_cyclic,
+	)
 
 
 func is_valid() -> bool:
-	if not _is_valid_path() or not _is_valid_action():
+	if _replacement_is_cyclic or not _is_valid_path() or not _is_valid_action():
 		return false
 	if _action == REMOVE_FIELD or _action == REPLACE_VALUE:
 		return _pattern.is_empty()
@@ -99,35 +112,58 @@ func _is_valid_action() -> bool:
 			or _action == REPLACE_TEXT
 
 
-func _copy_replacement(value: Variant) -> Variant:
+func _copy_replacement(value: Variant, active_containers: Array) -> Dictionary:
 	if value is Dictionary:
+		if _is_active_container(value, active_containers):
+			return {"valid": false}
+		active_containers.append(value)
 		var copied: Dictionary = value.duplicate()
 		for key: Variant in value:
-			copied[key] = _copy_replacement(value[key])
-		return copied
+			var nested: Dictionary = _copy_replacement(value[key], active_containers)
+			if not nested["valid"]:
+				active_containers.pop_back()
+				return {"valid": false}
+			copied[key] = nested["value"]
+		active_containers.pop_back()
+		return {"valid": true, "value": copied}
 	if value is Array:
+		if _is_active_container(value, active_containers):
+			return {"valid": false}
+		active_containers.append(value)
 		var copied: Array = value.duplicate()
 		for index: int in range(value.size()):
-			copied[index] = _copy_replacement(value[index])
-		return copied
+			var nested: Dictionary = _copy_replacement(value[index], active_containers)
+			if not nested["valid"]:
+				active_containers.pop_back()
+				return {"valid": false}
+			copied[index] = nested["value"]
+		active_containers.pop_back()
+		return {"valid": true, "value": copied}
 	if value is PackedByteArray:
-		return value.duplicate()
+		return {"valid": true, "value": value.duplicate()}
 	if value is PackedInt32Array:
-		return value.duplicate()
+		return {"valid": true, "value": value.duplicate()}
 	if value is PackedInt64Array:
-		return value.duplicate()
+		return {"valid": true, "value": value.duplicate()}
 	if value is PackedFloat32Array:
-		return value.duplicate()
+		return {"valid": true, "value": value.duplicate()}
 	if value is PackedFloat64Array:
-		return value.duplicate()
+		return {"valid": true, "value": value.duplicate()}
 	if value is PackedStringArray:
-		return value.duplicate()
+		return {"valid": true, "value": value.duplicate()}
 	if value is PackedVector2Array:
-		return value.duplicate()
+		return {"valid": true, "value": value.duplicate()}
 	if value is PackedVector3Array:
-		return value.duplicate()
+		return {"valid": true, "value": value.duplicate()}
 	if value is PackedVector4Array:
-		return value.duplicate()
+		return {"valid": true, "value": value.duplicate()}
 	if value is PackedColorArray:
-		return value.duplicate()
-	return value
+		return {"valid": true, "value": value.duplicate()}
+	return {"valid": true, "value": value}
+
+
+func _is_active_container(value: Variant, active_containers: Array) -> bool:
+	for active_container: Variant in active_containers:
+		if is_same(value, active_container):
+			return true
+	return false

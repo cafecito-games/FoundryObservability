@@ -204,10 +204,13 @@ done
 rg -q '^func processing_signal\(\) -> StringName:$' \
 	"$addon/ObservabilityProcessingDiagnostic.fs" \
 	|| fail "ObservabilityProcessingDiagnostic must expose processing_signal()"
-rg -Fq 'copied[key] = _copy_replacement(value[key])' \
+rg -Fq '_is_active_container(value, active_containers)' \
+	"$addon/ObservabilityRedactionRule.fs" \
+	|| fail "ObservabilityRedactionRule must detect active replacement containers"
+rg -Fq '_copy_replacement(value[key], active_containers)' \
 	"$addon/ObservabilityRedactionRule.fs" \
 	|| fail "ObservabilityRedactionRule must recursively copy dictionary replacement values"
-rg -Fq 'copied[index] = _copy_replacement(value[index])' \
+rg -Fq '_copy_replacement(value[index], active_containers)' \
 	"$addon/ObservabilityRedactionRule.fs" \
 	|| fail "ObservabilityRedactionRule must recursively copy array replacement values"
 for field in _handle _filename _reason _error; do
