@@ -204,6 +204,12 @@ done
 rg -q '^func processing_signal\(\) -> StringName:$' \
 	"$addon/ObservabilityProcessingDiagnostic.fs" \
 	|| fail "ObservabilityProcessingDiagnostic must expose processing_signal()"
+rg -Fq 'copied[key] = _copy_replacement(value[key])' \
+	"$addon/ObservabilityRedactionRule.fs" \
+	|| fail "ObservabilityRedactionRule must recursively copy dictionary replacement values"
+rg -Fq 'copied[index] = _copy_replacement(value[index])' \
+	"$addon/ObservabilityRedactionRule.fs" \
+	|| fail "ObservabilityRedactionRule must recursively copy array replacement values"
 for field in _handle _filename _reason _error; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityAttachmentFailure.fs" \
 		|| fail "ObservabilityAttachmentFailure field must be immutable: ${field}"

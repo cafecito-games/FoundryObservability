@@ -101,9 +101,15 @@ func _is_valid_action() -> bool:
 
 func _copy_replacement(value: Variant) -> Variant:
 	if value is Dictionary:
-		return value.duplicate(true)
+		var copied: Dictionary = value.duplicate()
+		for key: Variant in value:
+			copied[key] = _copy_replacement(value[key])
+		return copied
 	if value is Array:
-		return value.duplicate(true)
+		var copied: Array = value.duplicate()
+		for index: int in range(value.size()):
+			copied[index] = _copy_replacement(value[index])
+		return copied
 	if value is PackedByteArray:
 		return value.duplicate()
 	if value is PackedInt32Array:

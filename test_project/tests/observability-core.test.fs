@@ -1454,6 +1454,32 @@ func test_redaction_rules_copy_packed_replacements() -> void:
 			PackedColorArray([Color(0.1, 0.2, 0.3, 0.4)]))
 
 
+func test_redaction_rules_copy_nested_packed_replacements() -> void:
+	var path := PackedStringArray(["payload"])
+	var dictionary_source := {"packed": PackedStringArray(["dictionary secret"])}
+	var dictionary_rule := ObservabilityRedactionRule.replace_value(path, dictionary_source)
+	var dictionary_input_packed: PackedStringArray = dictionary_source["packed"]
+	dictionary_input_packed[0] = "changed input"
+	var dictionary_exposed: Dictionary = dictionary_rule.replacement()
+	var dictionary_exposed_packed: PackedStringArray = dictionary_exposed["packed"]
+	dictionary_exposed_packed[0] = "changed output"
+
+	var array_source: Array = [PackedStringArray(["array secret"])]
+	var array_rule := ObservabilityRedactionRule.replace_value(path, array_source)
+	var array_input_packed: PackedStringArray = array_source[0]
+	array_input_packed[0] = "changed input"
+	var array_exposed: Array = array_rule.replacement()
+	var array_exposed_packed: PackedStringArray = array_exposed[0]
+	array_exposed_packed[0] = "changed output"
+
+	Expect.that(dictionary_rule.replacement()).to_equal({
+			"packed": PackedStringArray(["dictionary secret"]),
+	})
+	Expect.that(array_rule.replacement()).to_equal([
+			PackedStringArray(["array secret"]),
+	])
+
+
 func test_redaction_policy_copies_ordered_rules() -> void:
 	var rules: Array[ObservabilityRedactionRule] = [
 			ObservabilityRedactionRule.remove_field(PackedStringArray(["secret"])),
