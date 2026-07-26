@@ -26,7 +26,7 @@ single shared FoundrySwift runtime; the Sentry extension intentionally does not
 declare or embed another copy. Android uses the Sentry Android bridge and does
 not require FoundrySwift.
 
-The smallest setup is:
+The smallest manual setup is:
 
 ~~~
 import foundry.observability
@@ -48,6 +48,143 @@ FoundryObservability.capture_message("game started")
 FoundryObservability is an autoload, so consumers use the registered global
 service after the editor plugin has enabled it. The service starts with a safe
 NullObservabilityProvider and a disabled configuration.
+
+## Project-settings startup
+
+The preferred Sentry setup is automatic initialization from `project.foundry`.
+The editor plugin registers these settings:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `foundry_observability/startup/auto_init` | `true` | Run project-settings initialization during autoload construction. |
+| `foundry_observability/startup/enabled` | `true` | Enable the resulting observability configuration. |
+| `foundry_observability/startup/skip_editor_play` | `false` | Skip automatic startup when a game is run with the editor feature. |
+| `foundry_observability/startup/skip_debug_exports` | `false` | Skip automatic startup in a debug export. |
+| `foundry_observability/options/dsn` | `""` | Sentry DSN; a nonempty project value overrides `SENTRY_DSN`. |
+| `foundry_observability/options/environment` | `""` | Deployment environment; a nonempty project value overrides `SENTRY_ENVIRONMENT`. |
+| `foundry_observability/options/release` | `""` | Release value or template; a nonempty project value overrides `SENTRY_RELEASE`. |
+| `foundry_observability/options/dist` | `""` | Optional distribution value. |
+| `foundry_observability/options/debug_diagnostics` | `2` (`Auto`) | Sentry diagnostic output: `0` is Off, `1` is On, and `2` follows debug-build state. |
+| `foundry_observability/options/provider_options` | `{}` | Additional data-only options copied into the provider configuration. |
+
+A complete explicit configuration uses normal `project.foundry` section/key
+syntax:
+
+```ini
+[foundry_observability]
+
+startup/auto_init=true
+startup/enabled=true
+startup/skip_editor_play=false
+startup/skip_debug_exports=false
+options/dsn="NON_PRODUCTION_SENTRY_DSN"
+options/environment="production"
+options/release="{app_name}@{app_version}"
+options/dist="store-macos"
+options/debug_diagnostics=2
+options/provider_options={
+"send_default_pii": false
+}
+```
+
+### Deployment value resolution
+
+The DSN, release, and environment each resolve in this order: a nonempty
+project setting, the corresponding `SENTRY_DSN`, `SENTRY_RELEASE`, or
+`SENTRY_ENVIRONMENT` process environment variable, then a deterministic
+default. A DSN has no usable final default, so an unresolved DSN produces the
+`missing_dsn` status. `dist` comes only from the project setting.
+
+The default release is `{app_name}@{app_version}`. The release setting and
+`SENTRY_RELEASE` may contain `{app_name}` and `{app_version}` tokens. Expansion
+is a single pass, so token text inside an application name or version is not
+expanded again. Missing or blank application metadata uses
+`Unknown Foundry project` and `noversion`, producing
+`Unknown Foundry project@noversion` when neither release metadata nor project
+identity is available.
+
+The detected environment is the first matching runtime value:
+
+| Runtime | Environment |
+| --- | --- |
+| Dedicated server | `dedicated_server` |
+| Editor process | `editor_dev` |
+| Game running with the editor feature | `editor_dev_run` |
+| Debug export | `export_debug` |
+| Other export | `export_release` |
+
+### Provider-option validation
+
+`provider_options` accepts only data values: null, booleans, integers, finite
+floats, strings, `StringName` values, arrays, and dictionaries whose keys are
+strings or `StringName` values. Arrays and dictionaries may contain at most
+eight nested containers. Validation examines at most 256 dictionary entries
+and array elements across the complete value, rejects cycles and unsupported
+types, and stores a deep copy.
+
+The typed DSN and diagnostic settings are authoritative. After validation,
+startup overwrites any `provider_options["dsn"]` and
+`provider_options["debug"]` values with the resolved DSN and boolean diagnostic
+value. `Auto` enables diagnostics for debug builds and disables them otherwise.
+
+### Skip decisions and results
+
+Startup applies skip outcomes before acting on a missing DSN, option-validation
+errors, or provider availability, in this order:
+
+1. `auto_init=false` or `enabled=false` produces `disabled`.
+2. Running in the editor process produces `skipped_editor`.
+3. An editor-feature game with `skip_editor_play=true` produces
+   `skipped_editor_play`.
+4. A debug export with `skip_debug_exports=true` produces `skipped_debug`.
+
+These intentional skips return `Error.OK`, leave the null provider active, and
+take precedence over invalid DSN or provider-option values. The startup result
+can be inspected through the provider-neutral public methods:
+
+```foundryscript
+func initialize_from_project_settings() -> int
+func startup_status() -> StringName
+func startup_message() -> String
+```
+
+`initialize_from_project_settings()` rereads all registered settings and
+reruns the startup path. `startup_status()` returns one of the stable values
+below. `startup_message()` returns its concise diagnostic. The error column
+describes the method result and `last_error()` immediately after that startup
+attempt.
+
+| Status | Error result / `last_error()` | Stable message |
+| --- | --- | --- |
+| `not_started` | `Error.OK` | `Startup has not run.` |
+| `initialized` | `Error.OK` | `Startup provider initialized.` |
+| `disabled` | `Error.OK` | `Automatic startup is disabled.` |
+| `skipped_editor` | `Error.OK` | `Automatic startup is skipped in the editor.` |
+| `skipped_editor_play` | `Error.OK` | `Automatic startup is skipped for editor play.` |
+| `skipped_debug` | `Error.OK` | `Automatic startup is skipped for debug exports.` |
+| `missing_dsn` | `Error.ERR_UNCONFIGURED` | `Startup is disabled because no DSN is configured.` |
+| `provider_unavailable` | `Error.ERR_UNAVAILABLE` | `The optional Sentry startup provider is unavailable.` when it cannot be loaded; `Startup provider configuration failed with Error N.` when configuration returns `Error.ERR_UNAVAILABLE`. |
+| `configuration_failed` | `Error.ERR_INVALID_PARAMETER` or the provider's error | `Startup configuration is invalid.`, `Startup configuration contains invalid values.`, or `Startup provider configuration failed with Error N.` |
+
+Automatic startup begins synchronously in the `FoundryObservability` autoload
+constructor. It therefore completes before the main scene and before any
+autoload ordered after `FoundryObservability`; those later hooks may capture
+immediately. Autoloads ordered earlier, engine work before autoload
+construction, and native failures before successful provider configuration are
+outside this ordering guarantee.
+
+Repeated initialization reuses and reconfigures the startup provider instead
+of creating duplicate active providers. A failed reconfiguration updates the
+startup status, message, and error but preserves the previously working
+provider and configuration. Manual `configure()` remains authoritative: game
+code may reconfigure or replace the active provider, and automatic startup does
+not lock it. Calling `initialize_from_project_settings()` later explicitly
+reapplies the project-settings configuration.
+
+`shutdown()` is idempotent and restores the disabled null-provider state. It
+does not erase the latest startup status. A later successful
+`initialize_from_project_settings()` reuses the cached startup provider and
+starts reporting again.
 
 ## Public API index
 
@@ -663,6 +800,9 @@ depending on the concrete autoload class:
 trait_name FoundryObservabilityApi
 
 abstract func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = null) -> int
+abstract func initialize_from_project_settings() -> int
+abstract func startup_status() -> StringName
+abstract func startup_message() -> String
 abstract func is_enabled() -> bool
 abstract func is_available() -> bool
 abstract func provider_name() -> StringName
@@ -1198,11 +1338,14 @@ transport.
 ## Sentry native crash lifecycle
 
 The Sentry provider starts the native SDK when enabled configuration succeeds.
-Call `FoundryObservability.configure(SentryObservabilityProvider.new(), config)`
-at the earliest supported startup boundary, once the DSN and deployment
-metadata are available. This is the first point at which the addon can install
-native crash handlers. A fatal crash in the pre-configuration gap is outside
-the addon's capture boundary and cannot be recovered later.
+Prefer the project-settings startup path, which configures the provider during
+`FoundryObservability` autoload construction. Manual
+`FoundryObservability.configure(SentryObservabilityProvider.new(), config)`
+remains available for targeted setup at the earliest supported startup
+boundary. Successful provider configuration is the first point at which the
+addon can install native crash handlers. A fatal crash in the
+pre-configuration gap is outside the addon's capture boundary and cannot be
+recovered later.
 
 The native startup configuration includes `release`, `environment`, `dist`,
 and scalar global attributes. Global attributes are installed under the

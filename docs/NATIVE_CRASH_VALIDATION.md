@@ -10,7 +10,7 @@ The repository helper requires an explicit
 
 A complete check proves that the native SDK:
 
-1. installs its crash handler after the earliest supported configuration;
+1. installs its crash handler during project-settings initialization;
 2. records a fatal macOS, iOS, or Android failure;
 3. sends the stored event from the previous launch after relaunch; and
 4. assigns the expected release, environment, distribution, attributes,
@@ -22,8 +22,52 @@ documented pre-configuration gap.
 ## Prepare the test build
 
 Build the native artifact for the target and install a debuggable,
-non-production game build. Configure the Sentry provider in the earliest
-startup hook that has access to the DSN and deployment metadata:
+non-production game build. Prefer automatic startup by setting the deployment
+identity in `project.foundry`:
+
+```ini
+[foundry_observability]
+
+startup/auto_init=true
+startup/enabled=true
+options/dsn="NON_PRODUCTION_SENTRY_DSN"
+options/environment="crash-validation"
+options/release="foundry-crash-validation@2026-07-25.1"
+options/dist="local-macos"
+options/debug_diagnostics=2
+options/provider_options={}
+```
+
+Use a target-specific `dist`, but keep the release, environment, distribution,
+DSN, and provider options identical for the crash run and its recovery launch.
+Before triggering the crash, require
+`FoundryObservability.startup_status()` to equal
+`ObservabilityStartupStatus.INITIALIZED` and require
+`FoundryObservability.is_available()`:
+
+```foundryscript
+import foundry.observability
+
+if FoundryObservability.startup_status() \
+		!= ObservabilityStartupStatus.INITIALIZED \
+		or not FoundryObservability.is_available():
+	push_error(
+			"Native crash reporting did not start: %s — %s"
+			% [
+				FoundryObservability.startup_status(),
+				FoundryObservability.startup_message(),
+			],
+		)
+```
+
+Record the status and message. Do not call `flush()` or `shutdown()` as part of
+the crash trigger.
+
+### Targeted manual configuration
+
+Manual `configure()` remains useful when validating a custom configuration or
+global attributes. Set `startup/auto_init=false`, then configure from the
+earliest supported hook:
 
 ```foundryscript
 import foundry.observability
@@ -45,17 +89,13 @@ if result != Error.OK or not FoundryObservability.is_available():
 	push_error("Native crash reporting did not start: %s" % result)
 ```
 
-Use a target-specific `p_dist`, but keep the release, environment, distribution,
-DSN, and global attributes identical for the crash run and its recovery launch.
-Record the configure result and require `is_available()` before triggering the
-crash. Do not call `flush()` or `shutdown()` as part of the crash trigger.
+Keep the complete manual configuration identical across both runs.
 
 ## Two-run protocol
 
 Run 1 is the destructive run:
 
-1. Launch the test build and wait until enabled configuration returns
-   `Error.OK`.
+1. Launch the test build and wait for startup status `initialized`.
 2. Confirm `FoundryObservability.is_available()` is true.
 3. Record the correct PID or Android package, then use the applicable platform
    trigger below.
@@ -64,9 +104,11 @@ Run 1 is the destructive run:
 Run 2 delivers the previous launch:
 
 1. Relaunch normally with the exact same deployment identity.
-2. Configure the Sentry provider at the same early startup boundary.
-3. Keep the game running and network-connected long enough for the native SDK
-   to process and send the stored report.
+2. Confirm project-settings initialization again reaches `initialized` and
+   availability is true.
+3. Keep the game running and network-connected long enough for the native
+   backend to discover, process, and send the durable Run 1 report when it
+   starts during project-settings initialization.
 4. Find the event in the non-production Sentry project and inspect all fields
    in the verification checklist below.
 
@@ -124,7 +166,8 @@ Inspect the delivered fatal event rather than only checking that an issue was
 created:
 
 - The event belongs to the intended release, environment, and distribution.
-- `foundry.global_attributes.validation_run` equals the test run identifier.
+- For targeted manual validation,
+  `foundry.global_attributes.validation_run` equals the test run identifier.
 - The mechanism and fatal level describe a native crash.
 - The stack and crashed thread identify the signaled process.
 - Device, OS, and app contexts match the test target.

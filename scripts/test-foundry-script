@@ -114,6 +114,16 @@ for current_doc in README.md BUILD.md CONTRIBUTING.md CHANGELOG.md docs/API.md; 
 	fi
 done
 
+rg -Fq 'foundry_observability/startup/auto_init' "$repo_root/README.md" \
+	|| fail "README is missing automatic startup setup"
+rg -Fq 'startup_status()' "$repo_root/docs/API.md" \
+	|| fail "API documentation is missing startup status"
+rg -Fq 'before the main scene' "$repo_root/docs/API.md" \
+	|| fail "API documentation is missing startup ordering"
+rg -Fq 'project-settings initialization' \
+	"$repo_root/docs/NATIVE_CRASH_VALIDATION.md" \
+	|| fail "native crash validation is missing project-settings initialization"
+
 rg -Fq '"foundry_engine"' "$sentry_addon/SentryRuntimeContextCollector.fs" \
 	|| fail "Sentry runtime context must use Foundry engine naming"
 
