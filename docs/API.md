@@ -1659,18 +1659,26 @@ Calling the failure accessor itself also leaves `last_error()` unchanged.
 
 ### Built-in attachments and native delivery
 
-`attach_game_log`, `attach_screenshot`, and `attach_scene_tree` are independent, false-by-default opt-ins.
-The game log remains a lazy path attachment. Screenshot capture runs on the main thread, is unavailable headlessly, and may reuse the current frame.
+`attach_game_log`, `attach_screenshot`, and `attach_scene_tree` are independent,
+false-by-default opt-ins. The game log remains a lazy path attachment.
+Screenshot capture runs on the main thread, is unavailable headlessly, and may
+reuse the current frame.
 Scene-tree output is bounded and may contain game-authored names or text.
-Review that output for privacy-sensitive information before enabling it.
+Game logs and screenshots may contain sensitive data. Review every built-in
+payload for privacy-sensitive information before enabling it. Screenshot and
+scene-tree collection can affect frame time.
+Scene-tree collection requires the main thread and an initialized scene tree.
 
-Apple and Android are the supported native attachment targets. Foundry-owned
-absolute and globalized `user://` paths are mirrored to the Sentry global scope,
-so native crashes and ANRs may include them. Capture-local bytes, including
-materialized `res://` resources, screenshots, and scene-tree snapshots, apply
-only to the current Foundry event. The Sentry provider owns its SDK attachment
-collection while configured; applications should not expect direct native SDK
-attachments to coexist with that collection.
+Apple and Android are the supported native attachment targets.
+User-supplied byte attachments, absolute and globalized `user://` paths, and the
+persistent game log are mirrored to the Apple and Android Sentry global scope.
+They may accompany native crashes, Apple app hangs, and Android ANRs.
+Only materialized `res://` bytes and capture-time screenshot or scene-tree
+snapshots remain capture-local. Capture-time screenshots and scene-tree
+snapshots do not accompany recovered native crashes.
+The Sentry provider owns its SDK attachment collection while configured;
+applications should not expect direct native SDK attachments to coexist with
+that collection.
 
 The native SDK owns diagnostic timing and the final attachment race. A lazy
 file can change, disappear, become unreadable, or exceed the native limit after

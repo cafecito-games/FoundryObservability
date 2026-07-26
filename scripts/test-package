@@ -289,8 +289,15 @@ for builtin_contract in \
 	'The game log remains a lazy path attachment.' \
 	'Screenshot capture runs on the main thread, is unavailable headlessly, and may reuse the current frame.' \
 	'Scene-tree output is bounded and may contain game-authored names or text.' \
+	'Game logs and screenshots may contain sensitive data.' \
+	'Screenshot and scene-tree collection can affect frame time.' \
+	'Scene-tree collection requires the main thread and an initialized scene tree.' \
+	'Capture-time screenshots and scene-tree snapshots do not accompany recovered native crashes.' \
 	'Foundry preflight runs independently for each event.' \
 	'Apple and Android are the supported native attachment targets.' \
+	'User-supplied byte attachments, absolute and globalized `user://` paths, and the persistent game log are mirrored to the Apple and Android Sentry global scope.' \
+	'They may accompany native crashes, Apple app hangs, and Android ANRs.' \
+	'Only materialized `res://` bytes and capture-time screenshot or scene-tree snapshots remain capture-local.' \
 	'The native SDK owns diagnostic timing and the final attachment race.'; do
 	rg -Fq "$builtin_contract" <<<"$attachment_docs_flat" \
 		|| fail "API docs are missing built-in attachment contract: $builtin_contract"
