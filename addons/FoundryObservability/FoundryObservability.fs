@@ -8,6 +8,9 @@ uses FoundryObservabilityApi
 const _SENTRY_PROVIDER_PATH: String = (
 	"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs"
 )
+const _OBSERVABILITY_PROVIDER_TRAIT_PATH: String = (
+	"res://addons/FoundryObservability/ObservabilityProvider.fs"
+)
 
 var _provider: ObservabilityProvider
 var _config: ObservabilityConfig
@@ -123,6 +126,8 @@ func _initialize_startup(settings: ObservabilityStartupSettings?) -> int:
 func _load_startup_provider() -> ObservabilityProvider?:
 	if _startup_provider != null:
 		return _startup_provider
+	if _startup_provider_path == _OBSERVABILITY_PROVIDER_TRAIT_PATH:
+		return null
 	if not ResourceLoader.exists(_startup_provider_path):
 		return null
 	var provider_script: Script = ResourceLoader.load(_startup_provider_path) as Script
@@ -130,32 +135,11 @@ func _load_startup_provider() -> ObservabilityProvider?:
 		return null
 	@warning_ignore("unsafe_method_access")
 	var candidate: Variant = provider_script.new()
-	if not (candidate is ObservabilityProvider) \
-			or not _has_startup_provider_contract(candidate):
+	if not (candidate is ObservabilityProvider):
 		return null
 	@warning_ignore("unsafe_cast")
 	_startup_provider = candidate as ObservabilityProvider
 	return _startup_provider
-
-
-func _has_startup_provider_contract(candidate: Variant) -> bool:
-	if not (candidate is Object):
-		return false
-	@warning_ignore("unsafe_cast")
-	var provider_object: Object = candidate as Object
-	for method_name: String in [
-		"provider_name",
-		"is_available",
-		"configure",
-		"capture",
-		"capture_feedback",
-		"flush",
-		"shutdown",
-	]:
-		if not provider_object.has_method(method_name):
-			return false
-	var provider_id: Variant = provider_object.call("provider_name")
-	return provider_id is StringName
 
 
 func _record_startup(

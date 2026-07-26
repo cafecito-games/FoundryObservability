@@ -2483,6 +2483,41 @@ func test_startup_reports_missing_noninstantiable_and_wrong_provider_scripts() -
 		service.free()
 
 
+func test_startup_configures_provider_before_other_provider_behavior() -> void:
+	var service: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+			}),
+			(
+				"res://tests/support/"
+				+ "startup_order_observability_provider.notest.fs"
+			),
+		)
+	var candidate: Variant = service.get("_startup_provider")
+
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.INITIALIZED,
+		)
+	Expect.that(candidate is StartupOrderObservabilityProvider).to_be_true()
+	if not (candidate is StartupOrderObservabilityProvider):
+		service.shutdown()
+		service.free()
+		return
+	@warning_ignore("unsafe_cast")
+	var provider: StartupOrderObservabilityProvider = (
+		candidate as StartupOrderObservabilityProvider
+	)
+	Expect.that(provider.call_order).to_equal([&"configure"])
+	Expect.that(service.provider_name()).to_equal(&"startup_order")
+	Expect.that(provider.call_order).to_equal([
+		&"configure",
+		&"provider_name",
+	])
+
+	service.shutdown()
+	service.free()
+
+
 func test_startup_maps_provider_unavailable_configuration_result() -> void:
 	var bridge := FakeSentryBridge.new()
 	bridge.configure_result = Error.ERR_UNAVAILABLE
