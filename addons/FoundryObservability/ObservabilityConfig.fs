@@ -56,6 +56,14 @@ var android_anr_timeout_msec: int = 5000
 var android_anr_attach_thread_dump: bool = false
 ## Maximum retained breadcrumbs; zero disables breadcrumb storage.
 var max_breadcrumbs: int = 100
+## Maximum accepted attachment payload size; zero disables byte-size acceptance.
+var max_attachment_bytes: int = 20 * 1024 * 1024
+## Attaches the current game log to provider captures when supported.
+var attach_game_log: bool = false
+## Attaches a screenshot to provider captures when supported.
+var attach_screenshot: bool = false
+## Attaches the current scene tree to provider captures when supported.
+var attach_scene_tree: bool = false
 var _global_attributes: Dictionary = {}
 var _provider_options: Dictionary = {}
 var _automatic_message_filter_prefixes: PackedStringArray = PackedStringArray()
@@ -93,6 +101,10 @@ func _init(
 		p_android_anr_timeout_msec: int = 5000,
 		p_android_anr_attach_thread_dump: bool = false,
 		p_max_breadcrumbs: int = 100,
+		p_max_attachment_bytes: int = 20 * 1024 * 1024,
+		p_attach_game_log: bool = false,
+		p_attach_screenshot: bool = false,
+		p_attach_scene_tree: bool = false,
 ) -> void:
 	enabled = p_enabled
 	environment = p_environment
@@ -120,6 +132,10 @@ func _init(
 	android_anr_timeout_msec = maxi(1000, p_android_anr_timeout_msec)
 	android_anr_attach_thread_dump = p_android_anr_attach_thread_dump
 	max_breadcrumbs = maxi(0, p_max_breadcrumbs)
+	max_attachment_bytes = maxi(0, p_max_attachment_bytes)
+	attach_game_log = p_attach_game_log
+	attach_screenshot = p_attach_screenshot
+	attach_scene_tree = p_attach_scene_tree
 	_global_attributes = p_global_attributes.duplicate(true)
 	_provider_options = p_provider_options.duplicate(true)
 	_automatic_message_filter_prefixes = p_automatic_message_filter_prefixes.duplicate()

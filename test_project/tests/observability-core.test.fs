@@ -1353,10 +1353,116 @@ func test_config_copies_attributes_and_options() -> void:
 	Expect.that(config.provider_options()).to_equal({"provider_key": "value"})
 
 
+func test_byte_attachment_defensively_copies_data_and_preserves_metadata() -> void:
+	var source_bytes := PackedByteArray([1, 2, 3])
+	var attachment := ObservabilityAttachment.from_bytes(
+			source_bytes,
+			"diagnostics.bin",
+			"application/x-diagnostics",
+			ObservabilityAttachment.VIEW_HIERARCHY_CATEGORY,
+		)
+	source_bytes[0] = 9
+
+	Expect.that(attachment).not_().to_be_null()
+	if attachment == null:
+		return
+	Expect.that(attachment.path()).to_equal("")
+	Expect.that(attachment.bytes()).to_equal(PackedByteArray([1, 2, 3]))
+	Expect.that(attachment.filename()).to_equal("diagnostics.bin")
+	Expect.that(attachment.effective_filename()).to_equal("diagnostics.bin")
+	Expect.that(attachment.content_type()).to_equal("application/x-diagnostics")
+	Expect.that(attachment.category()).to_equal(
+			ObservabilityAttachment.VIEW_HIERARCHY_CATEGORY)
+	Expect.that(attachment.is_bytes()).to_be_true()
+	Expect.that(attachment.is_path()).to_be_false()
+	Expect.that(attachment.is_valid()).to_be_true()
+
+	var exposed_bytes: PackedByteArray = attachment.bytes()
+	exposed_bytes[1] = 8
+	Expect.that(attachment.bytes()).to_equal(PackedByteArray([1, 2, 3]))
+
+
+func test_path_attachment_preserves_path_and_derives_effective_filename() -> void:
+	var attachment := ObservabilityAttachment.from_path(
+			"user://diagnostics/session/game.log",
+		)
+
+	Expect.that(attachment).not_().to_be_null()
+	if attachment == null:
+		return
+	Expect.that(attachment.path()).to_equal("user://diagnostics/session/game.log")
+	Expect.that(attachment.bytes()).to_equal(PackedByteArray())
+	Expect.that(attachment.filename()).to_equal("")
+	Expect.that(attachment.effective_filename()).to_equal("game.log")
+	Expect.that(attachment.content_type()).to_equal(
+			ObservabilityAttachment.DEFAULT_CONTENT_TYPE)
+	Expect.that(attachment.category()).to_equal(
+			ObservabilityAttachment.DEFAULT_CATEGORY)
+	Expect.that(attachment.is_path()).to_be_true()
+	Expect.that(attachment.is_bytes()).to_be_false()
+	Expect.that(attachment.is_valid()).to_be_true()
+
+
+func test_attachment_factories_reject_invalid_inputs() -> void:
+	Expect.that(ObservabilityAttachment.from_path("")).to_be_null()
+	Expect.that(ObservabilityAttachment.from_path("diagnostics/game.log")).to_be_null()
+	Expect.that(ObservabilityAttachment.from_path(
+			"user://game.log",
+			"bad\nname.log",
+		)).to_be_null()
+	Expect.that(ObservabilityAttachment.from_bytes(
+			PackedByteArray(),
+			"",
+		)).to_be_null()
+	Expect.that(ObservabilityAttachment.from_bytes(
+			PackedByteArray(),
+			"game.log",
+			" text/plain",
+		)).to_be_null()
+	Expect.that(ObservabilityAttachment.from_bytes(
+			PackedByteArray(),
+			"game.log",
+			"",
+			&"",
+		)).to_be_null()
+	Expect.that(ObservabilityAttachment.from_bytes(
+			PackedByteArray(),
+			"game.log",
+			"",
+			&"event.minidump",
+		)).to_be_null()
+
+
+func test_attachment_failure_preserves_diagnostic_fields() -> void:
+	var failure := ObservabilityAttachmentFailure.new(
+			"attachment:7",
+			"game.log",
+			ObservabilityAttachmentFailure.MISSING_FILE,
+			Error.ERR_FILE_NOT_FOUND,
+		)
+	var copied_failure: ObservabilityAttachmentFailure = failure.duplicate()
+
+	Expect.that(failure.handle()).to_equal("attachment:7")
+	Expect.that(failure.filename()).to_equal("game.log")
+	Expect.that(failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.MISSING_FILE)
+	Expect.that(failure.error()).to_equal(Error.ERR_FILE_NOT_FOUND)
+	Expect.that(copied_failure).to_not_equal(failure)
+	Expect.that(copied_failure.handle()).to_equal("attachment:7")
+	Expect.that(copied_failure.filename()).to_equal("game.log")
+	Expect.that(copied_failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.MISSING_FILE)
+	Expect.that(copied_failure.error()).to_equal(Error.ERR_FILE_NOT_FOUND)
+
+
 func test_automatic_capture_masks_and_config_defaults() -> void:
 	var config := ObservabilityConfig.new()
 
 	Expect.that(config.max_breadcrumbs).to_equal(100)
+	Expect.that(config.max_attachment_bytes).to_equal(20 * 1024 * 1024)
+	Expect.that(config.attach_game_log).to_be_false()
+	Expect.that(config.attach_screenshot).to_be_false()
+	Expect.that(config.attach_scene_tree).to_be_false()
 	Expect.that(config.automatic_capture_enabled).to_be_true()
 	Expect.that(config.automatic_event_mask).to_equal(
 			ObservabilityCaptureMask.ERROR
@@ -1412,6 +1518,24 @@ func test_breadcrumb_config_appends_capacity_and_normalizes_negative_values() ->
 
 	Expect.that(positional.max_breadcrumbs).to_equal(7)
 	Expect.that(negative.max_breadcrumbs).to_equal(0)
+
+
+func test_attachment_config_appends_limits_and_normalizes_negative_values() -> void:
+	var explicit := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_attachment_bytes = -1,
+			p_attach_game_log = true,
+			p_attach_screenshot = true,
+			p_attach_scene_tree = true,
+		)
+
+	Expect.that(explicit.max_attachment_bytes).to_equal(0)
+	Expect.that(explicit.attach_game_log).to_be_true()
+	Expect.that(explicit.attach_screenshot).to_be_true()
+	Expect.that(explicit.attach_scene_tree).to_be_true()
 
 
 func test_mobile_diagnostic_config_defaults_match_native_integrations() -> void:
