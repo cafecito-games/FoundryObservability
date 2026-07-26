@@ -140,9 +140,9 @@ var config: ObservabilityConfig = ObservabilityConfig.new(
 		p_max_breadcrumbs = 100,
 		p_automatic_message_filter_prefixes = PackedStringArray(
 				["FoundryObservability: "],
-			),
+		),
 		p_event_processors = [func(event: ObservabilityEvent) -> Variant:
-			if event.level() < ObservabilityLevel.WARNING:
+			if event.level() < ObservabilityLevel.WARN:
 				return null
 			return event,
 		],

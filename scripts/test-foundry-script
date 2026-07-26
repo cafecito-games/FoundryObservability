@@ -554,6 +554,13 @@ require_doc_text \
 	"README must label the provider-neutral manual quick start"
 require_doc_text \
 	"README.md" \
+	'event.level() < ObservabilityLevel.WARN:' \
+	"README processing example must use the public WARN severity constant"
+if rg -Fq 'ObservabilityLevel.WARNING' "$repo_root/README.md"; then
+	fail "README must not use the nonexistent ObservabilityLevel.WARNING constant"
+fi
+require_doc_text \
+	"README.md" \
 	'Do not call `configure()` after successful automatic Sentry startup unless replacing the active startup provider is intentional.' \
 	"README must warn that manual configure replaces automatic startup"
 require_doc_text \
