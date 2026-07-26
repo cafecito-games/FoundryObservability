@@ -74,6 +74,9 @@ func _initialize_startup(settings: ObservabilityStartupSettings?) -> int:
 
 	var skip_status: StringName = settings.skip_status()
 	if skip_status != ObservabilityStartupStatus.NOT_STARTED:
+		if skip_status == ObservabilityStartupStatus.DISABLED \
+				and not settings.capture_enabled():
+			shutdown()
 		return _record_startup(
 				skip_status,
 				_startup_skip_message(skip_status),

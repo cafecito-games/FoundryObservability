@@ -230,9 +230,12 @@ for required_api_text in \
 	'before any autoload ordered after `FoundryObservability`' \
 	'Autoloads ordered earlier' \
 	'engine work before autoload construction' \
-	'During initial autoload construction, an intentional skip leaves the null provider active.' \
-	'A later `initialize_from_project_settings()` skip records the new status, message, and `Error.OK`' \
-	'preserves an already active provider and configuration.'
+	'When `enabled=false` is reread after successful startup, observability flushes' \
+	'Repeating the same disabled settings is idempotent.' \
+	'a later `auto_init=false` reread records `disabled`' \
+	'Editor, editor-play, and debug-export skip outcomes have the' \
+	'same preservation behavior.' \
+	'`ObservabilityStartupSettings.capture_enabled()`'
 do
 	require_doc_text \
 		"$api_doc" \

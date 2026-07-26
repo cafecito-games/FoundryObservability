@@ -2096,6 +2096,15 @@ func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
 	Expect.that(disabled.skip_status()).to_equal(
 			ObservabilityStartupStatus.DISABLED,
 		)
+	Expect.that(disabled.capture_enabled()).to_be_true()
+
+	var capture_disabled := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.ENABLED: false},
+		)
+	Expect.that(capture_disabled.skip_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+	Expect.that(capture_disabled.capture_enabled()).to_be_false()
 
 
 func test_startup_settings_validate_and_merge_provider_options() -> void:
@@ -2659,6 +2668,131 @@ func test_startup_reuses_provider_for_reconfiguration_and_restart() -> void:
 	Expect.that(bridge.active_owner).to_equal(first_owner)
 	Expect.that(service.provider_name()).to_equal(&"sentry")
 	Expect.that(service.is_available()).to_be_true()
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_startup_capture_disable_tears_down_once_and_can_restart() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var enabled_settings := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: "https://public@example/1",
+	})
+	var service: FoundryObservability = _startup_service(enabled_settings)
+	var first_owner: String = bridge.active_owner
+
+	Expect.that(service.capture_message("before disable")).to_equal("sentry:1")
+	Expect.that(service.get("_automatic_logger")).to_not_be_null()
+	bridge.flush_result = Error.FAILED
+	var disabled_settings := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.ENABLED: false,
+	})
+
+	Expect.that(service._initialize_startup(disabled_settings)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+	Expect.that(service.startup_message()).to_equal(
+			"Automatic startup is disabled.",
+		)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+	Expect.that(service.is_available()).to_be_false()
+	Expect.that(service.get("_automatic_logger")).to_be_null()
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.flush_owners).to_equal([first_owner])
+	Expect.that(bridge.shutdown_owners).to_equal([first_owner])
+	Expect.that(bridge.shutdown_count).to_equal(1)
+	Expect.that(service.capture_message("while disabled")).to_equal("")
+	Expect.that(bridge.captured_payloads).to_have_size(1)
+
+	Expect.that(service._initialize_startup(disabled_settings)).to_equal(Error.OK)
+	Expect.that(bridge.flush_owners).to_have_size(1)
+	Expect.that(bridge.shutdown_owners).to_have_size(1)
+	Expect.that(bridge.shutdown_count).to_equal(1)
+
+	bridge.flush_result = Error.OK
+	Expect.that(service._initialize_startup(enabled_settings)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.INITIALIZED,
+		)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.provider_name()).to_equal(&"sentry")
+	Expect.that(service.is_enabled()).to_be_true()
+	Expect.that(service.is_available()).to_be_true()
+	Expect.that(service.get("_automatic_logger")).to_not_be_null()
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(bridge.configured_payloads).to_have_size(2)
+	Expect.that(service.capture_message("after restart")).to_equal("sentry:2")
+	Expect.that(bridge.captured_payloads).to_have_size(2)
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_startup_only_skips_preserve_an_active_provider() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var service: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+			}),
+		)
+	var first_owner: String = bridge.active_owner
+	var automatic_logger: Variant = service.get("_automatic_logger")
+
+	var auto_init_disabled := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.AUTO_INIT: false,
+	})
+	Expect.that(service._initialize_startup(auto_init_disabled)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+
+	var editor := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{"editor_hint": true},
+		)
+	Expect.that(service._initialize_startup(editor)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_EDITOR,
+		)
+
+	var editor_play := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.SKIP_EDITOR_PLAY: true},
+			{},
+			{"editor_feature": true},
+		)
+	Expect.that(service._initialize_startup(editor_play)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_EDITOR_PLAY,
+		)
+
+	var debug_export := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.SKIP_DEBUG_EXPORTS: true},
+			{},
+			{"debug_build": true},
+		)
+	Expect.that(service._initialize_startup(debug_export)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_DEBUG,
+		)
+
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.provider_name()).to_equal(&"sentry")
+	Expect.that(service.is_enabled()).to_be_true()
+	Expect.that(service.is_available()).to_be_true()
+	Expect.that(service.get("_automatic_logger")).to_equal(automatic_logger)
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(bridge.flush_owners).to_have_size(0)
+	Expect.that(bridge.shutdown_owners).to_have_size(0)
+	Expect.that(bridge.shutdown_count).to_equal(0)
+	Expect.that(service.capture_message("after startup skips")).to_equal("sentry:1")
 
 	service.shutdown()
 	service.free()

@@ -144,6 +144,12 @@ func test_project_exposes_provider_neutral_startup_api() -> void:
 		Expect.that(api_source).to_contain(
 				"abstract " + method_signature.trim_suffix(":"))
 
+func test_startup_settings_exposes_capture_enabled_query() -> void:
+	var settings_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/ObservabilityStartupSettings.fs")
+	Expect.that(settings_source).to_contain(
+			"func capture_enabled() -> bool:")
+
 func _restore_project_setting(
 		setting_name: String,
 		was_present: bool,

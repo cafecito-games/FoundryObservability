@@ -138,12 +138,25 @@ errors, or provider availability, in this order:
    `skipped_editor_play`.
 4. A debug export with `skip_debug_exports=true` produces `skipped_debug`.
 
-During initial autoload construction, an intentional skip leaves the null provider active.
-These intentional skips return `Error.OK` and take precedence over a missing
-DSN or invalid provider-option values. A later `initialize_from_project_settings()` skip records the new status, message, and `Error.OK`
-in `last_error()`, but preserves an already active provider and configuration.
-The startup result can be inspected through the provider-neutral public
-methods:
+During initial autoload construction, an intentional skip leaves the null
+provider active. These intentional skips return `Error.OK` and take precedence
+over a missing DSN or invalid provider-option values.
+
+When `enabled=false` is reread after successful startup, observability flushes
+and shuts down the active provider, removes automatic engine logging, restores
+the disabled null provider, and records `disabled`, its stable message, and
+`Error.OK`. A flush failure does not change that final disabled result.
+Repeating the same disabled settings is idempotent. A later `enabled=true`
+startup reuses the cached startup provider and resumes capture.
+
+By contrast, a later `auto_init=false` reread records `disabled`, its stable
+message, and `Error.OK`, but preserves an already active provider and
+configuration. Editor, editor-play, and debug-export skip outcomes have the
+same preservation behavior. `ObservabilityStartupSettings.capture_enabled()`
+provides the provider-neutral distinction between capture disablement and
+these startup-only skips.
+
+The startup result can be inspected through the provider-neutral public methods:
 
 ```foundryscript
 func initialize_from_project_settings() -> int

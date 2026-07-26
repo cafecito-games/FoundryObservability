@@ -201,6 +201,11 @@ func validation_error() -> int:
 	return _validation_error
 
 
+## Returns whether the resolved startup configuration permits capture.
+func capture_enabled() -> bool:
+	return _enabled
+
+
 func skip_status() -> StringName:
 	if not _scalar_project_values_valid:
 		return ObservabilityStartupStatus.NOT_STARTED
