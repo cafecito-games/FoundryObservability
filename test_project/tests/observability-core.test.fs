@@ -89,12 +89,48 @@ class ReentrantConfigureMemoryProvider extends \
 		"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
 	var service: FoundryObservability
 	var nested_flush_result: int = Error.OK
+	var request_shutdown: bool = false
 
 	func configure(config: ObservabilityConfig) -> int:
 		var result: int = super.configure(config)
 		if service != null:
-			nested_flush_result = service.flush()
+			if request_shutdown:
+				service.shutdown()
+			else:
+				nested_flush_result = service.flush()
 		return result
+
+
+class ShutdownRequestingMemoryProvider extends \
+		"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var service: FoundryObservability
+	var request_count: int = 0
+
+	func capture(event: ObservabilityEvent) -> String:
+		request_count += 1
+		service.shutdown()
+		return super.capture(event)
+
+
+class ReconfiguringReservationService extends \
+		"res://addons/FoundryObservability/FoundryObservability.fs":
+	var replacement_config: ObservabilityConfig
+	var reconfigure_result: int = Error.OK
+	var armed: bool = false
+
+	func _try_begin_pinned_provider_call(
+			provider: ObservabilityProvider,
+			pipeline: ObservabilityProcessingPipeline,
+			generation: int,
+	) -> bool:
+		_reconfigure_before_reservation(provider)
+		return super._try_begin_pinned_provider_call(provider, pipeline, generation)
+
+	func _reconfigure_before_reservation(provider: ObservabilityProvider) -> void:
+		if not armed:
+			return
+		armed = false
+		reconfigure_result = configure(provider, replacement_config)
 
 
 class RecordingScopeProvider extends RefCounted:
@@ -4345,6 +4381,134 @@ func test_service_blocks_other_provider_calls_during_reconfiguration() -> void:
 	_shutdown_processing_service(service)
 
 
+func test_scope_operation_does_not_cross_same_provider_generation() -> void:
+	var service := _reconfiguring_reservation_service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	service.replacement_config = _ordinary_generation_config(false)
+	service.armed = true
+
+	Expect.that(service.set_tag("region", "iad")).to_be_false()
+	Expect.that(service.reconfigure_result).to_equal(Error.OK)
+	Expect.that(provider.calls).to_have_size(0)
+	Expect.that(service.is_enabled()).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	_shutdown_processing_service(service)
+
+
+func test_attachment_does_not_repopulate_same_provider_after_session_reset() -> void:
+	var service := _reconfiguring_reservation_service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	service.replacement_config = _ordinary_generation_config(true)
+	service.armed = true
+	var attachment := ObservabilityAttachment.from_bytes(
+			PackedByteArray([1, 2, 3]),
+			"stale.bin",
+		)
+
+	Expect.that(service.add_attachment(attachment)).to_equal("")
+	Expect.that(service.reconfigure_result).to_equal(Error.OK)
+	Expect.that(service.capture_message("new session")).to_equal("memory:1")
+	Expect.that(provider.captured_attachments()[0]).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	_shutdown_processing_service(service)
+
+
+func test_breadcrumb_does_not_cross_same_provider_generation() -> void:
+	var service := _reconfiguring_reservation_service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	service.replacement_config = _ordinary_generation_config(true)
+	service.armed = true
+
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "stale"),
+		)).to_be_false()
+	Expect.that(service.reconfigure_result).to_equal(Error.OK)
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	_shutdown_processing_service(service)
+
+
+func test_feedback_does_not_cross_same_provider_generation() -> void:
+	var service := _reconfiguring_reservation_service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	service.replacement_config = _ordinary_generation_config(true)
+	service.armed = true
+
+	Expect.that(service.capture_feedback(
+			ObservabilityFeedback.new(p_message = "stale"),
+		)).to_equal("")
+	Expect.that(service.reconfigure_result).to_equal(Error.OK)
+	Expect.that(provider.feedback()).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	_shutdown_processing_service(service)
+
+
+func test_shutdown_requested_inside_provider_capture_completes_after_call() -> void:
+	var service := _processing_service()
+	var provider := ShutdownRequestingMemoryProvider.new()
+	provider.service = service
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("final event")).to_equal("memory:1")
+	Expect.that(provider.request_count).to_equal(1)
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.flush_count).to_equal(1)
+	Expect.that(provider.shutdown_count).to_equal(1)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+	Expect.that(service.capture_message("after shutdown")).to_equal("")
+
+	service.shutdown()
+	Expect.that(provider.flush_count).to_equal(1)
+	Expect.that(provider.shutdown_count).to_equal(1)
+	service.free()
+
+
+func test_shutdown_requested_during_configure_cleans_committed_candidate() -> void:
+	var service := _processing_service()
+	var active := MemoryObservabilityProvider.new()
+	var replacement := ReentrantConfigureMemoryProvider.new()
+	Expect.that(service.configure(
+			active,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	replacement.service = service
+	replacement.request_shutdown = true
+
+	Expect.that(service.configure(
+			replacement,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(replacement.flush_count).to_equal(1)
+	Expect.that(replacement.shutdown_count).to_equal(1)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+
+	service.shutdown()
+	Expect.that(replacement.shutdown_count).to_equal(1)
+	service.free()
+
+
 func test_service_normalizes_final_processor_replacement_before_delivery() -> void:
 	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
@@ -6825,6 +6989,31 @@ func _processing_service() -> FoundryObservability:
 	)
 	@warning_ignore("unsafe_cast")
 	return candidate as FoundryObservability
+
+
+func _reconfiguring_reservation_service() -> ReconfiguringReservationService:
+	return ReconfiguringReservationService.new(
+			ObservabilityStartupSettings.new(),
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs",
+			Callable(self, "_service_processing_clock"),
+			Callable(self, "_service_processing_frame"),
+		)
+
+
+func _ordinary_generation_config(enabled: bool) -> ObservabilityConfig:
+	return ObservabilityConfig.new(
+			p_enabled = enabled,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+			p_log_limits = ObservabilitySignalLimits.new(),
+			p_metric_limits = ObservabilitySignalLimits.new(),
+		)
 
 
 func _service_processing_clock() -> int:

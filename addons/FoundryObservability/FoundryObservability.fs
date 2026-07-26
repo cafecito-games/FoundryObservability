@@ -16,6 +16,7 @@ var _provider: ObservabilityProvider
 var _config: ObservabilityConfig
 var _last_error: int = Error.OK
 var _shutdown: bool = false
+var _shutdown_requested: bool = false
 var _processing_clock: Callable
 var _processing_frame: Callable
 var _pipeline: ObservabilityProcessingPipeline
@@ -195,6 +196,12 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	if provider == null:
 		_last_error = Error.FAILED
 		return Error.FAILED
+	_pipeline_mutex.lock()
+	if _shutdown_requested:
+		_last_error = Error.ERR_BUSY
+		_pipeline_mutex.unlock()
+		return Error.ERR_BUSY
+	_pipeline_mutex.unlock()
 
 	var candidate_config: ObservabilityConfig = config
 	if candidate_config == null:
@@ -209,7 +216,7 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 		return pipeline_result
 
 	_pipeline_mutex.lock()
-	if _configuration_in_progress or _provider_call_count > 0:
+	if _shutdown_requested or _configuration_in_progress or _provider_call_count > 0:
 		_last_error = Error.ERR_BUSY
 		_pipeline_mutex.unlock()
 		return Error.ERR_BUSY
@@ -223,6 +230,7 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 		_last_error = result
 		_configuration_in_progress = false
 		_pipeline_mutex.unlock()
+		_complete_requested_shutdown()
 		return result
 
 	if provider != previous_provider:
@@ -238,23 +246,31 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	_last_error = Error.OK
 	_shutdown = false
 	_configuration_in_progress = false
+	var should_shutdown: bool = _shutdown_requested
 	_pipeline_mutex.unlock()
-	_refresh_automatic_logger()
+	if should_shutdown:
+		_complete_requested_shutdown()
+	else:
+		_refresh_automatic_logger()
 	return Error.OK
 
 
 ## Returns whether the active configuration permits event capture.
 func is_enabled() -> bool:
 	_pipeline_mutex.lock()
-	var enabled: bool = not _configuration_in_progress and _config.enabled
+	var enabled: bool = not _shutdown \
+			and not _shutdown_requested \
+			and not _configuration_in_progress \
+			and _config.enabled
 	_pipeline_mutex.unlock()
 	return enabled
 
 
 ## Returns whether the active provider can currently accept events.
 func is_available() -> bool:
-	var provider: ObservabilityProvider = _provider
-	if provider == null or not _try_begin_provider_call(provider):
+	var state: Dictionary = _capture_state()
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
+	if provider == null:
 		return false
 	var available: bool = provider.is_available()
 	_end_provider_call()
@@ -263,8 +279,9 @@ func is_available() -> bool:
 
 ## Returns the active provider identifier, including null before configuration.
 func provider_name() -> StringName:
-	var provider: ObservabilityProvider = _provider
-	if provider == null or not _try_begin_provider_call(provider):
+	var state: Dictionary = _capture_state()
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
+	if provider == null:
 		return &"null"
 	var provider_id: StringName = provider.provider_name()
 	_end_provider_call()
@@ -286,7 +303,9 @@ func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?:
 
 func _capture_state() -> Dictionary:
 	_pipeline_mutex.lock()
-	if _configuration_in_progress or _provider == null or _pipeline == null:
+	if _shutdown or _shutdown_requested \
+			or _configuration_in_progress \
+			or _provider == null or _pipeline == null:
 		_pipeline_mutex.unlock()
 		return {"valid": false}
 	var result: Dictionary = {
@@ -298,6 +317,26 @@ func _capture_state() -> Dictionary:
 	}
 	_pipeline_mutex.unlock()
 	return result
+
+
+func _state_config(state: Dictionary) -> ObservabilityConfig:
+	@warning_ignore("unsafe_cast")
+	return state["config"] as ObservabilityConfig
+
+
+func _begin_state_provider_call(state: Dictionary) -> ObservabilityProvider?:
+	if not state.get("valid", false):
+		return null
+	@warning_ignore("unsafe_cast")
+	var provider: ObservabilityProvider = state["provider"] as ObservabilityProvider
+	@warning_ignore("unsafe_cast")
+	var pipeline: ObservabilityProcessingPipeline = (
+			state["pipeline"] as ObservabilityProcessingPipeline
+	)
+	var generation: int = state["generation"]
+	if not _try_begin_pinned_provider_call(provider, pipeline, generation):
+		return null
+	return provider
 
 
 func _record_processing_rejection(
@@ -319,19 +358,20 @@ func _record_processing_rejection(
 
 ## Adds one persistent diagnostic attachment through an optional provider capability.
 func add_attachment(attachment: ObservabilityAttachment) -> String:
-	if not is_enabled() or _provider == null:
+	var state: Dictionary = _capture_state()
+	if not state.get("valid", false) or not _state_config(state).enabled:
 		return ""
 	if attachment == null or not attachment.is_valid():
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return ""
-	var attachments_provider: ObservabilityProvider? = _attachments_provider()
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
+	if provider == null:
+		return ""
+	var attachments_provider: ObservabilityProvider? = _attachments_provider(provider)
 	if attachments_provider == null:
-		_last_error = Error.ERR_UNAVAILABLE
+		_finish_provider_call(Error.ERR_UNAVAILABLE)
 		return ""
 
-	if not _try_begin_provider_call(attachments_provider):
-		_last_error = Error.ERR_BUSY
-		return ""
 	var result: Variant = attachments_provider.call(
 			"add_attachment",
 			attachment,
@@ -349,19 +389,20 @@ func add_attachment(attachment: ObservabilityAttachment) -> String:
 
 ## Removes one persistent diagnostic attachment through an optional provider capability.
 func remove_attachment(handle: String) -> bool:
-	if not is_enabled() or _provider == null:
+	var state: Dictionary = _capture_state()
+	if not state.get("valid", false) or not _state_config(state).enabled:
 		return false
 	if handle.is_empty() or handle.strip_edges() != handle or _has_control_character(handle):
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return false
-	var attachments_provider: ObservabilityProvider? = _attachments_provider()
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
+	if provider == null:
+		return false
+	var attachments_provider: ObservabilityProvider? = _attachments_provider(provider)
 	if attachments_provider == null:
-		_last_error = Error.ERR_UNAVAILABLE
+		_finish_provider_call(Error.ERR_UNAVAILABLE)
 		return false
 
-	if not _try_begin_provider_call(attachments_provider):
-		_last_error = Error.ERR_BUSY
-		return false
 	var result: Variant = attachments_provider.call("remove_attachment", handle)
 	if not (result is int):
 		_finish_provider_call(Error.FAILED)
@@ -373,16 +414,17 @@ func remove_attachment(handle: String) -> bool:
 
 ## Clears all persistent diagnostic attachments through an optional provider capability.
 func clear_attachments() -> bool:
-	if not is_enabled() or _provider == null:
+	var state: Dictionary = _capture_state()
+	if not state.get("valid", false) or not _state_config(state).enabled:
 		return false
-	var attachments_provider: ObservabilityProvider? = _attachments_provider()
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
+	if provider == null:
+		return false
+	var attachments_provider: ObservabilityProvider? = _attachments_provider(provider)
 	if attachments_provider == null:
-		_last_error = Error.ERR_UNAVAILABLE
+		_finish_provider_call(Error.ERR_UNAVAILABLE)
 		return false
 
-	if not _try_begin_provider_call(attachments_provider):
-		_last_error = Error.ERR_BUSY
-		return false
 	var result: Variant = attachments_provider.call("clear_attachments")
 	if not (result is bool) or not result:
 		_finish_provider_call(Error.FAILED)
@@ -394,10 +436,13 @@ func clear_attachments() -> bool:
 ## Returns isolated failures from the latest attachment-bearing provider event.
 ## This diagnostic accessor intentionally leaves last_error unchanged.
 func last_attachment_failures() -> Array:
-	var attachments_provider: ObservabilityProvider? = _attachments_provider()
-	if attachments_provider == null:
+	var state: Dictionary = _capture_state()
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
+	if provider == null:
 		return []
-	if not _try_begin_provider_call(attachments_provider):
+	var attachments_provider: ObservabilityProvider? = _attachments_provider(provider)
+	if attachments_provider == null:
+		_end_provider_call()
 		return []
 	var result: Variant = attachments_provider.call("last_attachment_failures")
 	_end_provider_call()
@@ -412,8 +457,7 @@ func last_attachment_failures() -> Array:
 	return failures
 
 
-func _attachments_provider() -> ObservabilityProvider?:
-	var provider: ObservabilityProvider = _provider
+func _attachments_provider(provider: ObservabilityProvider) -> ObservabilityProvider?:
 	if provider == null:
 		return null
 	if not provider.has_method("add_attachment") \
@@ -620,13 +664,16 @@ func remove_user() -> bool:
 
 
 func _call_scope_operation(method_name: StringName, arguments: Array) -> bool:
-	var provider: ObservabilityProvider = _provider
-	if not is_enabled() or provider == null:
+	var state: Dictionary = _capture_state()
+	if not state.get("valid", false) or not _state_config(state).enabled:
+		return false
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
+	if provider == null:
 		return false
 	if not _has_scope_capability(provider):
-		_last_error = Error.ERR_UNAVAILABLE
+		_finish_provider_call(Error.ERR_UNAVAILABLE)
 		return false
-	return _call_provider_bool(provider, method_name, arguments)
+	return _call_reserved_provider_bool(provider, method_name, arguments)
 
 
 func _has_scope_capability(provider: ObservabilityProvider) -> bool:
@@ -640,14 +687,11 @@ func _has_scope_capability(provider: ObservabilityProvider) -> bool:
 			and provider.has_method("remove_user")
 
 
-func _call_provider_bool(
+func _call_reserved_provider_bool(
 		provider: ObservabilityProvider,
 		method_name: StringName,
 		arguments: Array,
 ) -> bool:
-	if not _try_begin_provider_call(provider):
-		_last_error = Error.ERR_BUSY
-		return false
 	var result: Variant = provider.callv(method_name, arguments)
 	if not (result is bool) or not result:
 		_finish_provider_call(Error.FAILED)
@@ -663,13 +707,16 @@ func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
 
 ## Clears breadcrumbs when the active provider supports the explicit optional operation.
 func clear_breadcrumbs() -> bool:
-	var provider: ObservabilityProvider = _provider
-	if not is_enabled() or provider == null:
+	var state: Dictionary = _capture_state()
+	if not state.get("valid", false) or not _state_config(state).enabled:
+		return false
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
+	if provider == null:
 		return false
 	if not provider.has_method("clear_breadcrumbs"):
-		_last_error = Error.ERR_UNAVAILABLE
+		_finish_provider_call(Error.ERR_UNAVAILABLE)
 		return false
-	return _call_provider_bool(provider, &"clear_breadcrumbs", [])
+	return _call_reserved_provider_bool(provider, &"clear_breadcrumbs", [])
 
 
 ## Captures an automatic breadcrumb without treating an absent optional capability as an error.
@@ -685,18 +732,19 @@ func _capture_breadcrumb(
 	if breadcrumb == null:
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return false
-	var provider: ObservabilityProvider = _provider
-	if not is_enabled() or provider == null:
+	var state: Dictionary = _capture_state()
+	if not state.get("valid", false) or not _state_config(state).enabled:
+		return false
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
+	if provider == null:
 		return false
 	if not provider.has_method("capture_breadcrumb"):
 		if report_unsupported:
-			_last_error = Error.ERR_UNAVAILABLE
+			_finish_provider_call(Error.ERR_UNAVAILABLE)
+		else:
+			_end_provider_call()
 		return false
 
-	if not _try_begin_provider_call(provider):
-		if report_unsupported:
-			_last_error = Error.ERR_BUSY
-		return false
 	var capture_result: Variant = provider.call("capture_breadcrumb", breadcrumb)
 	if not (capture_result is bool) or not capture_result:
 		_finish_provider_call(Error.FAILED)
@@ -712,8 +760,6 @@ func _capture_breadcrumb(
 func capture_feedback(feedback: ObservabilityFeedback) -> String:
 	if not _is_valid_feedback(feedback):
 		_last_error = Error.ERR_INVALID_PARAMETER
-		return ""
-	if not is_enabled() or _provider == null:
 		return ""
 	return _capture_feedback(feedback)
 
@@ -1023,13 +1069,13 @@ func _normalized_stack_frame(
 
 
 func _capture_feedback(feedback: ObservabilityFeedback) -> String:
-	var provider: ObservabilityProvider = _provider
-	if not is_enabled() or provider == null:
+	var state: Dictionary = _capture_state()
+	if not state.get("valid", false) or not _state_config(state).enabled:
+		return ""
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
+	if provider == null:
 		return ""
 
-	if not _try_begin_provider_call(provider):
-		_last_error = Error.ERR_BUSY
-		return ""
 	var feedback_id: String = provider.capture_feedback(feedback)
 	if feedback_id.is_empty():
 		_finish_provider_call(Error.FAILED)
@@ -1078,22 +1124,15 @@ func _has_control_character(value: String) -> bool:
 	return false
 
 
-func _try_begin_provider_call(provider: ObservabilityProvider) -> bool:
-	_pipeline_mutex.lock()
-	var valid: bool = not _configuration_in_progress and provider == _provider
-	if valid:
-		_provider_call_count += 1
-	_pipeline_mutex.unlock()
-	return valid
-
-
 func _try_begin_pinned_provider_call(
 		provider: ObservabilityProvider,
 		pipeline: ObservabilityProcessingPipeline,
 		generation: int,
 ) -> bool:
 	_pipeline_mutex.lock()
-	var valid: bool = not _configuration_in_progress \
+	var valid: bool = not _shutdown \
+			and not _shutdown_requested \
+			and not _configuration_in_progress \
 			and provider == _provider \
 			and pipeline == _pipeline \
 			and generation == _configuration_generation
@@ -1106,14 +1145,26 @@ func _try_begin_pinned_provider_call(
 func _end_provider_call() -> void:
 	_pipeline_mutex.lock()
 	_provider_call_count = maxi(0, _provider_call_count - 1)
+	var should_shutdown: bool = _shutdown_requested \
+			and not _shutdown \
+			and not _configuration_in_progress \
+			and _provider_call_count == 0
 	_pipeline_mutex.unlock()
+	if should_shutdown:
+		_complete_requested_shutdown()
 
 
 func _finish_provider_call(error: int) -> void:
 	_pipeline_mutex.lock()
 	_record_capture_result_locked(error)
 	_provider_call_count = maxi(0, _provider_call_count - 1)
+	var should_shutdown: bool = _shutdown_requested \
+			and not _shutdown \
+			and not _configuration_in_progress \
+			and _provider_call_count == 0
 	_pipeline_mutex.unlock()
+	if should_shutdown:
+		_complete_requested_shutdown()
 
 
 func _record_capture_result_locked(error: int) -> void:
@@ -1130,7 +1181,7 @@ func _record_capture_result_locked(error: int) -> void:
 func try_begin_automatic_capture() -> bool:
 	if not _pipeline_mutex.try_lock():
 		return false
-	if _configuration_in_progress or _provider_call_count > 0:
+	if _shutdown_requested or _configuration_in_progress or _provider_call_count > 0:
 		_pipeline_mutex.unlock()
 		return false
 	_provider_call_count += 1
@@ -1149,7 +1200,13 @@ func end_automatic_capture() -> void:
 	_provider_call_count = maxi(0, _provider_call_count - 1)
 	if failure != Error.OK:
 		_last_error = failure
+	var should_shutdown: bool = _shutdown_requested \
+			and not _shutdown \
+			and not _configuration_in_progress \
+			and _provider_call_count == 0
 	_pipeline_mutex.unlock()
+	if should_shutdown:
+		_complete_requested_shutdown()
 
 
 func _refresh_automatic_logger() -> void:
@@ -1174,12 +1231,14 @@ func _remove_automatic_logger() -> void:
 
 ## Flushes pending provider work within timeout_msec and stores the returned error.
 func flush(timeout_msec: int = 2000) -> int:
-	var provider: ObservabilityProvider = _provider
+	var state: Dictionary = _capture_state()
+	if not state.get("valid", false):
+		_pipeline_mutex.lock()
+		var inactive_result: int = Error.OK if _shutdown else Error.ERR_BUSY
+		_pipeline_mutex.unlock()
+		return inactive_result
+	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
 	if provider == null:
-		return Error.OK
-
-	if not _try_begin_provider_call(provider):
-		_last_error = Error.ERR_BUSY
 		return Error.ERR_BUSY
 	var result: int = provider.flush(timeout_msec)
 	_finish_provider_call(result)
@@ -1188,14 +1247,24 @@ func flush(timeout_msec: int = 2000) -> int:
 
 ## Flushes and shuts down once, then restores the disabled null-provider state.
 func shutdown() -> void:
-	var disabled_config: ObservabilityConfig = ObservabilityConfig.new(p_enabled = false)
-	var disabled_pipeline: ObservabilityProcessingPipeline = _new_disabled_pipeline()
 	_pipeline_mutex.lock()
 	if _shutdown:
 		_pipeline_mutex.unlock()
 		return
-	if _configuration_in_progress or _provider_call_count > 0:
-		_last_error = Error.ERR_BUSY
+	_shutdown_requested = true
+	var should_shutdown: bool = not _configuration_in_progress \
+			and _provider_call_count == 0
+	_pipeline_mutex.unlock()
+	if should_shutdown:
+		_complete_requested_shutdown()
+
+
+func _complete_requested_shutdown() -> void:
+	_pipeline_mutex.lock()
+	if _shutdown \
+			or not _shutdown_requested \
+			or _configuration_in_progress \
+			or _provider_call_count > 0:
 		_pipeline_mutex.unlock()
 		return
 	_configuration_in_progress = true
@@ -1207,6 +1276,8 @@ func shutdown() -> void:
 		previous_provider.flush(2000)
 		previous_provider.shutdown()
 
+	var disabled_config: ObservabilityConfig = ObservabilityConfig.new(p_enabled = false)
+	var disabled_pipeline: ObservabilityProcessingPipeline = _new_disabled_pipeline()
 	_pipeline_mutex.lock()
 	_provider = NullObservabilityProvider.new()
 	_config = disabled_config
@@ -1215,6 +1286,7 @@ func shutdown() -> void:
 	_shutdown = true
 	_last_error = Error.OK
 	_configuration_in_progress = false
+	_shutdown_requested = false
 	_automatic_capture_owner = -1
 	_automatic_capture_failure = Error.OK
 	_pipeline_mutex.unlock()
