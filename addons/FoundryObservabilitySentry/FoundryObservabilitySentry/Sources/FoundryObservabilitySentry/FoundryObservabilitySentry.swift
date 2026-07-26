@@ -231,6 +231,10 @@ class SentryObservabilityBridge: RefCounted {
         }
 
         let values = foundationDictionary(from: payload)
+        let localScope = foundryScopePayload(values["scope"])
+        guard !shouldRejectSentryStructuredLog(scope: localScope) else {
+            return ""
+        }
         let attributes = scalarLogAttributes(mergedLogAttributes(
             global: globalAttributes,
             event: dictionaryValue(values["attributes"]),

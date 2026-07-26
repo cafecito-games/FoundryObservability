@@ -95,6 +95,38 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertNil(attributes["unsupported"])
     }
 
+    func testFoundryScopePayloadClassifiesSemanticEmptiness() {
+        XCTAssertTrue(foundryScopePayload(nil).isSemanticallyEmpty)
+        XCTAssertTrue(foundryScopePayload([:]).isSemanticallyEmpty)
+        XCTAssertTrue(foundryScopePayload([
+            "tags": [:],
+            "contexts": [:],
+            "user": [:],
+        ]).isSemanticallyEmpty)
+
+        XCTAssertFalse(foundryScopePayload([
+            "tags": ["region": "iad"],
+        ]).isSemanticallyEmpty)
+        XCTAssertFalse(foundryScopePayload([
+            "contexts": ["match": [:]],
+        ]).isSemanticallyEmpty)
+        XCTAssertFalse(foundryScopePayload([
+            "user": ["id": "player-7"],
+        ]).isSemanticallyEmpty)
+    }
+
+    func testStructuredLogScopeDecisionRejectsScopedThenAllowsUnscopedLog() {
+        let scoped = foundryScopePayload([
+            "contexts": ["match": [:]],
+        ])
+
+        XCTAssertTrue(shouldRejectSentryStructuredLog(scope: scoped))
+        XCTAssertFalse(shouldRejectSentryStructuredLog(
+            scope: foundryScopePayload([:])
+        ))
+        XCTAssertTrue(scoped.contexts.keys.contains("match"))
+    }
+
     func testBreadcrumbDataPreservesFieldsAndReservedMetadata() {
         let data = sentryBreadcrumbData(
             global: ["build": 42, "error.file": "global"],

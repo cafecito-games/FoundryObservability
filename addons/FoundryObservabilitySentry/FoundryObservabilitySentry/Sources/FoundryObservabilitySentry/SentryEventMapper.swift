@@ -305,6 +305,14 @@ struct FoundryScopePayload {
     let tags: [String: String]
     let contexts: [String: [String: Any]]
     let user: [String: String]?
+
+    var isSemanticallyEmpty: Bool {
+        tags.isEmpty && contexts.isEmpty && user == nil
+    }
+}
+
+func shouldRejectSentryStructuredLog(scope: FoundryScopePayload) -> Bool {
+    !scope.isSemanticallyEmpty
 }
 
 struct FoundryInstalledScopeKeys {
