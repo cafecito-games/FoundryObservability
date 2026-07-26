@@ -165,10 +165,14 @@ func configure(config: ObservabilityConfig) -> int:
 	if config.enabled and bridge.has_method("clearBreadcrumbs"):
 		var clear_result: Variant = bridge.call("clearBreadcrumbs")
 		if not (clear_result is bool) or clear_result != true:
-			if not _rollback_after_session_reset_failure(
-					bridge,
+			if not _can_preserve_breadcrumb_trail_after_clear_failure(
+					clear_result,
+					candidate_config_payload,
 					retained_scope_was_enabled,
-					retained_scope_payload,
+			) or not _rollback_after_session_reset_failure(
+				bridge,
+				retained_scope_was_enabled,
+				retained_scope_payload,
 			):
 				_fail_closed(bridge)
 			return Error.FAILED
@@ -519,6 +523,29 @@ func _rollback_after_session_reset_failure(
 			retained_scope_was_enabled,
 			retained_scope_payload,
 		)
+
+
+func _can_preserve_breadcrumb_trail_after_clear_failure(
+		clear_result: Variant,
+		candidate_config_payload: Dictionary,
+		retained_scope_was_enabled: bool,
+) -> bool:
+	if not (clear_result is bool) or clear_result != false:
+		return false
+	if not retained_scope_was_enabled or not _has_last_config_payload:
+		return false
+	var committed_enabled: Variant = _last_config_payload.get("enabled")
+	if not (committed_enabled is bool) or committed_enabled != true:
+		return false
+	return _config_payloads_are_equivalent(candidate_config_payload)
+
+
+func _config_payloads_are_equivalent(candidate_config_payload: Dictionary) -> bool:
+	# Dictionary equality is deep; defensive complete snapshots include every
+	# nested configuration field and the lifecycle owner.
+	var candidate_snapshot: Dictionary = candidate_config_payload.duplicate(true)
+	var committed_snapshot: Dictionary = _last_config_payload.duplicate(true)
+	return candidate_snapshot == committed_snapshot
 
 
 func _fail_closed(bridge: Object) -> void:

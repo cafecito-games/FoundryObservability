@@ -11,6 +11,7 @@ var flush_result: int = Error.OK
 var apply_scope_result: bool = true
 var apply_scope_results: Array[bool] = []
 var clear_breadcrumbs_result: Variant = true
+var malformed_clear_mutates_trail: bool = false
 var clear_breadcrumbs_count: int = 0
 var configured_payload: Dictionary = {}
 var configured_payloads: Array[Dictionary] = []
@@ -115,7 +116,8 @@ func applyScope(payload: Dictionary) -> bool:
 
 func clearBreadcrumbs() -> Variant:
 	clear_breadcrumbs_count += 1
-	if clear_breadcrumbs_result is bool and clear_breadcrumbs_result == true:
+	if (clear_breadcrumbs_result is bool and clear_breadcrumbs_result == true) \
+			or (not (clear_breadcrumbs_result is bool) and malformed_clear_mutates_trail):
 		current_breadcrumb_payloads = []
 	return clear_breadcrumbs_result
 

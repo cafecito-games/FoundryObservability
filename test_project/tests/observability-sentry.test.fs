@@ -1523,20 +1523,38 @@ func test_equivalent_reconfigure_clear_rejection_restores_scope_and_trail() -> v
 			p_bridge = bridge,
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
-	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
+	var initial_config := ObservabilityConfig.new(
+			p_global_attributes = {
+				"build": {"number": 42},
+				"channels": ["stable"],
+			},
+			p_provider_options = {
+				"dsn": "https://public@example/1",
+				"transport": {"tunnel": "primary"},
+			},
+		)
+	var equivalent_config := ObservabilityConfig.new(
+			p_global_attributes = {
+				"build": {"number": 42},
+				"channels": ["stable"],
+			},
+			p_provider_options = {
+				"dsn": "https://public@example/1",
+				"transport": {"tunnel": "primary"},
+			},
 		)
 
-	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
 	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
 			p_message = "prior session",
 	))).to_be_true()
 	var retained_trail: Array[Dictionary] = bridge.current_breadcrumb_payloads.duplicate(true)
+	bridge.configured_payload["global_attributes"]["build"]["number"] = 999
+	bridge.configured_payload["provider_options"]["transport"]["tunnel"] = "mutated"
 	bridge.clear_breadcrumbs_result = false
 
-	Expect.that(provider.configure(config)).to_equal(Error.FAILED)
+	Expect.that(provider.configure(equivalent_config)).to_equal(Error.FAILED)
 	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
 	Expect.that(bridge.current_breadcrumb_payloads).to_equal(retained_trail)
 	Expect.that(provider.is_available()).to_be_true()
@@ -1546,6 +1564,125 @@ func test_equivalent_reconfigure_clear_rejection_restores_scope_and_trail() -> v
 			"mode": "ranked",
 		})
 	provider.shutdown()
+
+
+func test_changed_config_false_clear_result_fails_closed_and_can_recover() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
+	var initial_config := ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+	var replacement_config := ObservabilityConfig.new(
+			p_environment = "staging",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+		)
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "destroyed by restart",
+	))).to_be_true()
+	bridge.clear_breadcrumbs_result = false
+
+	Expect.that(provider.configure(replacement_config)).to_equal(Error.FAILED)
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.active_configuration()).to_equal({})
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "failed closed",
+	))).to_equal("")
+	Expect.that(provider.set_tag("mode", "ranked")).to_be_false()
+
+	bridge.clear_breadcrumbs_result = true
+	Expect.that(provider.configure(replacement_config)).to_equal(Error.OK)
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.set_tag("fresh", "scope")).to_be_true()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "recovered",
+	))).to_equal("sentry:1")
+	provider.shutdown()
+
+
+func test_equivalent_config_malformed_clear_result_fails_closed_and_can_recover() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
+	var config := ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {"build": {"number": 42}},
+			p_provider_options = {
+				"dsn": "https://public@example/1",
+				"transport": {"tunnel": "primary"},
+			},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "possibly cleared",
+	))).to_be_true()
+	bridge.clear_breadcrumbs_result = "false"
+	bridge.malformed_clear_mutates_trail = true
+
+	Expect.that(provider.configure(config)).to_equal(Error.FAILED)
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.active_configuration()).to_equal({})
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "failed closed",
+	))).to_equal("")
+	Expect.that(provider.set_tag("mode", "ranked")).to_be_false()
+
+	bridge.clear_breadcrumbs_result = true
+	bridge.malformed_clear_mutates_trail = false
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.set_tag("fresh", "scope")).to_be_true()
+	provider.shutdown()
+
+
+func test_nested_config_change_is_not_equivalent_for_clear_recovery() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
+	var initial_config := ObservabilityConfig.new(
+			p_global_attributes = {"build": {"number": 42}},
+			p_provider_options = {
+				"dsn": "https://public@example/1",
+				"transport": {"tunnel": "primary"},
+			},
+		)
+	var nested_change_config := ObservabilityConfig.new(
+			p_global_attributes = {"build": {"number": 42}},
+			p_provider_options = {
+				"dsn": "https://public@example/1",
+				"transport": {"tunnel": "replacement"},
+			},
+		)
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "destroyed by nested config restart",
+	))).to_be_true()
+	bridge.clear_breadcrumbs_result = false
+
+	Expect.that(provider.configure(nested_change_config)).to_equal(Error.FAILED)
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.active_configuration()).to_equal({})
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
+	Expect.that(provider.is_available()).to_be_false()
 
 
 func test_initial_malformed_clear_result_fails_closed() -> void:
