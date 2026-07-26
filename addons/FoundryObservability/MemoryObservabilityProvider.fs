@@ -140,6 +140,16 @@ func last_attachment_failures() -> Array:
 
 func _materialize_attachments() -> Array:
 	var snapshot: Array = []
+	if _max_attachment_bytes == 0:
+		for handle: String in _attachments:
+			var disabled_attachment: ObservabilityAttachment = _attachments[handle]
+			_append_attachment_failure(
+					handle,
+					disabled_attachment,
+					ObservabilityAttachmentFailure.OVERSIZED,
+					Error.FAILED,
+				)
+		return snapshot
 	for handle: String in _attachments:
 		var attachment: ObservabilityAttachment = _attachments[handle]
 		var bytes: PackedByteArray = attachment.bytes()

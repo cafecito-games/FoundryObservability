@@ -643,6 +643,8 @@ func _is_bridge_available(bridge: Object) -> bool:
 
 
 func _native_payloads_for(candidate: Dictionary) -> Array[Dictionary]:
+	if _attachment_config.max_attachment_bytes == 0:
+		return []
 	var payloads: Array[Dictionary] = _persistent_builtin_attachments.duplicate(true)
 	for handle: String in candidate:
 		var attachment: ObservabilityAttachment = candidate[handle]
@@ -678,6 +680,14 @@ func _capture_local_attachments(event: ObservabilityEvent) -> Array:
 	var local: Array[Dictionary] = []
 	for handle: String in _attachments:
 		var attachment: ObservabilityAttachment = _attachments[handle]
+		if _attachment_config.max_attachment_bytes == 0:
+			_append_attachment_failure(
+					handle,
+					attachment.effective_filename(),
+					ObservabilityAttachmentFailure.OVERSIZED,
+					Error.FAILED,
+				)
+			continue
 		if attachment.is_bytes():
 			if attachment.bytes().size() > _attachment_config.max_attachment_bytes:
 				_append_attachment_failure(

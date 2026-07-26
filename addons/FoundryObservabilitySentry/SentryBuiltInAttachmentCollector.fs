@@ -22,8 +22,45 @@ func _init(p_probe: Object) -> void:
 func collect(event: ObservabilityEvent?, config: ObservabilityConfig) -> Dictionary:
 	var attachments: Array[Dictionary] = []
 	var failures: Array[ObservabilityAttachmentFailure] = []
+	if config.max_attachment_bytes == 0:
+		if config.attach_game_log:
+			var game_log_path: String = str(_probe.call("game_log_path"))
+			var game_log_filename: String = (
+					game_log_path.get_file()
+					if not game_log_path.is_empty()
+					else "godot.log"
+				)
+			failures.append(_failure(
+					"built-in:game-log",
+					game_log_filename,
+					ObservabilityAttachmentFailure.OVERSIZED,
+					Error.FAILED,
+				))
+		if event != null and config.attach_screenshot:
+			failures.append(_failure(
+					"built-in:screenshot",
+					"screenshot.png",
+					ObservabilityAttachmentFailure.OVERSIZED,
+					Error.FAILED,
+				))
+		if event != null and config.attach_scene_tree:
+			failures.append(_failure(
+					"built-in:scene-tree",
+					"view-hierarchy.json",
+					ObservabilityAttachmentFailure.OVERSIZED,
+					Error.FAILED,
+				))
+		return {
+			"attachments": attachments,
+			"failures": failures,
+		}
 	if config.attach_game_log:
-		_collect_game_log(config.max_attachment_bytes, attachments, failures)
+		_collect_game_log(
+				event != null,
+				config.max_attachment_bytes,
+				attachments,
+				failures,
+			)
 	if event != null and config.attach_screenshot:
 		_collect_screenshot(config.max_attachment_bytes, attachments, failures)
 	if event != null and config.attach_scene_tree:
@@ -35,6 +72,7 @@ func collect(event: ObservabilityEvent?, config: ObservabilityConfig) -> Diction
 
 
 func _collect_game_log(
+		validate_current_file: bool,
 		max_bytes: int,
 		attachments: Array[Dictionary],
 		failures: Array[ObservabilityAttachmentFailure],
@@ -44,13 +82,22 @@ func _collect_game_log(
 		failures.append(_failure(
 				"built-in:game-log",
 				"godot.log",
-				ObservabilityAttachmentFailure.PLATFORM_UNAVAILABLE,
-				Error.ERR_UNAVAILABLE,
+				ObservabilityAttachmentFailure.MISSING_FILE,
+				Error.ERR_FILE_NOT_FOUND,
 			))
 		return
 	var readable_path: String = path
 	if readable_path.begins_with("user://"):
 		readable_path = ProjectSettings.globalize_path(readable_path)
+	if not validate_current_file:
+		attachments.append({
+			"path": readable_path,
+			"filename": path.get_file(),
+			"content_type": "text/plain",
+			"category": String(ObservabilityAttachment.DEFAULT_CATEGORY),
+			"persistent": true,
+		})
+		return
 	if not FileAccess.file_exists(readable_path):
 		failures.append(_failure(
 				"built-in:game-log",

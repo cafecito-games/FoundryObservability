@@ -4324,29 +4324,36 @@ func test_memory_attachment_zero_limit_clear_history_and_shutdown_state() -> voi
 	))).to_equal(Error.OK)
 	var empty := ObservabilityAttachment.from_bytes(PackedByteArray(), "empty.bin")
 	var positive := ObservabilityAttachment.from_bytes(PackedByteArray([1]), "positive.bin")
+	var empty_file: FileAccess = FileAccess.open(
+			"user://memory-zero-empty.log",
+			FileAccess.WRITE,
+		)
+	empty_file.close()
+	var empty_path := ObservabilityAttachment.from_path(
+			"user://memory-zero-empty.log",
+			"empty.log",
+		)
 	Expect.that(empty).not_().to_be_null()
 	Expect.that(positive).not_().to_be_null()
-	if empty == null or positive == null:
+	Expect.that(empty_path).not_().to_be_null()
+	if empty == null or positive == null or empty_path == null:
 		return
 	Expect.that(service.add_attachment(empty)).not_().to_equal("")
 	Expect.that(service.add_attachment(positive)).not_().to_equal("")
+	Expect.that(service.add_attachment(empty_path)).not_().to_equal("")
 
 	Expect.that(service.capture_message("zero limit")).to_equal("memory:1")
-	Expect.that(provider.captured_attachments()[0]).to_have_size(1)
-	Expect.that(provider.captured_attachments()[0][0]["filename"]).to_equal("empty.bin")
+	Expect.that(provider.captured_attachments()[0]).to_have_size(0)
 	var zero_limit_failures: Array = service.last_attachment_failures()
-	@warning_ignore("unsafe_cast")
-	var zero_limit_failure: ObservabilityAttachmentFailure = (
-			zero_limit_failures[0] as ObservabilityAttachmentFailure
-	)
-	Expect.that(zero_limit_failures).to_have_size(1)
-	Expect.that(zero_limit_failure.reason()).to_equal(
-			ObservabilityAttachmentFailure.OVERSIZED,
-	)
+	Expect.that(zero_limit_failures).to_have_size(3)
+	for zero_limit_failure: ObservabilityAttachmentFailure in zero_limit_failures:
+		Expect.that(zero_limit_failure.reason()).to_equal(
+				ObservabilityAttachmentFailure.OVERSIZED,
+			)
 	provider.clear()
 	Expect.that(provider.captured_attachments()).to_have_size(0)
 	Expect.that(service.capture_message("live attachments remain")).to_equal("memory:2")
-	Expect.that(provider.captured_attachments()[0]).to_have_size(1)
+	Expect.that(provider.captured_attachments()[0]).to_have_size(0)
 
 	service.shutdown()
 	Expect.that(provider.remove_attachment("memory-attachment:1")).to_equal(Error.FAILED)

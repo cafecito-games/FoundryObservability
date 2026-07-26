@@ -2554,6 +2554,146 @@ func test_scene_hierarchy_respects_maximum_depth() -> void:
 	root.free()
 
 
+func test_zero_attachment_limit_disables_every_sentry_delivery_path() -> void:
+	var user_file: FileAccess = FileAccess.open(
+			"user://sentry-zero-user.log",
+			FileAccess.WRITE,
+		)
+	user_file.close()
+	var game_file: FileAccess = FileAccess.open(
+			"user://sentry-zero-game.log",
+			FileAccess.WRITE,
+		)
+	game_file.close()
+	var probe := FakeAttachmentRuntimeProbe.new()
+	var root := Node.new()
+	root.name = "Root"
+	probe.tree = FakeAttachmentSceneTree.new(root)
+	probe.game_log = "user://sentry-zero-game.log"
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_max_attachment_bytes = 0,
+			p_attach_game_log = true,
+			p_attach_screenshot = true,
+			p_attach_scene_tree = true,
+		))).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
+			PackedByteArray(),
+			"empty.bin",
+		)).is_empty()).to_be_false()
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_path(
+			"user://sentry-zero-user.log",
+			"empty.log",
+		)).is_empty()).to_be_false()
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_path(
+			"res://tests/support/fake_sentry_bridge.notest.fs",
+			"resource.fs",
+		)).is_empty()).to_be_false()
+	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "zero disables delivery",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads[0].has("attachments")).to_be_false()
+	Expect.that(bridge.captured_native_attachment_payloads[0]).to_have_size(0)
+	var failures: Array = provider.last_attachment_failures()
+	Expect.that(failures).to_have_size(6)
+	for failure: ObservabilityAttachmentFailure in failures:
+		Expect.that(failure.reason()).to_equal(
+				ObservabilityAttachmentFailure.OVERSIZED,
+			)
+	Expect.that(probe.screenshot_calls).to_equal(0)
+	root.free()
+
+
+func test_game_log_path_is_registered_lazily_before_the_file_exists() -> void:
+	var bridge := FakeSentryBridge.new()
+	var path: String = "user://sentry-lazy-game-%s.log" % bridge.get_instance_id()
+	var absolute_path: String = ProjectSettings.globalize_path(path)
+	if FileAccess.file_exists(absolute_path):
+		DirAccess.remove_absolute(absolute_path)
+	var probe := FakeAttachmentRuntimeProbe.new()
+	probe.game_log = path
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_game_log = true,
+		))).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+	Expect.that(bridge.current_attachment_payloads[0]["path"]).to_equal(absolute_path)
+
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string("late log")
+	file.close()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "lazy game log",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads[0].has("attachments")).to_be_false()
+	Expect.that(bridge.captured_native_attachment_payloads[0]).to_have_size(1)
+	Expect.that(provider.last_attachment_failures()).to_have_size(0)
+
+
+func test_empty_or_disabled_game_log_path_reports_missing_file() -> void:
+	var probe := FakeAttachmentRuntimeProbe.new()
+	probe.game_log = ""
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_game_log = true,
+		))).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "missing game log",
+		))).to_equal("sentry:1")
+	var failures: Array = provider.last_attachment_failures()
+	Expect.that(failures).to_have_size(1)
+	var failure: ObservabilityAttachmentFailure = failures[0]
+	Expect.that(failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.MISSING_FILE,
+		)
+	Expect.that(failure.error()).to_equal(Error.ERR_FILE_NOT_FOUND)
+
+
+func test_missing_configured_game_log_is_preflighted_at_event_time() -> void:
+	var bridge := FakeSentryBridge.new()
+	var path: String = "user://sentry-missing-game-%s.log" % bridge.get_instance_id()
+	var absolute_path: String = ProjectSettings.globalize_path(path)
+	if FileAccess.file_exists(absolute_path):
+		DirAccess.remove_absolute(absolute_path)
+	var probe := FakeAttachmentRuntimeProbe.new()
+	probe.game_log = path
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_game_log = true,
+		))).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "still missing game log",
+		))).to_equal("sentry:1")
+	var failures: Array = provider.last_attachment_failures()
+	Expect.that(failures).to_have_size(1)
+	var failure: ObservabilityAttachmentFailure = failures[0]
+	Expect.that(failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.MISSING_FILE,
+		)
+	Expect.that(failure.error()).to_equal(Error.ERR_FILE_NOT_FOUND)
+	Expect.that(bridge.captured_payloads[0].has("attachments")).to_be_false()
+
+
 func test_user_clear_preserves_configured_game_log_attachment() -> void:
 	var file: FileAccess = FileAccess.open("user://sentry-game.log", FileAccess.WRITE)
 	file.store_string("game output")
