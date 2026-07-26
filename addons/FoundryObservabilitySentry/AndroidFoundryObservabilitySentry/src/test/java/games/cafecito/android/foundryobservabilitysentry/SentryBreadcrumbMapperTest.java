@@ -39,6 +39,7 @@ public class SentryBreadcrumbMapperTest {
         Map.of(
             "message", "warning",
             "category", "error",
+            "type", "navigation",
             "level", 40,
             "timestamp_msec", 1234L,
             "attributes", Map.of("error.file", "res://player.fs")),
@@ -47,6 +48,7 @@ public class SentryBreadcrumbMapperTest {
 
     assertEquals("warning", result.getMessage());
     assertEquals("error", result.getCategory());
+    assertEquals("navigation", result.getType());
     assertEquals(SentryLevel.WARNING, result.getLevel());
     assertEquals(wallClock, result.getTimestamp());
     assertEquals("res://player.fs", result.getData("error.file"));

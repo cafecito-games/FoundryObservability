@@ -1,10 +1,13 @@
 package games.cafecito.android.foundryobservabilitysentry;
 
 import io.sentry.IScope;
+import io.sentry.ScopeType;
 import io.sentry.Sentry;
 import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Predicate;
 
 final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
   static final long SHUTDOWN_TIMEOUT_MSEC = 2_000L;
@@ -69,6 +72,7 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
     options.setAnrEnabled(configuration.anrDetectionEnabled);
     options.setAnrTimeoutIntervalMillis(configuration.anrTimeoutMsec);
     options.setAttachAnrThreadDump(configuration.attachAnrThreadDump);
+    options.setMaxBreadcrumbs(Math.max(0, configuration.maxBreadcrumbs));
     setIfNotEmpty(options::setEnvironment, configuration.environment);
     setIfNotEmpty(options::setRelease, configuration.release);
     setIfNotEmpty(options::setDist, configuration.dist);
@@ -85,6 +89,64 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
     for (Map.Entry<String, Map<String, Object>> entry : contexts.entrySet()) {
       scope.setContexts(entry.getKey(), entry.getValue());
     }
+  }
+
+  static void applyCaptureScope(
+      IScope scope,
+      Object runtimeContexts,
+      SentryEventMapper.ScopePayload localScope) {
+    applyContexts(scope, SentryEventMapper.contexts(runtimeContexts));
+    SentryEventMapper.applyScope(scope, localScope);
+  }
+
+  static boolean replaceFoundryScope(
+      SentryEventMapper.ScopePayload candidate,
+      Set<String> previousTagKeys,
+      Set<String> previousContextKeys) {
+    boolean[] applied = {false};
+    Sentry.configureScope(ScopeType.COMBINED, scope -> {
+      if (hasUnownedCollision(
+              candidate.tags.keySet(),
+              previousTagKeys,
+              scope.getTags()::containsKey)
+          || hasUnownedCollision(
+              candidate.contexts.keySet(),
+              previousContextKeys,
+              scope.getContexts()::containsKey)) {
+        return;
+      }
+      for (String key : previousTagKeys) {
+        scope.removeTag(key);
+      }
+      for (String key : previousContextKeys) {
+        scope.removeContexts(key);
+      }
+      scope.setUser(null);
+      SentryEventMapper.applyScope(scope, candidate);
+      applied[0] = true;
+    });
+    return applied[0];
+  }
+
+  private static boolean hasUnownedCollision(
+      Set<String> candidateKeys,
+      Set<String> previousKeys,
+      Predicate<String> currentContainsKey) {
+    for (String key : candidateKeys) {
+      if (!previousKeys.contains(key) && currentContainsKey.test(key)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static boolean clearBreadcrumbs() {
+    boolean[] cleared = {false};
+    Sentry.configureScope(scope -> {
+      scope.clearBreadcrumbs();
+      cleared[0] = true;
+    });
+    return cleared[0];
   }
 
   private static void setIfNotEmpty(

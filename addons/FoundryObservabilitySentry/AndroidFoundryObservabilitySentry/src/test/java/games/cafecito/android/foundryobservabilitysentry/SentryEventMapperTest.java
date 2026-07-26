@@ -12,9 +12,12 @@ import io.sentry.SentryLevel;
 import io.sentry.SentryOptions;
 import io.sentry.protocol.SentryException;
 import io.sentry.protocol.SentryStackFrame;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -160,13 +163,133 @@ public class SentryEventMapperTest {
     assertFalse(contexts.get("foundry_engine").containsKey("unsupported"));
     assertTrue(((Map<?, ?>) contexts.get("foundry_engine").get("cycle")).isEmpty());
     assertFalse(contexts.containsKey(""));
-    assertFalse(contexts.containsKey("empty"));
+    assertTrue(contexts.containsKey("empty"));
 
     Scope scope = new Scope(new SentryOptions());
     AndroidSentrySdkDriver.applyContexts(scope, contexts);
     Map<String, Object> applied =
         (Map<String, Object>) scope.getContexts().get("foundry_engine");
     assertEquals("4.5", applied.get("version"));
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void scopePayloadIsImmutableAndAppliesTagsContextsAndExplicitUserFields() {
+    Map<String, Object> nested = new HashMap<>();
+    nested.put("id", 7);
+    nested.put("teams", new ArrayList<>(List.of("red", "blue")));
+    nested.put("nullable", null);
+    nested.put("positions", new ArrayList<>(Arrays.asList("red", null, "blue")));
+    Map<String, Object> contexts = new HashMap<>();
+    contexts.put("match", nested);
+    contexts.put("empty", new HashMap<>());
+    Map<String, Object> tags = new HashMap<>();
+    tags.put("region", "iad");
+    tags.put("invalid", 7);
+    Map<String, Object> user = new HashMap<>();
+    user.put("id", "player-7");
+    user.put("display_name", "Mina");
+    user.put("contact_email", "mina@example.com");
+    user.put("ip_address", "127.0.0.1");
+    Map<String, Object> input = new HashMap<>();
+    input.put("tags", tags);
+    input.put("contexts", contexts);
+    input.put("user", user);
+
+    SentryEventMapper.ScopePayload payload = SentryEventMapper.scopePayload(input);
+    tags.put("region", "mutated");
+    nested.put("id", 99);
+    ((List<Object>) nested.get("teams")).set(0, "mutated");
+    user.put("id", "mutated");
+
+    assertEquals(Map.of("region", "iad"), payload.tags);
+    assertEquals(7, payload.contexts.get("match").get("id"));
+    assertEquals(List.of("red", "blue"), payload.contexts.get("match").get("teams"));
+    assertTrue(payload.contexts.get("match").containsKey("nullable"));
+    assertNull(payload.contexts.get("match").get("nullable"));
+    assertEquals(
+        Arrays.asList("red", null, "blue"),
+        payload.contexts.get("match").get("positions"));
+    assertEquals(Collections.emptyMap(), payload.contexts.get("empty"));
+    assertEquals(
+        Map.of(
+            "id", "player-7",
+            "display_name", "Mina",
+            "contact_email", "mina@example.com"),
+        payload.user);
+
+    Scope scope = new Scope(new SentryOptions());
+    SentryEventMapper.applyScope(scope, payload);
+
+    assertEquals("iad", scope.getTags().get("region"));
+    assertEquals(7, ((Map<?, ?>) scope.getContexts().get("match")).get("id"));
+    assertEquals(Collections.emptyMap(), scope.getContexts().get("empty"));
+    assertEquals("player-7", scope.getUser().getId());
+    assertEquals("Mina", scope.getUser().getUsername());
+    assertEquals("mina@example.com", scope.getUser().getEmail());
+    assertNull(scope.getUser().getIpAddress());
+    assertNull(scope.getUser().getName());
+
+    expectUnsupported(() -> payload.tags.put("other", "value"));
+    expectUnsupported(() -> payload.contexts.get("match").put("other", true));
+    expectUnsupported(
+        () -> ((List<Object>) payload.contexts.get("match").get("teams")).add("green"));
+  }
+
+  @Test
+  public void scopePayloadReadOnlyFieldsAreFinal() throws Exception {
+    for (String name : List.of("tags", "contexts", "user")) {
+      Field field = SentryEventMapper.ScopePayload.class.getDeclaredField(name);
+      assertTrue(Modifier.isFinal(field.getModifiers()));
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void captureScopeAppliesRuntimeThenLocalOverridesWithoutMutatingGlobalScope() {
+    Scope global = new Scope(new SentryOptions());
+    global.setTag("region", "global");
+    global.setTag("preserved", "yes");
+    global.setContexts("match", Map.of("id", 1, "team", "global"));
+    global.setContexts("unrelated", Map.of("value", true));
+    io.sentry.protocol.User globalUser = new io.sentry.protocol.User();
+    globalUser.setId("global-player");
+    global.setUser(globalUser);
+
+    io.sentry.IScope captureScope = global.clone();
+    SentryEventMapper.ScopePayload local = SentryEventMapper.scopePayload(Map.of(
+        "tags", Map.of("region", "local"),
+        "contexts", Map.of("match", Map.of()),
+        "user", Map.of("id", "local-player")));
+
+    AndroidSentrySdkDriver.applyCaptureScope(
+        captureScope,
+        Map.of(
+            "match", Map.of("id", 2, "team", "runtime"),
+            "runtime", Map.of("refreshed", true)),
+        local);
+
+    assertEquals("local", captureScope.getTags().get("region"));
+    assertEquals("yes", captureScope.getTags().get("preserved"));
+    assertEquals(Collections.emptyMap(), captureScope.getContexts().get("match"));
+    assertEquals(
+        Map.of("refreshed", true),
+        captureScope.getContexts().get("runtime"));
+    assertEquals(
+        Map.of("value", true),
+        captureScope.getContexts().get("unrelated"));
+    assertEquals("local-player", captureScope.getUser().getId());
+
+    assertEquals("global", global.getTags().get("region"));
+    assertEquals(
+        Map.of("id", 1, "team", "global"),
+        (Map<String, Object>) global.getContexts().get("match"));
+    assertFalse(global.getContexts().containsKey("runtime"));
+    assertEquals("global-player", global.getUser().getId());
+
+    io.sentry.IScope laterCapture = global.clone();
+    assertEquals("global", laterCapture.getTags().get("region"));
+    assertEquals("global-player", laterCapture.getUser().getId());
   }
 
   @Test
@@ -529,5 +652,14 @@ public class SentryEventMapperTest {
     payload.put("timestamp_msec", 1612325106123L);
     payload.put("exception", exception);
     return SentryEventMapper.makeEvent(payload, Map.of());
+  }
+
+  private static void expectUnsupported(Runnable mutation) {
+    try {
+      mutation.run();
+    } catch (UnsupportedOperationException expected) {
+      return;
+    }
+    throw new AssertionError("scope payload should be immutable");
   }
 }

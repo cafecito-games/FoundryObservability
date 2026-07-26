@@ -4,6 +4,33 @@ import Sentry
 private let foundryVariableMaxContainerDepth = 8
 private let foundryVariableMaxItemCount = 256
 
+struct FoundryFoundationValue {
+    let value: Any
+
+    init(_ value: Any) {
+        self.value = value
+    }
+}
+
+func foundryFoundationDictionary(
+    _ entries: [(key: String, value: FoundryFoundationValue?)]
+) -> [String: Any] {
+    var result: [String: Any] = [:]
+    for entry in entries {
+        guard let value = entry.value else {
+            continue
+        }
+        result[entry.key] = value.value
+    }
+    return result
+}
+
+func foundryFoundationArray(
+    _ values: [FoundryFoundationValue?]
+) -> [Any] {
+    values.compactMap { $0?.value }
+}
+
 func sentryLogLevel(for level: Int) -> SentryLog.Level {
     switch level {
     case 10:
@@ -86,6 +113,7 @@ func makeSentryBreadcrumb(
     message: String,
     level: Int,
     category: String,
+    type: String,
     timestampMsec: Int64,
     sdkTimestamp: Date = Date(),
     globalAttributes: [String: Any] = [:],
@@ -94,6 +122,7 @@ func makeSentryBreadcrumb(
     let breadcrumb = Breadcrumb()
     breadcrumb.message = message
     breadcrumb.category = category
+    breadcrumb.type = type
     breadcrumb.level = sentryLevel(for: level)
     breadcrumb.timestamp = sdkTimestamp
     breadcrumb.data = sentryBreadcrumbData(
@@ -254,8 +283,7 @@ func foundrySentryContexts(_ value: Any?) -> [String: [String: Any]] {
                 rawValue,
                 depth: 0,
                 state: FoundryVariableCopyState()
-            ),
-            !context.isEmpty
+            )
         else {
             continue
         }
@@ -271,6 +299,134 @@ func applySentryContexts(
     for (key, value) in contexts {
         scope.setContext(value: value, key: key)
     }
+}
+
+struct FoundryScopePayload {
+    let tags: [String: String]
+    let contexts: [String: [String: Any]]
+    let user: [String: String]?
+
+    var isSemanticallyEmpty: Bool {
+        tags.isEmpty && contexts.isEmpty && user == nil
+    }
+}
+
+func shouldRejectSentryStructuredLog(scope: FoundryScopePayload) -> Bool {
+    !scope.isSemanticallyEmpty
+}
+
+struct FoundryInstalledScopeKeys {
+    let tagKeys: Set<String>
+    let contextKeys: Set<String>
+
+    init(
+        tagKeys: Set<String> = [],
+        contextKeys: Set<String> = []
+    ) {
+        self.tagKeys = tagKeys
+        self.contextKeys = contextKeys
+    }
+}
+
+func foundryScopePayload(_ value: Any?) -> FoundryScopePayload {
+    guard let dictionary = value as? NSDictionary else {
+        return FoundryScopePayload(tags: [:], contexts: [:], user: nil)
+    }
+    return FoundryScopePayload(
+        tags: foundryScopeTags(dictionary["tags"]),
+        contexts: foundrySentryContexts(dictionary["contexts"]),
+        user: foundryScopeUser(dictionary["user"])
+    )
+}
+
+func applyFoundryScope(_ payload: FoundryScopePayload, to scope: Scope) {
+    for (key, value) in payload.tags {
+        scope.setTag(value: value, key: key)
+    }
+    applySentryContexts(payload.contexts, to: scope)
+    if let user = payload.user {
+        scope.setUser(sentryUser(user))
+    }
+}
+
+func replaceFoundryScope(
+    _ payload: FoundryScopePayload,
+    previousKeys: FoundryInstalledScopeKeys,
+    on scope: Scope
+) -> FoundryInstalledScopeKeys? {
+    let serialized = scope.serialize()
+    let currentTagKeys = sentryScopeDictionaryKeys(serialized["tags"])
+    let currentContextKeys = sentryScopeDictionaryKeys(serialized["context"])
+    let unownedCandidateTagKeys =
+        Set(payload.tags.keys).subtracting(previousKeys.tagKeys)
+    let unownedCandidateContextKeys =
+        Set(payload.contexts.keys).subtracting(previousKeys.contextKeys)
+    guard
+        currentTagKeys.isDisjoint(with: unownedCandidateTagKeys),
+        currentContextKeys.isDisjoint(with: unownedCandidateContextKeys)
+    else {
+        return nil
+    }
+
+    for key in previousKeys.tagKeys {
+        scope.removeTag(key: key)
+    }
+    for key in previousKeys.contextKeys {
+        scope.removeContext(key: key)
+    }
+    scope.setUser(nil)
+    applyFoundryScope(payload, to: scope)
+    return FoundryInstalledScopeKeys(
+        tagKeys: Set(payload.tags.keys),
+        contextKeys: Set(payload.contexts.keys)
+    )
+}
+
+private func sentryScopeDictionaryKeys(_ value: Any?) -> Set<String> {
+    guard let dictionary = value as? NSDictionary else {
+        return []
+    }
+    return Set(dictionary.allKeys.compactMap { $0 as? String })
+}
+
+private func foundryScopeTags(_ value: Any?) -> [String: String] {
+    guard let dictionary = value as? NSDictionary else {
+        return [:]
+    }
+    var tags: [String: String] = [:]
+    for (rawKey, rawValue) in dictionary {
+        guard
+            let key = rawKey as? String,
+            !key.isEmpty,
+            let value = rawValue as? String
+        else {
+            continue
+        }
+        tags[key] = value
+    }
+    return tags
+}
+
+private func foundryScopeUser(_ value: Any?) -> [String: String]? {
+    guard let dictionary = value as? NSDictionary else {
+        return nil
+    }
+    var user: [String: String] = [:]
+    for key in ["id", "display_name", "contact_email"] {
+        guard let value = dictionary[key] as? String, !value.isEmpty else {
+            continue
+        }
+        user[key] = value
+    }
+    return user.isEmpty ? nil : user
+}
+
+private func sentryUser(_ payload: [String: String]) -> User {
+    let user = User()
+    user.userId = payload["id"]
+    user.username = payload["display_name"]
+    user.email = payload["contact_email"]
+    return user
 }
 
 private func foundrySanitizedVariableDictionary(
@@ -342,6 +498,9 @@ private func foundrySanitizedVariableValue(
     parentDepth: Int,
     state: FoundryVariableCopyState
 ) -> Any? {
+    if value is NSNull {
+        return NSNull()
+    }
     if let value = value as? String {
         return value
     }

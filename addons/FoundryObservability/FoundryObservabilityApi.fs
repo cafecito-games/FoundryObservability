@@ -22,9 +22,18 @@ abstract func last_error() -> int
 ## Captures an event and returns a provider ID, or an empty string on no-op/failure.
 abstract func capture_event(event: ObservabilityEvent) -> String
 ## Creates and captures a game-sourced message event.
-abstract func capture_message(message: String, level: int = ObservabilityLevel.INFO, attributes: Dictionary = {}) -> String
+abstract func capture_message(
+		message: String,
+		level: int = ObservabilityLevel.INFO,
+		attributes: Dictionary = {},
+		scope: ObservabilityScope? = null,
+) -> String
 ## Creates and captures a game-sourced ERROR exception event.
-abstract func capture_exception(exception: ObservabilityException, attributes: Dictionary = {}) -> String
+abstract func capture_exception(
+		exception: ObservabilityException,
+		attributes: Dictionary = {},
+		scope: ObservabilityScope? = null,
+) -> String
 ## Creates and captures a structured log record.
 abstract func capture_log(
 		message: String,
@@ -33,9 +42,28 @@ abstract func capture_log(
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
 		engine_ticks_msec: int = -1,
+		scope: ObservabilityScope? = null,
 ) -> String
+## Sets a global session tag when the active provider supports scope.
+abstract func set_tag(key: String, value: String) -> bool
+## Removes a global session tag when the active provider supports scope.
+abstract func remove_tag(key: String) -> bool
+## Removes all global session tags when the active provider supports scope.
+abstract func clear_tags() -> bool
+## Sets a global structured context when the active provider supports scope.
+abstract func set_context(name: String, value: Dictionary) -> bool
+## Removes a global structured context when the active provider supports scope.
+abstract func remove_context(name: String) -> bool
+## Removes all global structured contexts when the active provider supports scope.
+abstract func clear_contexts() -> bool
+## Sets the explicit global application user when the active provider supports scope.
+abstract func set_user(user: ObservabilityUser) -> bool
+## Removes the explicit global application user when the active provider supports scope.
+abstract func remove_user() -> bool
 ## Captures a normalized breadcrumb through an optional provider capability.
 abstract func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool
+## Clears the current breadcrumb trail through an optional provider capability.
+abstract func clear_breadcrumbs() -> bool
 ## Captures explicit player feedback and returns a provider ID, or an empty string on no-op/failure.
 abstract func capture_feedback(feedback: ObservabilityFeedback) -> String
 ## Captures a normalized custom metric and reports whether a provider accepted it.

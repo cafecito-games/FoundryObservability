@@ -11,47 +11,55 @@ private let bridgeErrorOK = 0
 private let bridgeErrorFailed = 1
 
 private func foundationDictionary(from dictionary: VariantDictionary) -> [String: Any] {
-    var result: [String: Any] = [:]
+    var entries: [(key: String, value: FoundryFoundationValue?)] = []
     let keys = dictionary.keys()
     for index in 0..<Int(keys.size()) {
         guard
             let keyVariant = keys[index],
-            let key = String(keyVariant),
-            let valueVariant = dictionary.get(key: keyVariant, default: nil),
-            let value = foundationValue(from: valueVariant)
+            let key = String(keyVariant)
         else {
             continue
         }
-        result[key] = value
+        let convertedValue: FoundryFoundationValue?
+        if let valueVariant = dictionary.get(key: keyVariant, default: nil) {
+            convertedValue = foundationValue(from: valueVariant)
+        } else {
+            convertedValue = FoundryFoundationValue(NSNull())
+        }
+        entries.append((key: key, value: convertedValue))
     }
-    return result
+    return foundryFoundationDictionary(entries)
 }
 
-private func foundationValue(from variant: Variant) -> Any? {
+private func foundationValue(from variant: Variant) -> FoundryFoundationValue? {
+    if variant.gtype == .nil {
+        return FoundryFoundationValue(NSNull())
+    }
     if let value = Bool(variant) {
-        return value
+        return FoundryFoundationValue(value)
     }
     if let value = Int64(variant) {
-        return value
+        return FoundryFoundationValue(value)
     }
     if let value = Double(variant) {
-        return value
+        return FoundryFoundationValue(value)
     }
     if let value = String(variant) {
-        return value
+        return FoundryFoundationValue(value)
     }
     if let dictionary = VariantDictionary(variant) {
-        return foundationDictionary(from: dictionary)
+        return FoundryFoundationValue(foundationDictionary(from: dictionary))
     }
     if let array = VariantArray(variant) {
-        var result: [Any] = []
+        var values: [FoundryFoundationValue?] = []
         for index in 0..<Int(array.size()) {
-            guard let valueVariant = array[index], let value = foundationValue(from: valueVariant) else {
-                continue
+            if let valueVariant = array[index] {
+                values.append(foundationValue(from: valueVariant))
+            } else {
+                values.append(FoundryFoundationValue(NSNull()))
             }
-            result.append(value)
         }
-        return result
+        return FoundryFoundationValue(foundryFoundationArray(values))
     }
     return nil
 }
@@ -71,6 +79,22 @@ private func intValue(_ value: Any?) -> Int {
         return Int(value)
     }
     return 0
+}
+
+private func intValue(_ value: Any?, default defaultValue: Int) -> Int {
+    guard value != nil else {
+        return defaultValue
+    }
+    if let value = value as? Int {
+        return value
+    }
+    if let value = value as? Int64 {
+        return Int(exactly: value) ?? defaultValue
+    }
+    if let value = value as? Double, value.isFinite {
+        return Int(exactly: value) ?? defaultValue
+    }
+    return defaultValue
 }
 
 private func doubleValue(_ value: Any?) -> Double? {
@@ -148,12 +172,14 @@ class SentryObservabilityBridge: RefCounted {
             applicationHangDetectionEnabled:
                 boolValue(values["application_hang_detection_enabled"]),
             applicationHangTimeoutMsec:
-                intValue(values["application_hang_timeout_msec"])
+                intValue(values["application_hang_timeout_msec"]),
+            maxBreadcrumbs: intValue(values["max_breadcrumbs"], default: 100)
         )
-        guard Self.lifecycleCoordinator.configure(
+        let configured = Self.lifecycleCoordinator.configure(
             owner: candidateOwner,
             configuration: candidateConfiguration
-        ) else {
+        )
+        guard configured else {
             return bridgeErrorFailed
         }
 
@@ -189,8 +215,10 @@ class SentryObservabilityBridge: RefCounted {
             exception: exception
         )
         let contexts = foundrySentryContexts(values["contexts"])
+        let localScope = foundryScopePayload(values["scope"])
         let eventID = SentrySDK.capture(event: event) { scope in
             applySentryContexts(contexts, to: scope)
+            applyFoundryScope(localScope, to: scope)
         }
         let eventIDString = eventID.sentryIdString
         return eventIDString == SentryId.empty.sentryIdString ? "" : eventIDString
@@ -203,6 +231,10 @@ class SentryObservabilityBridge: RefCounted {
         }
 
         let values = foundationDictionary(from: payload)
+        let localScope = foundryScopePayload(values["scope"])
+        guard !shouldRejectSentryStructuredLog(scope: localScope) else {
+            return ""
+        }
         let attributes = scalarLogAttributes(mergedLogAttributes(
             global: globalAttributes,
             event: dictionaryValue(values["attributes"]),
@@ -243,12 +275,41 @@ class SentryObservabilityBridge: RefCounted {
             message: stringValue(values["message"]),
             level: intValue(values["level"]),
             category: stringValue(values["category"]),
+            type: stringValue(values["type"]),
             timestampMsec: timestampMsec,
             globalAttributes: globalAttributes,
             breadcrumbAttributes: dictionaryValue(values["attributes"])
         )
         SentrySDK.addBreadcrumb(breadcrumb)
         return true
+    }
+
+    @Callable
+    func applyScope(payload: VariantDictionary) -> Bool {
+        let candidate = foundryScopePayload(foundationDictionary(from: payload))
+        return Self.lifecycleCoordinator.replaceScope(owner: lifecycleOwner) { previousKeys in
+            var nextKeys: FoundryInstalledScopeKeys?
+            SentrySDK.configureScope { scope in
+                nextKeys = replaceFoundryScope(
+                    candidate,
+                    previousKeys: previousKeys,
+                    on: scope
+                )
+            }
+            return nextKeys
+        }
+    }
+
+    @Callable
+    func clearBreadcrumbs() -> Bool {
+        var cleared = false
+        let performed = Self.lifecycleCoordinator.perform(owner: lifecycleOwner) {
+            SentrySDK.configureScope { scope in
+                scope.clearBreadcrumbs()
+                cleared = true
+            }
+        }
+        return performed && cleared
     }
 
     @Callable

@@ -15,6 +15,7 @@ final var _timestamp_msec: int
 final var _attributes: Dictionary
 final var _exception: ObservabilityException?
 final var _engine_ticks_msec: int
+final var _scope: ObservabilityScope?
 
 
 ## Creates an event with kind, severity, source, timestamp, copied attributes, and optional exception data.
@@ -27,6 +28,7 @@ func _init(
 		p_attributes: Dictionary = {},
 		p_exception: ObservabilityException? = null,
 		p_engine_ticks_msec: int = -1,
+		p_scope: ObservabilityScope? = null,
 ) -> void:
 	_kind = p_kind
 	_level = p_level
@@ -36,6 +38,7 @@ func _init(
 	_attributes = p_attributes.duplicate(true)
 	_exception = p_exception
 	_engine_ticks_msec = p_engine_ticks_msec
+	_scope = null if p_scope == null else p_scope.duplicate()
 
 
 ## Returns the event kind, normally message, exception, or log.
@@ -76,3 +79,8 @@ func attributes() -> Dictionary:
 ## Returns the optional exception payload associated with the event.
 func exception() -> ObservabilityException?:
 	return _exception
+
+
+## Returns an isolated copy of the optional event-local scope.
+func scope() -> ObservabilityScope?:
+	return null if _scope == null else _scope.duplicate()

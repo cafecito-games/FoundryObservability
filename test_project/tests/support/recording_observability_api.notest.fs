@@ -53,6 +53,7 @@ func capture_message(
 		_message: String,
 		_level: int = ObservabilityLevel.INFO,
 		_attributes: Dictionary = {},
+		_scope: ObservabilityScope? = null,
 ) -> String:
 	return "message:1"
 
@@ -60,6 +61,7 @@ func capture_message(
 func capture_exception(
 		_exception: ObservabilityException,
 		_attributes: Dictionary = {},
+		_scope: ObservabilityScope? = null,
 ) -> String:
 	return "exception:1"
 
@@ -71,6 +73,7 @@ func capture_log(
 		timestamp_msec: int = -1,
 		attributes: Dictionary = {},
 		engine_ticks_msec: int = -1,
+		_scope: ObservabilityScope? = null,
 ) -> String:
 	captured_logs.append({
 			"message": message,
@@ -83,8 +86,45 @@ func capture_log(
 	return "log:1"
 
 
+func set_tag(_key: String, _value: String) -> bool:
+	return true
+
+
+func remove_tag(_key: String) -> bool:
+	return true
+
+
+func clear_tags() -> bool:
+	return true
+
+
+func set_context(_name: String, _value: Dictionary) -> bool:
+	return true
+
+
+func remove_context(_name: String) -> bool:
+	return true
+
+
+func clear_contexts() -> bool:
+	return true
+
+
+func set_user(_user: ObservabilityUser) -> bool:
+	return true
+
+
+func remove_user() -> bool:
+	return true
+
+
 func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
 	captured_breadcrumbs.append(breadcrumb)
+	return true
+
+
+func clear_breadcrumbs() -> bool:
+	captured_breadcrumbs.clear()
 	return true
 
 

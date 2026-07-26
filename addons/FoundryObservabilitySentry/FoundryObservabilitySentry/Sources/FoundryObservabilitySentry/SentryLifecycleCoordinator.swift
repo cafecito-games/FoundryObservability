@@ -16,6 +16,7 @@ struct SentryLifecycleConfiguration: Equatable {
     let metricsEnabled: Bool
     let applicationHangDetectionEnabled: Bool
     let applicationHangTimeoutMsec: Int
+    let maxBreadcrumbs: Int
 
     static func == (
         lhs: SentryLifecycleConfiguration,
@@ -37,6 +38,7 @@ struct SentryLifecycleConfiguration: Equatable {
                 == rhs.applicationHangDetectionEnabled
             && lhs.applicationHangTimeoutMsec
                 == rhs.applicationHangTimeoutMsec
+            && lhs.maxBreadcrumbs == rhs.maxBreadcrumbs
     }
 }
 
@@ -53,6 +55,7 @@ final class SentryLifecycleCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private var owner: String?
     private var configuration: SentryLifecycleConfiguration?
+    private var installedScopeKeys = FoundryInstalledScopeKeys()
 
     init(driver: SentryLifecycleDriving) {
         self.driver = driver
@@ -82,6 +85,7 @@ final class SentryLifecycleCoordinator: @unchecked Sendable {
 
             let previousOwner = owner
             let previousConfiguration = configuration
+            installedScopeKeys = FoundryInstalledScopeKeys()
             if driver.isEnabled {
                 driver.close()
             }
@@ -113,6 +117,40 @@ final class SentryLifecycleCoordinator: @unchecked Sendable {
     }
 
     @discardableResult
+    func perform(owner candidateOwner: String, operation: () -> Void) -> Bool {
+        withLock {
+            guard
+                !candidateOwner.isEmpty,
+                candidateOwner == owner,
+                driver.isEnabled
+            else {
+                return false
+            }
+            operation()
+            return true
+        }
+    }
+
+    @discardableResult
+    func replaceScope(
+        owner candidateOwner: String,
+        operation: (FoundryInstalledScopeKeys) -> FoundryInstalledScopeKeys?
+    ) -> Bool {
+        withLock {
+            guard
+                !candidateOwner.isEmpty,
+                candidateOwner == owner,
+                driver.isEnabled,
+                let nextKeys = operation(installedScopeKeys)
+            else {
+                return false
+            }
+            installedScopeKeys = nextKeys
+            return true
+        }
+    }
+
+    @discardableResult
     func flush(owner candidateOwner: String, timeout: TimeInterval) -> Bool {
         withLock {
             guard
@@ -137,6 +175,7 @@ final class SentryLifecycleCoordinator: @unchecked Sendable {
             }
             owner = nil
             configuration = nil
+            installedScopeKeys = FoundryInstalledScopeKeys()
         }
     }
 
@@ -192,6 +231,7 @@ func makeAppleSentryOptions(
         configuration.providerOptions["send_default_pii"] as? Bool ?? false
     options.enableLogs = configuration.logsEnabled
     options.enableMetrics = configuration.metricsEnabled
+    options.maxBreadcrumbs = UInt(max(0, configuration.maxBreadcrumbs))
     applyAppleHangDiagnostics(
         from: [
             "application_hang_detection_enabled":

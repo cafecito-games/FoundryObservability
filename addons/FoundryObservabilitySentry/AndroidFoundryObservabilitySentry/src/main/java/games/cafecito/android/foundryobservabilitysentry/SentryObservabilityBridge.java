@@ -46,6 +46,10 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   @UsedByFoundry
   public int configure(Dictionary payload) {
+    return configureLocked(payload);
+  }
+
+  private synchronized int configureLocked(Dictionary payload) {
     if (payload == null) {
       return BRIDGE_ERROR_FAILED;
     }
@@ -96,7 +100,8 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
             booleanValue(payload.get("metrics_enabled")),
             diagnosticOptions.isAnrEnabled(),
             diagnosticOptions.getAnrTimeoutIntervalMillis(),
-            diagnosticOptions.isAttachAnrThreadDump());
+            diagnosticOptions.isAttachAnrThreadDump(),
+            maxBreadcrumbsValue(payload.get("max_breadcrumbs")));
 
     if (!LIFECYCLE_COORDINATOR.configure(candidateOwner, candidateConfiguration)) {
       return BRIDGE_ERROR_FAILED;
@@ -120,11 +125,12 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       return "";
     }
     SentryEvent event = SentryEventMapper.makeEvent(payload, globalAttributes);
-    Map<String, Map<String, Object>> contexts = SentryEventMapper.contexts(
-        payload == null ? null : payload.get("contexts"));
+    Object contexts = payload == null ? null : payload.get("contexts");
+    SentryEventMapper.ScopePayload localScope = SentryEventMapper.scopePayload(
+        payload == null ? null : payload.get("scope"));
     return eventIdString(Sentry.captureEvent(
         event,
-        scope -> AndroidSentrySdkDriver.applyContexts(scope, contexts)));
+        scope -> AndroidSentrySdkDriver.applyCaptureScope(scope, contexts, localScope)));
   }
 
   @UsedByFoundry
@@ -134,6 +140,13 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     }
 
     Map<?, ?> values = payload;
+    SentryEventMapper.ScopePayload localScope =
+        SentryEventMapper.scopePayload(values.get("scope"));
+    if (!localScope.tags.isEmpty()
+        || !localScope.contexts.isEmpty()
+        || localScope.user != null) {
+      return "";
+    }
     Map<?, ?> eventAttributes = values.get("attributes") instanceof Map
         ? (Map<?, ?>) values.get("attributes")
         : Collections.emptyMap();
@@ -165,6 +178,28 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     } catch (RuntimeException exception) {
       return false;
     }
+  }
+
+  @UsedByFoundry
+  public boolean applyScope(Dictionary payload) {
+    SentryEventMapper.ScopePayload candidate = SentryEventMapper.scopePayload(payload);
+    return LIFECYCLE_COORDINATOR.replaceScope(
+        lifecycleOwner,
+        previousKeys -> AndroidSentrySdkDriver.replaceFoundryScope(
+                candidate,
+                previousKeys.tagKeys,
+                previousKeys.contextKeys)
+            ? new SentryLifecycleCoordinator.ScopeKeys(
+                candidate.tags.keySet(),
+                candidate.contexts.keySet())
+            : null);
+  }
+
+  @UsedByFoundry
+  public boolean clearBreadcrumbs() {
+    return LIFECYCLE_COORDINATOR.perform(
+        lifecycleOwner,
+        AndroidSentrySdkDriver::clearBreadcrumbs);
   }
 
   @UsedByFoundry
@@ -240,6 +275,10 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   @UsedByFoundry
   public void shutdown(String owner) {
+    shutdownLocked(owner);
+  }
+
+  private synchronized void shutdownLocked(String owner) {
     LIFECYCLE_COORDINATOR.shutdown(owner);
     if (owner != null && owner.equals(lifecycleOwner)) {
       lifecycleOwner = "";
@@ -274,6 +313,16 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   static String eventIdString(SentryId eventId) {
     return eventId == null || SentryId.EMPTY_ID.equals(eventId) ? "" : eventId.toString();
+  }
+
+  static int maxBreadcrumbsValue(Object value) {
+    Long exactValue = exactDiagnosticLong(value);
+    if (exactValue == null
+        || exactValue < Integer.MIN_VALUE
+        || exactValue > Integer.MAX_VALUE) {
+      return 100;
+    }
+    return Math.max(0, exactValue.intValue());
   }
 
   private static void setIfNotEmpty(

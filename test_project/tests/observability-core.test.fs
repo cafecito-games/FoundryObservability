@@ -29,6 +29,112 @@ class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/Obser
 		return {"public accessor": true}
 
 
+class RecordingScopeProvider extends RefCounted:
+	uses ObservabilityProvider, ObservabilityScopeProvider, ObservabilityBreadcrumbsProvider
+
+	var operation_result: bool = true
+	var calls: Array[StringName] = []
+	var captured_events: Array[ObservabilityEvent] = []
+	var _enabled: bool = false
+	var _shutdown: bool = false
+
+	func provider_name() -> StringName:
+		return &"recording-scope"
+
+	func is_available() -> bool:
+		return _enabled and not _shutdown
+
+	func configure(config: ObservabilityConfig) -> int:
+		_enabled = config.enabled
+		_shutdown = false
+		return Error.OK
+
+	func capture(event: ObservabilityEvent) -> String:
+		if not is_available():
+			return ""
+		calls.append(&"capture")
+		captured_events.append(event)
+		return "recording-scope:%s" % captured_events.size()
+
+	func capture_feedback(_feedback: ObservabilityFeedback) -> String:
+		return ""
+
+	func capture_breadcrumb(_breadcrumb: ObservabilityBreadcrumb) -> bool:
+		return true
+
+	func set_tag(_key: String, _value: String) -> bool:
+		calls.append(&"set_tag")
+		return operation_result
+
+	func remove_tag(_key: String) -> bool:
+		calls.append(&"remove_tag")
+		return operation_result
+
+	func clear_tags() -> bool:
+		calls.append(&"clear_tags")
+		return operation_result
+
+	func set_context(_name: String, _value: Dictionary) -> bool:
+		calls.append(&"set_context")
+		return operation_result
+
+	func remove_context(_name: String) -> bool:
+		calls.append(&"remove_context")
+		return operation_result
+
+	func clear_contexts() -> bool:
+		calls.append(&"clear_contexts")
+		return operation_result
+
+	func set_user(_user: ObservabilityUser) -> bool:
+		calls.append(&"set_user")
+		return operation_result
+
+	func remove_user() -> bool:
+		calls.append(&"remove_user")
+		return operation_result
+
+	func clear_breadcrumbs() -> bool:
+		calls.append(&"clear_breadcrumbs")
+		return operation_result
+
+	func flush(_timeout_msec: int = 2000) -> int:
+		return Error.OK
+
+	func shutdown() -> void:
+		_shutdown = true
+		_enabled = false
+
+
+class NonBooleanScopeProvider extends "res://tests/support/scopeless_observability_provider.notest.fs":
+	func set_tag(_key: String, _value: String) -> String:
+		return "not a bool"
+
+	func remove_tag(_key: String) -> String:
+		return "not a bool"
+
+	func clear_tags() -> String:
+		return "not a bool"
+
+	func set_context(_name: String, _value: Dictionary) -> String:
+		return "not a bool"
+
+	func remove_context(_name: String) -> String:
+		return "not a bool"
+
+	func clear_contexts() -> String:
+		return "not a bool"
+
+	func set_user(_user: ObservabilityUser) -> String:
+		return "not a bool"
+
+	func remove_user() -> String:
+		return "not a bool"
+
+	func clear_breadcrumbs() -> String:
+		return "not a bool"
+
+
 func test_levels_are_ordered_and_named() -> void:
 	Expect.that(ObservabilityLevel.TRACE).to_be_less_than(ObservabilityLevel.DEBUG)
 	Expect.that(ObservabilityLevel.DEBUG).to_be_less_than(ObservabilityLevel.INFO)
@@ -36,6 +142,491 @@ func test_levels_are_ordered_and_named() -> void:
 	Expect.that(ObservabilityLevel.WARN).to_be_less_than(ObservabilityLevel.ERROR)
 	Expect.that(ObservabilityLevel.ERROR).to_be_less_than(ObservabilityLevel.FATAL)
 	Expect.that(ObservabilityLevel.name(ObservabilityLevel.ERROR)).to_equal("ERROR")
+
+
+func test_observability_user_exposes_explicit_valid_identity() -> void:
+	var user := ObservabilityUser.new("player-7", "Mina", "mina@example.com")
+
+	Expect.that(user.application_user_id()).to_equal("player-7")
+	Expect.that(user.display_name()).to_equal("Mina")
+	Expect.that(user.contact_email()).to_equal("mina@example.com")
+	Expect.that(user.is_valid()).to_be_true()
+
+
+func test_observability_user_rejects_empty_padded_and_control_character_identity() -> void:
+	Expect.that(ObservabilityUser.new().is_valid()).to_be_false()
+	Expect.that(ObservabilityUser.new(" player-7").is_valid()).to_be_false()
+	Expect.that(ObservabilityUser.new("", "Mina ").is_valid()).to_be_false()
+	Expect.that(ObservabilityUser.new("", "", "\tmina@example.com").is_valid()).to_be_false()
+	Expect.that(ObservabilityUser.new("player\n7").is_valid()).to_be_false()
+
+
+func test_observability_scope_mutates_and_defensively_copies_tags_and_contexts() -> void:
+	var source_context: Dictionary = {
+		"round": 3,
+		"active": true,
+		"ratio": 2.5,
+		"winner": null,
+		"players": [&"Mina", "Bo"],
+		&"rules": {&"mode": &"ranked"},
+	}
+	var scope := ObservabilityScope.new()
+
+	Expect.that(scope.is_empty()).to_be_true()
+	Expect.that(scope.set_tag("region", "iad")).to_be_true()
+	Expect.that(scope.set_context("game", source_context)).to_be_true()
+	source_context["round"] = 99
+	source_context["players"][0] = "Changed"
+
+	var exposed_tags: Dictionary = scope.tags()
+	var exposed_contexts: Dictionary = scope.contexts()
+	exposed_tags["region"] = "fra"
+	exposed_contexts["game"]["round"] = 100
+	exposed_contexts["game"]["players"][0] = "Changed again"
+
+	Expect.that(scope.tags()).to_equal({"region": "iad"})
+	Expect.that(scope.contexts()).to_equal({
+		"game": {
+			"round": 3,
+			"active": true,
+			"ratio": 2.5,
+			"winner": null,
+			"players": ["Mina", "Bo"],
+			"rules": {"mode": "ranked"},
+		},
+	})
+	Expect.that(scope.is_empty()).to_be_false()
+
+	var copied_scope: ObservabilityScope = scope.duplicate()
+	Expect.that(copied_scope.remove_tag("region")).to_be_true()
+	Expect.that(copied_scope.remove_context("game")).to_be_true()
+	Expect.that(copied_scope.remove_tag("missing")).to_be_false()
+	Expect.that(copied_scope.remove_context("missing")).to_be_false()
+	Expect.that(copied_scope.is_empty()).to_be_true()
+	Expect.that(scope.tags()).to_equal({"region": "iad"})
+	Expect.that(scope.contexts().has("game")).to_be_true()
+
+	scope.clear_tags()
+	scope.clear_contexts()
+	Expect.that(scope.is_empty()).to_be_true()
+
+
+func test_observability_scope_rejects_invalid_names_and_values_atomically() -> void:
+	var scope := ObservabilityScope.new()
+	Expect.that(scope.set_tag("stable", "kept")).to_be_true()
+	Expect.that(scope.set_context("stable", {"value": 7})).to_be_true()
+	var original_contexts: Dictionary = scope.contexts()
+
+	Expect.that(scope.set_tag("", "value")).to_be_false()
+	Expect.that(scope.set_tag(" padded", "value")).to_be_false()
+	Expect.that(scope.set_tag("padded ", "value")).to_be_false()
+	Expect.that(scope.set_tag("bad\nname", "value")).to_be_false()
+	Expect.that(scope.remove_tag(" bad")).to_be_false()
+	Expect.that(scope.set_context("", {})).to_be_false()
+	Expect.that(scope.set_context(" padded", {})).to_be_false()
+	Expect.that(scope.set_context("bad\u007fname", {})).to_be_false()
+	Expect.that(scope.remove_context("bad\tname")).to_be_false()
+
+	Expect.that(scope.set_context("nan", {"value": NAN})).to_be_false()
+	Expect.that(scope.set_context("infinity", {"value": INF})).to_be_false()
+	Expect.that(scope.set_context("object", {"value": RefCounted.new()})).to_be_false()
+	Expect.that(scope.set_context("unsupported key", {7: "value"})).to_be_false()
+
+	var cyclic_array: Array = []
+	cyclic_array.append(cyclic_array)
+	Expect.that(scope.set_context("array cycle", {"value": cyclic_array})).to_be_false()
+	var cyclic_dictionary: Dictionary = {}
+	cyclic_dictionary["self"] = cyclic_dictionary
+	Expect.that(scope.set_context("dictionary cycle", cyclic_dictionary)).to_be_false()
+
+	Expect.that(scope.tags()).to_equal({"stable": "kept"})
+	Expect.that(scope.contexts()).to_equal(original_contexts)
+
+
+func test_observability_scope_enforces_depth_and_item_limits_atomically() -> void:
+	var scope := ObservabilityScope.new()
+	Expect.that(scope.set_context("stable", {"value": 7})).to_be_true()
+
+	var accepted_depth: Array = []
+	var accepted_cursor: Array = accepted_depth
+	for _index: int in range(ObservabilityScope.MAX_CONTAINER_DEPTH - 1):
+		var child: Array = []
+		accepted_cursor.append(child)
+		accepted_cursor = child
+	Expect.that(scope.set_context("accepted depth", {"value": accepted_depth})).to_be_true()
+
+	var excessive_depth: Array = []
+	var excessive_cursor: Array = excessive_depth
+	for _index: int in range(ObservabilityScope.MAX_CONTAINER_DEPTH):
+		var child: Array = []
+		excessive_cursor.append(child)
+		excessive_cursor = child
+	Expect.that(scope.set_context("excessive depth", {"value": excessive_depth})).to_be_false()
+
+	var accepted_items: Dictionary = {}
+	for index: int in range(ObservabilityScope.MAX_CONTAINER_ITEMS):
+		accepted_items["item-%s" % index] = index
+	Expect.that(scope.set_context("accepted items", accepted_items)).to_be_true()
+
+	var excessive_items: Dictionary = accepted_items.duplicate()
+	excessive_items["overflow"] = true
+	Expect.that(scope.set_context("excessive items", excessive_items)).to_be_false()
+	Expect.that(scope.contexts().has("excessive depth")).to_be_false()
+	Expect.that(scope.contexts().has("excessive items")).to_be_false()
+	Expect.that(scope.contexts()["stable"]).to_equal({"value": 7})
+
+
+func test_observability_scope_preserves_repeated_noncyclic_containers() -> void:
+	var shared: Dictionary = {"players": [&"Mina", "Bo"]}
+	var scope := ObservabilityScope.new()
+
+	Expect.that(scope.set_context("match", {
+		"first": shared,
+		"second": shared,
+	})).to_be_true()
+	shared["players"][0] = "Changed source"
+
+	var exposed: Dictionary = scope.contexts()
+	exposed["match"]["first"]["players"][0] = "Changed first copy"
+	Expect.that(exposed["match"]["second"]["players"]).to_equal(["Mina", "Bo"])
+	Expect.that(scope.contexts()["match"]).to_equal({
+		"first": {"players": ["Mina", "Bo"]},
+		"second": {"players": ["Mina", "Bo"]},
+	})
+
+
+func test_observability_event_snapshots_scope_and_returns_isolated_copies() -> void:
+	var source_scope := ObservabilityScope.new()
+	Expect.that(source_scope.set_tag("region", "iad")).to_be_true()
+	Expect.that(source_scope.set_context("game", {"round": 3})).to_be_true()
+	var event := ObservabilityEvent.new(
+			p_attributes = {},
+			p_scope = source_scope,
+	)
+	source_scope.set_tag("region", "fra")
+	source_scope.set_context("game", {"round": 99})
+
+	var exposed_scope: ObservabilityScope = event.scope()
+	exposed_scope.set_tag("region", "syd")
+	exposed_scope.set_context("game", {"round": 100})
+
+	Expect.that(event.scope().tags()).to_equal({"region": "iad"})
+	Expect.that(event.scope().contexts()).to_equal({"game": {"round": 3}})
+	Expect.that(ObservabilityEvent.new().scope()).to_be_null()
+
+
+func test_observability_breadcrumb_appends_type_without_changing_existing_positions() -> void:
+	var legacy := ObservabilityBreadcrumb.new(
+			"door opened",
+			ObservabilityLevel.INFO,
+			&"navigation",
+			1234,
+			{"door": "north"},
+	)
+	var typed := ObservabilityBreadcrumb.new(
+			p_message = "request sent",
+			p_attributes = {},
+			p_type = &"http",
+	)
+
+	Expect.that(legacy.message()).to_equal("door opened")
+	Expect.that(legacy.attributes()).to_equal({"door": "north"})
+	Expect.that(legacy.type()).to_equal(&"default")
+	Expect.that(typed.type()).to_equal(&"http")
+
+
+func test_global_scope_operations_delegate_and_clear_prior_errors() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.set_tag("", "invalid")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.set_tag("region", "iad")).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.remove_tag("region")).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.clear_tags()).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.set_context("match", {
+		"id": "m-1",
+		"teams": [{"name": "red"}, {"name": "blue"}],
+	})).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.remove_context("match")).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.clear_contexts()).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.set_user(
+			ObservabilityUser.new("player-7", "Mina", "mina@example.com"),
+		)).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.remove_user()).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(provider.calls).to_equal([
+		&"set_tag",
+		&"remove_tag",
+		&"clear_tags",
+		&"set_context",
+		&"remove_context",
+		&"clear_contexts",
+		&"set_user",
+		&"remove_user",
+	])
+	service.shutdown()
+
+
+func test_global_scope_operations_validate_before_calling_provider() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.set_tag(" padded", "iad")).to_be_false()
+	Expect.that(service.remove_tag("bad\nname")).to_be_false()
+	Expect.that(service.set_context("match", {"bad": NAN})).to_be_false()
+	Expect.that(service.set_context(" padded", {})).to_be_false()
+	Expect.that(service.remove_context("bad\tname")).to_be_false()
+	Expect.that(service.set_user(null)).to_be_false()
+	Expect.that(service.set_user(ObservabilityUser.new())).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(provider.calls).to_have_size(0)
+	service.shutdown()
+
+
+func test_global_scope_requires_complete_capability_without_blocking_events() -> void:
+	var service: FoundryObservability = _service()
+	var provider := ScopelessObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.set_tag(" invalid", "iad")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.set_tag("region", "iad")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(service.capture_message("still works")).to_equal("scopeless:1")
+	Expect.that(provider.capture_count).to_equal(1)
+	service.shutdown()
+
+
+func test_partial_scope_capability_is_unavailable_without_blocking_unscoped_events() -> void:
+	var service: FoundryObservability = _service()
+	var provider := PartialScopeObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("unscoped")).to_equal("partial-scope:1")
+	Expect.that(provider.capture_count).to_equal(1)
+
+	Expect.that(service.set_tag("region", "iad")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(provider.scope_call_count).to_equal(0)
+
+	var local_scope := ObservabilityScope.new()
+	Expect.that(local_scope.set_tag("region", "fra")).to_be_true()
+	Expect.that(service.capture_message(
+			"scoped",
+			ObservabilityLevel.INFO,
+			{},
+			local_scope,
+		)).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(provider.capture_count).to_equal(1)
+	Expect.that(provider.scope_call_count).to_equal(0)
+	service.shutdown()
+
+
+func test_global_scope_provider_false_and_non_boolean_results_fail() -> void:
+	var service: FoundryObservability = _service()
+	var rejecting := RecordingScopeProvider.new()
+	Expect.that(service.configure(rejecting, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	rejecting.operation_result = false
+	Expect.that(service.set_tag("region", "iad")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	service.shutdown()
+
+	var non_boolean_service: FoundryObservability = _service()
+	var non_boolean := NonBooleanScopeProvider.new()
+	Expect.that(non_boolean_service.configure(non_boolean, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	Expect.that(non_boolean_service.set_tag("region", "iad")).to_be_false()
+	Expect.that(non_boolean_service.last_error()).to_equal(Error.FAILED)
+	non_boolean_service.shutdown()
+
+
+func test_disabled_scope_operations_do_not_call_provider() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_enabled = false,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.set_tag("region", "iad")).to_be_false()
+	Expect.that(service.remove_tag("region")).to_be_false()
+	Expect.that(service.clear_tags()).to_be_false()
+	Expect.that(service.set_context("match", {"id": "m-1"})).to_be_false()
+	Expect.that(service.remove_context("match")).to_be_false()
+	Expect.that(service.clear_contexts()).to_be_false()
+	Expect.that(service.set_user(ObservabilityUser.new("player-7"))).to_be_false()
+	Expect.that(service.remove_user()).to_be_false()
+	Expect.that(service.clear_breadcrumbs()).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(provider.calls).to_have_size(0)
+	service.shutdown()
+
+
+func test_scopeless_provider_rejects_nonempty_event_scope_but_accepts_empty_scope() -> void:
+	var service: FoundryObservability = _service()
+	var provider := ScopelessObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	var nonempty_scope := ObservabilityScope.new()
+	Expect.that(nonempty_scope.set_tag("region", "iad")).to_be_true()
+
+	Expect.that(service.capture_event(ObservabilityEvent.new(
+			p_message = "scoped",
+			p_attributes = {},
+			p_scope = nonempty_scope,
+		))).to_equal("")
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(provider.capture_count).to_equal(0)
+
+	Expect.that(service.capture_event(ObservabilityEvent.new(
+			p_message = "empty scope",
+			p_attributes = {},
+			p_scope = ObservabilityScope.new(),
+		))).to_equal("scopeless:1")
+	Expect.that(provider.capture_count).to_equal(1)
+	service.shutdown()
+
+
+func test_convenience_capture_methods_append_and_preserve_event_scope() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	var scope := ObservabilityScope.new()
+	Expect.that(scope.set_tag("region", "iad")).to_be_true()
+
+	Expect.that(service.capture_message(
+			"message", ObservabilityLevel.INFO, {"kind": "message"}, scope,
+		)).to_equal("recording-scope:1")
+	Expect.that(service.capture_exception(
+			ObservabilityException.new("Failure", "exception", "stack", {}),
+			{"kind": "exception"},
+			scope,
+		)).to_equal("recording-scope:2")
+	Expect.that(service.capture_log(
+			"log", ObservabilityLevel.WARN, &"game", -1, {"kind": "log"}, 1234, scope,
+		)).to_equal("recording-scope:3")
+
+	for event: ObservabilityEvent in provider.captured_events:
+		Expect.that(event.scope().tags()).to_equal({"region": "iad"})
+	service.shutdown()
+
+
+func test_timestamp_and_exception_normalization_preserve_scope_snapshots() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+	var scope := ObservabilityScope.new()
+	Expect.that(scope.set_context("match", {"id": "m-1"})).to_be_true()
+
+	Expect.that(service.capture_event(ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_message = "failure",
+			p_exception = ObservabilityException.new(
+				p_type_name = "Failure",
+				p_message = "failure",
+				p_attributes = {},
+				p_frames = [ObservabilityStackFrame.new(p_function = "run")],
+			),
+			p_attributes = {},
+			p_scope = scope,
+		))).to_equal("recording-scope:1")
+	scope.set_context("match", {"id": "changed"})
+
+	var captured: ObservabilityEvent = provider.captured_events[0]
+	Expect.that(captured.timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(captured.exception().frames()).to_have_size(1)
+	Expect.that(captured.scope().contexts()).to_equal({"match": {"id": "m-1"}})
+	service.shutdown()
+
+
+func test_clear_breadcrumbs_reports_capability_results() -> void:
+	var service: FoundryObservability = _service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.clear_breadcrumbs()).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	provider.operation_result = false
+	Expect.that(service.clear_breadcrumbs()).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	service.shutdown()
+
+	var missing_service: FoundryObservability = _service()
+	Expect.that(missing_service.configure(
+			ScopelessObservabilityProvider.new(),
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture_enabled = false,
+			),
+		)).to_equal(Error.OK)
+	Expect.that(missing_service.clear_breadcrumbs()).to_be_false()
+	Expect.that(missing_service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	missing_service.shutdown()
+
+	var non_boolean_service: FoundryObservability = _service()
+	Expect.that(non_boolean_service.configure(
+			NonBooleanScopeProvider.new(),
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture_enabled = false,
+			),
+		)).to_equal(Error.OK)
+	Expect.that(non_boolean_service.clear_breadcrumbs()).to_be_false()
+	Expect.that(non_boolean_service.last_error()).to_equal(Error.FAILED)
+	non_boolean_service.shutdown()
 
 
 func test_exception_and_event_copy_attributes() -> void:
@@ -765,6 +1356,7 @@ func test_config_copies_attributes_and_options() -> void:
 func test_automatic_capture_masks_and_config_defaults() -> void:
 	var config := ObservabilityConfig.new()
 
+	Expect.that(config.max_breadcrumbs).to_equal(100)
 	Expect.that(config.automatic_capture_enabled).to_be_true()
 	Expect.that(config.automatic_event_mask).to_equal(
 			ObservabilityCaptureMask.ERROR
@@ -776,6 +1368,50 @@ func test_automatic_capture_masks_and_config_defaults() -> void:
 	Expect.that(config.automatic_repeated_error_window_msec).to_equal(1000)
 	Expect.that(config.automatic_event_throttle_count).to_equal(20)
 	Expect.that(config.automatic_event_throttle_window_msec).to_equal(10000)
+
+
+func test_breadcrumb_config_appends_capacity_and_normalizes_negative_values() -> void:
+	var positional := ObservabilityConfig.new(
+			true,
+			"production",
+			"1.2.3",
+			"arm64",
+			{},
+			{},
+			true,
+			ObservabilityLevel.TRACE,
+			0,
+			true,
+			1.0,
+			Callable(),
+			true,
+			ObservabilityCaptureMask.DEFAULT_EVENTS,
+			ObservabilityCaptureMask.DEFAULT_BREADCRUMBS,
+			ObservabilityCaptureMask.NONE,
+			5,
+			1000,
+			20,
+			10000,
+			true,
+			false,
+			PackedStringArray(["FoundryObservability: "]),
+			true,
+			5000,
+			true,
+			5000,
+			false,
+			7,
+		)
+	var negative := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_breadcrumbs = -1,
+		)
+
+	Expect.that(positional.max_breadcrumbs).to_equal(7)
+	Expect.that(negative.max_breadcrumbs).to_equal(0)
 
 
 func test_mobile_diagnostic_config_defaults_match_native_integrations() -> void:
@@ -1161,6 +1797,16 @@ func test_memory_provider_captures_messages_and_exceptions() -> void:
 	service.shutdown()
 
 
+func test_memory_provider_rejects_null_event_without_changing_capture_history() -> void:
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(provider.configure(ObservabilityConfig.new())).to_equal(Error.OK)
+
+	Expect.that(provider.capture(null)).to_equal("")
+	Expect.that(provider.events()).to_have_size(0)
+	Expect.that(provider.captured_scopes()).to_have_size(0)
+	provider.shutdown()
+
+
 func test_feedback_value_preserves_fields() -> void:
 	var feedback := ObservabilityFeedback.new(
 			p_message = "The tutorial was confusing.",
@@ -1203,6 +1849,379 @@ func test_memory_provider_captures_and_clears_breadcrumbs() -> void:
 	provider.clear_breadcrumbs()
 	Expect.that(provider.breadcrumbs()).to_have_size(0)
 	service.shutdown()
+
+
+func test_memory_scope_merges_local_overrides_and_defensively_snapshots_user() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		))).to_equal(Error.OK)
+
+	Expect.that(service.set_tag("region", "iad")).to_be_true()
+	Expect.that(service.set_tag("build", "42")).to_be_true()
+	Expect.that(service.set_tag("temporary", "removed")).to_be_true()
+	Expect.that(service.remove_tag("temporary")).to_be_true()
+	Expect.that(service.set_context("game", {
+		"round": 1,
+		"nested": {"global": true},
+	})).to_be_true()
+	Expect.that(service.set_context("runtime", {"branch": "main"})).to_be_true()
+	Expect.that(service.set_context("temporary", {"removed": true})).to_be_true()
+	Expect.that(service.remove_context("temporary")).to_be_true()
+	Expect.that(service.set_user(ObservabilityUser.new(
+			"player-7",
+			"Mina",
+			"mina@example.com",
+		))).to_be_true()
+	Expect.that(service.set_user(ObservabilityUser.new("", "Bo", ""))).to_be_true()
+
+	Expect.that(provider.set_tag(" invalid", "rejected")).to_be_false()
+	Expect.that(provider.set_context("invalid", {"value": NAN})).to_be_false()
+
+	var local := ObservabilityScope.new()
+	Expect.that(local.set_tag("region", "fra")).to_be_true()
+	Expect.that(local.set_context("game", {"local": true})).to_be_true()
+	Expect.that(service.capture_message(
+			"local",
+			ObservabilityLevel.INFO,
+			{},
+			local,
+		)).to_equal("memory:1")
+	local.set_tag("region", "changed")
+	local.set_context("game", {"changed": true})
+
+	var first_exposed: Dictionary = provider.captured_scopes()[0]
+	Expect.that(first_exposed).to_equal({
+		"tags": {"region": "fra", "build": "42"},
+		"contexts": {
+			"game": {"local": true},
+			"runtime": {"branch": "main"},
+		},
+		"user": {
+			"id": "",
+			"display_name": "Bo",
+			"contact_email": "",
+		},
+	})
+	first_exposed["tags"]["region"] = "mutated"
+	first_exposed["contexts"]["game"]["local"] = false
+	first_exposed["user"]["display_name"] = "mutated"
+	Expect.that(provider.captured_scopes()[0]).to_equal({
+		"tags": {"region": "fra", "build": "42"},
+		"contexts": {
+			"game": {"local": true},
+			"runtime": {"branch": "main"},
+		},
+		"user": {
+			"id": "",
+			"display_name": "Bo",
+			"contact_email": "",
+		},
+	})
+
+	Expect.that(service.remove_tag("build")).to_be_true()
+	Expect.that(service.remove_context("runtime")).to_be_true()
+	Expect.that(service.capture_message("later")).to_equal("memory:2")
+	Expect.that(provider.captured_scopes()[1]).to_equal({
+		"tags": {"region": "iad"},
+		"contexts": {
+			"game": {
+				"round": 1,
+				"nested": {"global": true},
+			},
+		},
+		"user": {
+			"id": "",
+			"display_name": "Bo",
+			"contact_email": "",
+		},
+	})
+
+	Expect.that(service.clear_tags()).to_be_true()
+	Expect.that(service.clear_contexts()).to_be_true()
+	Expect.that(service.remove_user()).to_be_true()
+	Expect.that(service.capture_message("empty")).to_equal("memory:3")
+	Expect.that(provider.captured_scopes()[2]).to_equal({
+		"tags": {},
+		"contexts": {},
+		"user": null,
+	})
+	Expect.that(provider.events()).to_have_size(3)
+	Expect.that(provider.captured_scopes()).to_have_size(3)
+
+	provider.clear()
+	Expect.that(provider.events()).to_have_size(0)
+	Expect.that(provider.captured_scopes()).to_have_size(0)
+	service.shutdown()
+
+
+func test_memory_global_scope_reaches_automatic_godot_events() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_repeated_error_window_msec = 0,
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	Expect.that(service.set_tag("capture", "automatic")).to_be_true()
+	Expect.that(service.set_context("engine", {"frame": 7})).to_be_true()
+	Expect.that(service.set_user(ObservabilityUser.new("player-7"))).to_be_true()
+	var logger := AutomaticObservabilityLogger.new(
+			service, config, func() -> int: return 1234, func() -> int: return 7)
+
+	logger._log_error(
+			"tick",
+			"res://loop.fs",
+			9,
+			"boom",
+			"",
+			false,
+			Logger.ERROR_TYPE_ERROR,
+			[],
+		)
+
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.captured_scopes()).to_equal([{
+		"tags": {"capture": "automatic"},
+		"contexts": {"engine": {"frame": 7}},
+		"user": {
+			"id": "player-7",
+			"display_name": "",
+			"contact_email": "",
+		},
+	}])
+	service.shutdown()
+
+
+func test_memory_successful_reconfigure_resets_session_scope_and_updates_bound() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var initial := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_breadcrumbs = 3,
+		)
+	Expect.that(service.configure(provider, initial)).to_equal(Error.OK)
+	Expect.that(service.set_tag("region", "iad")).to_be_true()
+	Expect.that(service.set_context("game", {"round": 1})).to_be_true()
+	Expect.that(service.set_user(ObservabilityUser.new("player-7"))).to_be_true()
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "old"))).to_be_true()
+	Expect.that(service.capture_message("retained history")).to_equal("memory:1")
+
+	Expect.that(service.configure(provider, initial)).to_equal(Error.OK)
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	Expect.that(provider.captured_scopes()[0]).to_equal({
+		"tags": {"region": "iad"},
+		"contexts": {"game": {"round": 1}},
+		"user": {
+			"id": "player-7",
+			"display_name": "",
+			"contact_email": "",
+		},
+	})
+	Expect.that(service.capture_message("equivalent reset")).to_equal("memory:2")
+	Expect.that(provider.captured_scopes()[1]).to_equal({
+		"tags": {},
+		"contexts": {},
+		"user": null,
+	})
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "before reduction"))).to_be_true()
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_breadcrumbs = 1,
+		))).to_equal(Error.OK)
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "one"))).to_be_true()
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "two"))).to_be_true()
+	Expect.that(provider.breadcrumbs()).to_have_size(1)
+	Expect.that(provider.breadcrumbs()[0].message()).to_equal("two")
+	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.captured_scopes()).to_have_size(2)
+	Expect.that(provider.captured_scopes()[0]).to_equal({
+		"tags": {"region": "iad"},
+		"contexts": {"game": {"round": 1}},
+		"user": {
+			"id": "player-7",
+			"display_name": "",
+			"contact_email": "",
+		},
+	})
+	service.shutdown()
+
+
+func test_memory_failed_same_provider_reconfigure_preserves_active_session() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_breadcrumbs = 2,
+		))).to_equal(Error.OK)
+	Expect.that(service.set_tag("region", "iad")).to_be_true()
+	Expect.that(service.set_context("game", {"round": 1})).to_be_true()
+	Expect.that(service.set_user(ObservabilityUser.new("player-7"))).to_be_true()
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "one"))).to_be_true()
+
+	provider.configure_result = Error.FAILED
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_enabled = false,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_breadcrumbs = 0,
+		))).to_equal(Error.FAILED)
+	Expect.that(service.is_enabled()).to_be_true()
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "two"))).to_be_true()
+	Expect.that(service.capture_message("preserved")).to_equal("memory:1")
+	Expect.that(provider.breadcrumbs()).to_have_size(2)
+	Expect.that(provider.captured_scopes()[0]).to_equal({
+		"tags": {"region": "iad"},
+		"contexts": {"game": {"round": 1}},
+		"user": {
+			"id": "player-7",
+			"display_name": "",
+			"contact_email": "",
+		},
+	})
+	service.shutdown()
+
+
+func test_memory_provider_replacement_and_shutdown_clear_only_live_session_state() -> void:
+	var service: FoundryObservability = _service()
+	var first := MemoryObservabilityProvider.new()
+	var second := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+		)
+	Expect.that(service.configure(first, config)).to_equal(Error.OK)
+	Expect.that(service.set_tag("provider", "first")).to_be_true()
+	Expect.that(service.set_user(ObservabilityUser.new("player-7"))).to_be_true()
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "first"))).to_be_true()
+	Expect.that(service.capture_message("first history")).to_equal("memory:1")
+
+	Expect.that(service.configure(second, config)).to_equal(Error.OK)
+	Expect.that(first.shutdown_count).to_equal(1)
+	Expect.that(first.breadcrumbs()).to_have_size(0)
+	Expect.that(first.set_tag("after", "shutdown")).to_be_false()
+	Expect.that(first.clear_breadcrumbs()).to_be_false()
+	Expect.that(first.events()).to_have_size(1)
+	Expect.that(first.captured_scopes()).to_have_size(1)
+	Expect.that(first.captured_scopes()[0]).to_equal({
+		"tags": {"provider": "first"},
+		"contexts": {},
+		"user": {
+			"id": "player-7",
+			"display_name": "",
+			"contact_email": "",
+		},
+	})
+	Expect.that(service.capture_message("second empty")).to_equal("memory:1")
+	Expect.that(second.captured_scopes()[0]).to_equal({
+		"tags": {},
+		"contexts": {},
+		"user": null,
+	})
+	Expect.that(service.set_tag("provider", "second")).to_be_true()
+	Expect.that(service.set_context("game", {"round": 2})).to_be_true()
+	Expect.that(service.set_user(ObservabilityUser.new("player-8"))).to_be_true()
+	Expect.that(service.capture_message("second history")).to_equal("memory:2")
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "second"))).to_be_true()
+
+	service.shutdown()
+	service.shutdown()
+	Expect.that(second.shutdown_count).to_equal(1)
+	Expect.that(second.breadcrumbs()).to_have_size(0)
+	Expect.that(second.events()).to_have_size(2)
+	Expect.that(second.captured_scopes()).to_have_size(2)
+	Expect.that(second.captured_scopes()[1]).to_equal({
+		"tags": {"provider": "second"},
+		"contexts": {"game": {"round": 2}},
+		"user": {
+			"id": "player-8",
+			"display_name": "",
+			"contact_email": "",
+		},
+	})
+
+
+func test_memory_breadcrumb_bound_zero_and_service_clear_results() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_breadcrumbs = 2,
+		))).to_equal(Error.OK)
+	var one := ObservabilityBreadcrumb.new(p_message = "one")
+	var two := ObservabilityBreadcrumb.new(p_message = "two")
+	var three := ObservabilityBreadcrumb.new(p_message = "three")
+
+	Expect.that(service.capture_breadcrumb(one)).to_be_true()
+	Expect.that(service.capture_breadcrumb(two)).to_be_true()
+	Expect.that(service.capture_breadcrumb(three)).to_be_true()
+	Expect.that(provider.breadcrumbs()).to_equal([two, three])
+	Expect.that(service.clear_breadcrumbs()).to_be_true()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_breadcrumbs = 0,
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_breadcrumb(one)).to_be_false()
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_enabled = false,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(
+					["FoundryObservability: "]),
+			p_max_breadcrumbs = 2,
+		))).to_equal(Error.OK)
+	Expect.that(service.clear_breadcrumbs()).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	service.shutdown()
+	Expect.that(service.clear_breadcrumbs()).to_be_false()
 
 
 func test_missing_breadcrumb_capability_is_observable_and_isolated() -> void:
@@ -2810,7 +3829,7 @@ func test_startup_failure_preserves_working_provider_and_diagnostics() -> void:
 	var first_owner: String = bridge.active_owner
 	bridge.configure_result = Error.FAILED
 	var failed := ObservabilityStartupSettings.from_sources({
-		ObservabilityStartupSettings.DSN: "https://public@example/2",
+		ObservabilityStartupSettings.DSN: "https://public@example/1",
 	})
 
 	Expect.that(service._initialize_startup(failed)).to_equal(Error.FAILED)

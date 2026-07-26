@@ -8,10 +8,14 @@ import static org.junit.Assert.assertTrue;
 import io.sentry.Scope;
 import io.sentry.SentryOptions;
 import io.sentry.android.core.SentryAndroidOptions;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.Test;
 
 public class SentryLifecycleCoordinatorTest {
@@ -49,6 +53,101 @@ public class SentryLifecycleCoordinatorTest {
   }
 
   @Test
+  public void equivalentConfigurationTransfersScopeKeysAndGuardsMutationsByCurrentOwner() {
+    FakeDriver driver = new FakeDriver();
+    SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
+    SentryLifecycleConfiguration configuration = configuration("1.0.0");
+    assertTrue(coordinator.configure("first", configuration));
+    assertTrue(coordinator.replaceScope(
+        "first",
+        previous -> {
+          assertTrue(previous.tagKeys.isEmpty());
+          assertTrue(previous.contextKeys.isEmpty());
+          return new SentryLifecycleCoordinator.ScopeKeys(
+              Set.of("region"),
+              Set.of("match"));
+        }));
+
+    assertTrue(coordinator.configure("second", configuration));
+    AtomicBoolean staleMutationCalled = new AtomicBoolean();
+    assertFalse(coordinator.replaceScope(
+        "first",
+        previous -> {
+          staleMutationCalled.set(true);
+          return previous;
+        }));
+    assertFalse(coordinator.perform(
+        "first",
+        () -> {
+          staleMutationCalled.set(true);
+          return true;
+        }));
+    assertFalse(staleMutationCalled.get());
+
+    assertTrue(coordinator.replaceScope(
+        "second",
+        previous -> {
+          assertEquals(Set.of("region"), previous.tagKeys);
+          assertEquals(Set.of("match"), previous.contextKeys);
+          return new SentryLifecycleCoordinator.ScopeKeys(Set.of(), Set.of());
+        }));
+    assertTrue(coordinator.perform("second", () -> true));
+  }
+
+  @Test
+  public void scopeKeysAreImmutableSnapshotsWithFinalFields() throws Exception {
+    Set<String> tags = new java.util.LinkedHashSet<>(Set.of("region"));
+    Set<String> contexts = new java.util.LinkedHashSet<>(Set.of("match"));
+    SentryLifecycleCoordinator.ScopeKeys keys =
+        new SentryLifecycleCoordinator.ScopeKeys(tags, contexts);
+    tags.clear();
+    contexts.clear();
+
+    assertEquals(Set.of("region"), keys.tagKeys);
+    assertEquals(Set.of("match"), keys.contextKeys);
+    for (String name : List.of("tagKeys", "contextKeys")) {
+      Field field = SentryLifecycleCoordinator.ScopeKeys.class.getDeclaredField(name);
+      assertTrue(Modifier.isFinal(field.getModifiers()));
+    }
+    boolean tagsImmutable = false;
+    try {
+      keys.tagKeys.add("other");
+    } catch (UnsupportedOperationException expected) {
+      tagsImmutable = true;
+    }
+    boolean contextsImmutable = false;
+    try {
+      keys.contextKeys.add("other");
+    } catch (UnsupportedOperationException expected) {
+      contextsImmutable = true;
+    }
+    assertTrue(tagsImmutable);
+    assertTrue(contextsImmutable);
+  }
+
+  @Test
+  public void failedScopeReplacementRetainsPriorInstalledKeys() {
+    FakeDriver driver = new FakeDriver();
+    SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
+    assertTrue(coordinator.configure("first", configuration("1.0.0")));
+    assertTrue(coordinator.replaceScope(
+        "first",
+        previous -> new SentryLifecycleCoordinator.ScopeKeys(
+            Set.of("region"),
+            Set.of("match"))));
+
+    assertFalse(coordinator.replaceScope("first", previous -> null));
+
+    assertTrue(coordinator.replaceScope(
+        "first",
+        previous -> {
+          assertEquals(Set.of("region"), previous.tagKeys);
+          assertEquals(Set.of("match"), previous.contextKeys);
+          return new SentryLifecycleCoordinator.ScopeKeys(Set.of(), Set.of());
+        }));
+  }
+
+  @Test
   public void changedConfigurationClosesThenStarts() {
     FakeDriver driver = new FakeDriver();
     SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
@@ -60,6 +159,88 @@ public class SentryLifecycleCoordinatorTest {
         List.of("start:1.0.0", "close", "start:2.0.0"),
         driver.operations);
     assertEquals("second", coordinator.activeOwner());
+  }
+
+  @Test
+  public void closeRestartAndFailedReplacementResetInstalledScopeKeys() {
+    FakeDriver driver = new FakeDriver();
+    SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
+    assertTrue(coordinator.configure("first", configuration("1.0.0")));
+    assertTrue(coordinator.replaceScope(
+        "first",
+        previous -> new SentryLifecycleCoordinator.ScopeKeys(
+            Set.of("region"),
+            Set.of("match"))));
+
+    assertTrue(coordinator.configure("second", configuration("2.0.0")));
+    assertTrue(coordinator.replaceScope(
+        "second",
+        previous -> {
+          assertTrue(previous.tagKeys.isEmpty());
+          assertTrue(previous.contextKeys.isEmpty());
+          return new SentryLifecycleCoordinator.ScopeKeys(
+              Set.of("next"),
+              Set.of("session"));
+        }));
+    driver.failNextStart = true;
+
+    assertFalse(coordinator.configure("third", configuration("3.0.0")));
+    assertTrue(coordinator.replaceScope(
+        "second",
+        previous -> {
+          assertTrue(previous.tagKeys.isEmpty());
+          assertTrue(previous.contextKeys.isEmpty());
+          return new SentryLifecycleCoordinator.ScopeKeys(Set.of(), Set.of());
+        }));
+  }
+
+  @Test
+  public void shutdownResetsInstalledScopeKeysBeforeNextSession() {
+    FakeDriver driver = new FakeDriver();
+    SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
+    assertTrue(coordinator.configure("first", configuration("1.0.0")));
+    assertTrue(coordinator.replaceScope(
+        "first",
+        previous -> new SentryLifecycleCoordinator.ScopeKeys(
+            Set.of("region"),
+            Set.of("match"))));
+
+    coordinator.shutdown("first");
+    assertTrue(coordinator.configure("second", configuration("1.0.0")));
+    assertTrue(coordinator.replaceScope(
+        "second",
+        previous -> {
+          assertTrue(previous.tagKeys.isEmpty());
+          assertTrue(previous.contextKeys.isEmpty());
+          return new SentryLifecycleCoordinator.ScopeKeys(Set.of(), Set.of());
+        }));
+  }
+
+  @Test
+  public void changedMaxBreadcrumbsRestartsAndFailedReplacementRestoresPreviousMaximum() {
+    FakeDriver driver = new FakeDriver();
+    SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
+
+    assertTrue(coordinator.configure("first", configuration("1.0.0", Map.of(), 2)));
+    assertTrue(coordinator.configure("second", configuration("1.0.0", Map.of(), 3)));
+    driver.failNextStart = true;
+
+    assertFalse(coordinator.configure("third", configuration("1.0.0", Map.of(), 4)));
+
+    assertEquals(List.of(2, 3, 4, 3), driver.startedMaxBreadcrumbs);
+    assertEquals(3, coordinator.activeConfiguration().maxBreadcrumbs);
+    assertEquals("second", coordinator.activeOwner());
+  }
+
+  @Test
+  public void maxBreadcrumbsParticipatesInConfigurationEqualityAndHashCode() {
+    SentryLifecycleConfiguration first = configuration("1.0.0", Map.of(), 2);
+    SentryLifecycleConfiguration equal = configuration("1.0.0", Map.of(), 2);
+    SentryLifecycleConfiguration different = configuration("1.0.0", Map.of(), 3);
+
+    assertEquals(first, equal);
+    assertEquals(first.hashCode(), equal.hashCode());
+    assertFalse(first.equals(different));
   }
 
   @Test
@@ -169,7 +350,8 @@ public class SentryLifecycleCoordinatorTest {
         true,
         true,
         6_400L,
-        true);
+        true,
+        2);
     SentryAndroidOptions options = new SentryAndroidOptions();
 
     AndroidSentrySdkDriver.applyOptions(options, configuration);
@@ -181,6 +363,7 @@ public class SentryLifecycleCoordinatorTest {
     assertEquals("game@1.2.3", options.getRelease());
     assertEquals("qa", options.getEnvironment());
     assertEquals("android", options.getDist());
+    assertEquals(2, options.getMaxBreadcrumbs());
     assertEquals(
         Map.of("global_attributes", Map.of("build", 42)),
         AndroidSentrySdkDriver.foundryCrashContext(configuration));
@@ -199,6 +382,17 @@ public class SentryLifecycleCoordinatorTest {
         scope.getContexts().get("foundry_engine"));
   }
 
+  @Test
+  public void androidOptionsClampNegativeMaxBreadcrumbsToZero() {
+    SentryAndroidOptions options = new SentryAndroidOptions();
+
+    AndroidSentrySdkDriver.applyOptions(
+        options,
+        configuration("1.0.0", Map.of(), -5));
+
+    assertEquals(0, options.getMaxBreadcrumbs());
+  }
+
   private static SentryLifecycleConfiguration configuration(String release) {
     return configuration(release, Map.of());
   }
@@ -206,6 +400,13 @@ public class SentryLifecycleCoordinatorTest {
   private static SentryLifecycleConfiguration configuration(
       String release,
       Map<String, Object> stableContexts) {
+    return configuration(release, stableContexts, 100);
+  }
+
+  private static SentryLifecycleConfiguration configuration(
+      String release,
+      Map<String, Object> stableContexts,
+      int maxBreadcrumbs) {
     return new SentryLifecycleConfiguration(
         null,
         "https://public@example.com/1",
@@ -219,13 +420,15 @@ public class SentryLifecycleCoordinatorTest {
         true,
         true,
         3_200L,
-        true);
+        true,
+        maxBreadcrumbs);
   }
 
   private static final class FakeDriver implements SentryLifecycleDriver {
     private boolean enabled;
     private boolean failNextStart;
     private final List<String> operations = new ArrayList<>();
+    private final List<Integer> startedMaxBreadcrumbs = new ArrayList<>();
 
     @Override
     public boolean isEnabled() {
@@ -235,6 +438,7 @@ public class SentryLifecycleCoordinatorTest {
     @Override
     public boolean start(SentryLifecycleConfiguration configuration) {
       operations.add("start:" + configuration.release);
+      startedMaxBreadcrumbs.add(configuration.maxBreadcrumbs);
       if (failNextStart) {
         failNextStart = false;
         enabled = false;

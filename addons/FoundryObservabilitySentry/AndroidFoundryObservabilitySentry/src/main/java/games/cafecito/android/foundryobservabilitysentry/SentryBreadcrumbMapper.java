@@ -52,6 +52,7 @@ final class SentryBreadcrumbMapper {
     Breadcrumb breadcrumb = new Breadcrumb(sdkTimestamp);
     breadcrumb.setMessage(stringValue(values.get("message")));
     breadcrumb.setCategory(stringValue(values.get("category")));
+    breadcrumb.setType(stringValue(values.get("type")));
     breadcrumb.setLevel(sentryLevel(intValue(values.get("level"), 50)));
 
     Map<?, ?> attributes = values.get("attributes") instanceof Map

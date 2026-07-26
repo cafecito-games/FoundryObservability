@@ -22,6 +22,7 @@ final class SentryLifecycleConfiguration {
   final boolean anrDetectionEnabled;
   final long anrTimeoutMsec;
   final boolean attachAnrThreadDump;
+  final int maxBreadcrumbs;
 
   SentryLifecycleConfiguration(
       Context applicationContext,
@@ -36,7 +37,8 @@ final class SentryLifecycleConfiguration {
       boolean metricsEnabled,
       boolean anrDetectionEnabled,
       long anrTimeoutMsec,
-      boolean attachAnrThreadDump) {
+      boolean attachAnrThreadDump,
+      int maxBreadcrumbs) {
     this.applicationContext = applicationContext;
     this.dsn = dsn;
     this.environment = environment;
@@ -50,6 +52,7 @@ final class SentryLifecycleConfiguration {
     this.anrDetectionEnabled = anrDetectionEnabled;
     this.anrTimeoutMsec = anrTimeoutMsec;
     this.attachAnrThreadDump = attachAnrThreadDump;
+    this.maxBreadcrumbs = maxBreadcrumbs;
   }
 
   @Override
@@ -72,7 +75,8 @@ final class SentryLifecycleConfiguration {
         && metricsEnabled == other.metricsEnabled
         && anrDetectionEnabled == other.anrDetectionEnabled
         && anrTimeoutMsec == other.anrTimeoutMsec
-        && attachAnrThreadDump == other.attachAnrThreadDump;
+        && attachAnrThreadDump == other.attachAnrThreadDump
+        && maxBreadcrumbs == other.maxBreadcrumbs;
   }
 
   @Override
@@ -89,7 +93,8 @@ final class SentryLifecycleConfiguration {
         metricsEnabled,
         anrDetectionEnabled,
         anrTimeoutMsec,
-        attachAnrThreadDump);
+        attachAnrThreadDump,
+        maxBreadcrumbs);
   }
 
   private static Map<String, Object> immutableCopy(Map<String, Object> values) {

@@ -5,7 +5,7 @@ import foundry.observability
 ## FoundryScript adapter for the optional cross-platform Sentry native bridge.
 class_name SentryObservabilityProvider
 extends RefCounted
-uses ObservabilityProvider, ObservabilityMetricsProvider, ObservabilityBreadcrumbsProvider
+uses ObservabilityProvider, ObservabilityMetricsProvider, ObservabilityBreadcrumbsProvider, ObservabilityScopeProvider
 
 const _NATIVE_CLASS: String = "SentryObservabilityBridge"
 const _LIFECYCLE_VERSION: int = 1
@@ -13,6 +13,10 @@ const _LIFECYCLE_VERSION: int = 1
 var _bridge: Object? = null
 var _context_collector: SentryRuntimeContextCollector
 var _stable_contexts: Dictionary = {}
+var _scope: ObservabilityScope = ObservabilityScope.new()
+var _user: ObservabilityUser? = null
+var _last_config_payload: Dictionary = {}
+var _has_last_config_payload: bool = false
 var _enabled: bool = false
 var _owner: String = ""
 var _shutdown: bool = false
@@ -43,9 +47,9 @@ func is_available() -> bool:
 	if not _enabled or _shutdown:
 		return false
 	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not _has_lifecycle_contract(bridge):
+	if bridge == null:
 		return false
-	return bridge.call("isAvailable", _owner) == true
+	return _is_bridge_available(bridge)
 
 
 ## Validates and forwards the complete provider configuration.
@@ -63,15 +67,26 @@ func configure(config: ObservabilityConfig) -> int:
 			return Error.ERR_UNAVAILABLE
 		_enabled = false
 		_stable_contexts = {}
+		_scope = ObservabilityScope.new()
+		_user = null
+		_clear_last_config_payload()
 		_shutdown = false
 		return Error.OK
 	if config.enabled and config.logs_enabled and (bridge == null or not bridge.has_method("captureLog")):
 		return Error.FAILED
+	if config.enabled \
+			and bridge != null \
+			and bridge.has_method("captureBreadcrumb") \
+			and not bridge.has_method("clearBreadcrumbs"):
+		return Error.FAILED
 
-	_shutdown = false
 	if bridge == null:
 		_enabled = false
 		_stable_contexts = {}
+		_scope = ObservabilityScope.new()
+		_user = null
+		_clear_last_config_payload()
+		_shutdown = false
 		return Error.OK
 
 	var candidate_stable_contexts: Dictionary = {}
@@ -103,18 +118,85 @@ func configure(config: ObservabilityConfig) -> int:
 			"android_anr_detection_enabled": config.android_anr_detection_enabled,
 			"android_anr_timeout_msec": maxi(1000, config.android_anr_timeout_msec),
 			"android_anr_attach_thread_dump": config.android_anr_attach_thread_dump,
+			"max_breadcrumbs": config.max_breadcrumbs,
 			"lifecycle_owner": _owner,
 		}
 	if config.enabled:
 		payload["stable_contexts"] = candidate_stable_contexts
-	var result: Variant = bridge.call("configure", payload)
+	var candidate_config_payload: Dictionary = payload.duplicate(true)
+	var retained_scope_payload: Dictionary = _scope_payload(_scope, _user)
+	var retained_scope_was_enabled: bool = _enabled and not _shutdown
+	var candidate_matches_committed_config: bool = (
+			_has_last_config_payload
+			and _config_payloads_are_equivalent(candidate_config_payload)
+		)
+	var prior_breadcrumb_session_was_enabled: bool = (
+			retained_scope_was_enabled
+			and bridge.has_method("captureBreadcrumb")
+			and bridge.has_method("clearBreadcrumbs")
+		)
+	# Every post-configure failure may retain the prior session only when no live
+	# breadcrumb trail existed or the complete candidate cannot restart that session.
+	var can_preserve_prior_session_after_configuration_attempt: bool = (
+			not prior_breadcrumb_session_was_enabled
+			or candidate_matches_committed_config
+		)
+	# Local candidate state commits only after configure, scope, and breadcrumb resets;
+	# otherwise the prior session must be fully restored or the provider fails closed.
+	var result: Variant = bridge.call(
+			"configure",
+			candidate_config_payload.duplicate(true),
+		)
 	if not (result is int):
+		# A malformed result makes native mutation unknowable; rollback is untrustworthy.
+		_fail_closed(bridge)
 		return Error.FAILED
 	var result_code: int = result
-	if result_code == Error.OK:
-		_enabled = config.enabled
-		_stable_contexts = candidate_stable_contexts
-	return result_code
+	if result_code != Error.OK:
+		if not can_preserve_prior_session_after_configuration_attempt \
+				or not _restore_retained_scope(
+				bridge,
+				retained_scope_was_enabled,
+				retained_scope_payload,
+		):
+			_fail_closed(bridge)
+		return result_code
+	if config.enabled and _has_scope_contract(bridge):
+		var empty_scope_payload: Dictionary = _scope_payload(
+				ObservabilityScope.new(),
+				null,
+			)
+		if not _apply_scope_payload(bridge, empty_scope_payload):
+			if not can_preserve_prior_session_after_configuration_attempt \
+					or not _rollback_after_session_reset_failure(
+					bridge,
+					retained_scope_was_enabled,
+					retained_scope_payload,
+			):
+				_fail_closed(bridge)
+			return Error.FAILED
+	if config.enabled and bridge.has_method("clearBreadcrumbs"):
+		var clear_result: Variant = bridge.call("clearBreadcrumbs")
+		if not (clear_result is bool) or clear_result != true:
+			if not _can_preserve_breadcrumb_trail_after_clear_failure(
+					clear_result,
+					can_preserve_prior_session_after_configuration_attempt,
+					retained_scope_was_enabled,
+			) or not _rollback_after_session_reset_failure(
+				bridge,
+				retained_scope_was_enabled,
+				retained_scope_payload,
+			):
+				_fail_closed(bridge)
+			return Error.FAILED
+	_enabled = config.enabled
+	_stable_contexts = candidate_stable_contexts
+	_scope = ObservabilityScope.new()
+	_user = null
+	_last_config_payload = candidate_config_payload.duplicate(true)
+	_has_last_config_payload = true
+	_shutdown = false
+	return Error.OK
 
 
 ## Translates one normalized event and returns the native provider ID.
@@ -124,6 +206,11 @@ func capture(event: ObservabilityEvent) -> String:
 
 	var bridge: Object? = _resolve_bridge()
 	if bridge == null or not is_available():
+		return ""
+	var event_scope: ObservabilityScope? = event.scope()
+	if event_scope != null \
+			and not event_scope.is_empty() \
+			and not _has_scope_contract(bridge):
 		return ""
 
 	var payload: Dictionary = {
@@ -138,6 +225,8 @@ func capture(event: ObservabilityEvent) -> String:
 	var contexts: Dictionary = _context_collector.contexts_for_capture(_stable_contexts)
 	if not contexts.is_empty():
 		payload["contexts"] = contexts
+	if event_scope != null and not event_scope.is_empty():
+		payload["scope"] = _scope_payload(event_scope, null)
 	var exception: ObservabilityException? = event.exception()
 	if exception != null:
 		var exception_payload: Dictionary = {
@@ -162,6 +251,101 @@ func capture(event: ObservabilityEvent) -> String:
 	return str(bridge.call(method, payload))
 
 
+## Sets a global tag only after the native bridge accepts the complete candidate scope.
+func set_tag(key: String, value: String) -> bool:
+	if not _enabled or _shutdown:
+		return false
+	var candidate: ObservabilityScope = _scope.duplicate()
+	if not candidate.set_tag(key, value) or not _apply_scope_candidate(candidate, _user):
+		return false
+	_scope = candidate
+	return true
+
+
+## Removes a global tag only after the native bridge accepts the complete candidate scope.
+func remove_tag(key: String) -> bool:
+	if not _enabled or _shutdown:
+		return false
+	var candidate: ObservabilityScope = _scope.duplicate()
+	if not candidate.remove_tag(key) or not _apply_scope_candidate(candidate, _user):
+		return false
+	_scope = candidate
+	return true
+
+
+## Clears global tags only after the native bridge accepts the complete candidate scope.
+func clear_tags() -> bool:
+	if not _enabled or _shutdown:
+		return false
+	var candidate: ObservabilityScope = _scope.duplicate()
+	candidate.clear_tags()
+	if not _apply_scope_candidate(candidate, _user):
+		return false
+	_scope = candidate
+	return true
+
+
+## Sets a global context only after the native bridge accepts the complete candidate scope.
+func set_context(context_name: String, value: Dictionary) -> bool:
+	if not _enabled or _shutdown:
+		return false
+	var candidate: ObservabilityScope = _scope.duplicate()
+	if not candidate.set_context(context_name, value):
+		return false
+	if not _apply_scope_candidate(candidate, _user):
+		return false
+	_scope = candidate
+	return true
+
+
+## Removes a global context only after the native bridge accepts the complete candidate scope.
+func remove_context(context_name: String) -> bool:
+	if not _enabled or _shutdown:
+		return false
+	var candidate: ObservabilityScope = _scope.duplicate()
+	if not candidate.remove_context(context_name):
+		return false
+	if not _apply_scope_candidate(candidate, _user):
+		return false
+	_scope = candidate
+	return true
+
+
+## Clears global contexts only after the native bridge accepts the complete candidate scope.
+func clear_contexts() -> bool:
+	if not _enabled or _shutdown:
+		return false
+	var candidate: ObservabilityScope = _scope.duplicate()
+	candidate.clear_contexts()
+	if not _apply_scope_candidate(candidate, _user):
+		return false
+	_scope = candidate
+	return true
+
+
+## Replaces the global user only after the native bridge accepts the complete candidate scope.
+func set_user(user: ObservabilityUser) -> bool:
+	if not _enabled or _shutdown or user == null or not user.is_valid():
+		return false
+	var candidate_user: ObservabilityUser = ObservabilityUser.new(
+			user.application_user_id(),
+			user.display_name(),
+			user.contact_email(),
+		)
+	if not _apply_scope_candidate(_scope, candidate_user):
+		return false
+	_user = candidate_user
+	return true
+
+
+## Removes the global user only after the native bridge accepts the complete candidate scope.
+func remove_user() -> bool:
+	if not _enabled or _shutdown or not _apply_scope_candidate(_scope, null):
+		return false
+	_user = null
+	return true
+
+
 ## Translates one normalized breadcrumb to the optional native breadcrumb API.
 func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
 	if breadcrumb == null or not _enabled or _shutdown:
@@ -177,10 +361,24 @@ func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
 			"category": String(breadcrumb.category()),
 			"timestamp_msec": breadcrumb.timestamp_msec(),
 			"attributes": breadcrumb.attributes(),
+			"type": String(breadcrumb.type()),
 		})
 	if not (result is bool):
 		return false
 	return result
+
+
+## Clears native breadcrumbs through the optional bridge operation.
+func clear_breadcrumbs() -> bool:
+	if not _enabled or _shutdown:
+		return false
+
+	var bridge: Object? = _resolve_bridge()
+	if bridge == null or not is_available() or not bridge.has_method("clearBreadcrumbs"):
+		return false
+
+	var result: Variant = bridge.call("clearBreadcrumbs")
+	return result is bool and result == true
 
 
 ## Translates explicit feedback to the native dedicated feedback API.
@@ -241,6 +439,9 @@ func shutdown() -> void:
 	_shutdown = true
 	_enabled = false
 	_stable_contexts = {}
+	_scope = ObservabilityScope.new()
+	_user = null
+	_clear_last_config_payload()
 	var bridge: Object? = _resolve_bridge()
 	if bridge != null and _has_lifecycle_contract(bridge):
 		bridge.call("shutdown", _owner)
@@ -271,6 +472,127 @@ func _has_lifecycle_contract(bridge: Object) -> bool:
 			return false
 	var version_result: Variant = bridge.call("lifecycleVersion")
 	return version_result is int and version_result >= _LIFECYCLE_VERSION
+
+
+func _has_scope_contract(bridge: Object) -> bool:
+	return bridge.has_method("applyScope")
+
+
+func _is_bridge_available(bridge: Object) -> bool:
+	if not _has_lifecycle_contract(bridge):
+		return false
+	var result: Variant = bridge.call("isAvailable", _owner)
+	return result is bool and result == true
+
+
+func _apply_scope_candidate(
+		candidate_scope: ObservabilityScope,
+		candidate_user: ObservabilityUser?,
+) -> bool:
+	var bridge: Object? = _resolve_bridge()
+	if bridge == null:
+		return false
+	return _apply_scope_payload(
+			bridge,
+			_scope_payload(candidate_scope, candidate_user),
+		)
+
+
+func _apply_scope_payload(bridge: Object, payload: Dictionary) -> bool:
+	if not _has_scope_contract(bridge) or not _is_bridge_available(bridge):
+		return false
+	var result: Variant = bridge.call(
+			"applyScope",
+			payload,
+		)
+	return result is bool and result == true
+
+
+func _restore_retained_scope(
+		bridge: Object,
+		retained_scope_was_enabled: bool,
+		retained_scope_payload: Dictionary,
+) -> bool:
+	if not retained_scope_was_enabled or not _has_scope_contract(bridge):
+		return true
+	return _apply_scope_payload(bridge, retained_scope_payload)
+
+
+func _rollback_after_session_reset_failure(
+		bridge: Object,
+		retained_scope_was_enabled: bool,
+		retained_scope_payload: Dictionary,
+) -> bool:
+	if not _has_last_config_payload:
+		return false
+	var rollback_result: Variant = bridge.call(
+			"configure",
+			_last_config_payload.duplicate(true),
+		)
+	if not (rollback_result is int) or rollback_result != Error.OK:
+		return false
+	return _restore_retained_scope(
+			bridge,
+			retained_scope_was_enabled,
+			retained_scope_payload,
+		)
+
+
+func _can_preserve_breadcrumb_trail_after_clear_failure(
+		clear_result: Variant,
+		can_preserve_prior_session_after_configuration_attempt: bool,
+		retained_scope_was_enabled: bool,
+) -> bool:
+	if not (clear_result is bool) or clear_result != false:
+		return false
+	if not can_preserve_prior_session_after_configuration_attempt:
+		return false
+	if not retained_scope_was_enabled or not _has_last_config_payload:
+		return false
+	var committed_enabled: Variant = _last_config_payload.get("enabled")
+	if not (committed_enabled is bool) or committed_enabled != true:
+		return false
+	return true
+
+
+func _config_payloads_are_equivalent(candidate_config_payload: Dictionary) -> bool:
+	# Dictionary equality is deep; defensive complete snapshots include every
+	# nested configuration field and the lifecycle owner.
+	var candidate_snapshot: Dictionary = candidate_config_payload.duplicate(true)
+	var committed_snapshot: Dictionary = _last_config_payload.duplicate(true)
+	return candidate_snapshot == committed_snapshot
+
+
+func _fail_closed(bridge: Object) -> void:
+	bridge.call("shutdown", _owner)
+	_enabled = false
+	_stable_contexts = {}
+	_scope = ObservabilityScope.new()
+	_user = null
+	_clear_last_config_payload()
+	_shutdown = true
+
+
+func _clear_last_config_payload() -> void:
+	_last_config_payload = {}
+	_has_last_config_payload = false
+
+
+func _scope_payload(
+		scope: ObservabilityScope,
+		user: ObservabilityUser?,
+) -> Dictionary:
+	var payload: Dictionary = {
+			"tags": scope.tags(),
+			"contexts": scope.contexts(),
+		}
+	if user != null:
+		payload["user"] = {
+				"id": user.application_user_id(),
+				"display_name": user.display_name(),
+				"contact_email": user.contact_email(),
+			}
+	return payload
 
 
 func _stack_frame_payload(frame: ObservabilityStackFrame) -> Dictionary:

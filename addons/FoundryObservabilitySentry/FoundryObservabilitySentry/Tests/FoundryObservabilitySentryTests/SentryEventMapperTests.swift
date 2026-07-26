@@ -95,6 +95,38 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertNil(attributes["unsupported"])
     }
 
+    func testFoundryScopePayloadClassifiesSemanticEmptiness() {
+        XCTAssertTrue(foundryScopePayload(nil).isSemanticallyEmpty)
+        XCTAssertTrue(foundryScopePayload([:]).isSemanticallyEmpty)
+        XCTAssertTrue(foundryScopePayload([
+            "tags": [:],
+            "contexts": [:],
+            "user": [:],
+        ]).isSemanticallyEmpty)
+
+        XCTAssertFalse(foundryScopePayload([
+            "tags": ["region": "iad"],
+        ]).isSemanticallyEmpty)
+        XCTAssertFalse(foundryScopePayload([
+            "contexts": ["match": [:]],
+        ]).isSemanticallyEmpty)
+        XCTAssertFalse(foundryScopePayload([
+            "user": ["id": "player-7"],
+        ]).isSemanticallyEmpty)
+    }
+
+    func testStructuredLogScopeDecisionRejectsScopedThenAllowsUnscopedLog() {
+        let scoped = foundryScopePayload([
+            "contexts": ["match": [:]],
+        ])
+
+        XCTAssertTrue(shouldRejectSentryStructuredLog(scope: scoped))
+        XCTAssertFalse(shouldRejectSentryStructuredLog(
+            scope: foundryScopePayload([:])
+        ))
+        XCTAssertTrue(scoped.contexts.keys.contains("match"))
+    }
+
     func testBreadcrumbDataPreservesFieldsAndReservedMetadata() {
         let data = sentryBreadcrumbData(
             global: ["build": 42, "error.file": "global"],
@@ -113,6 +145,7 @@ final class SentryEventMapperTests: XCTestCase {
             message: "warning",
             level: 40,
             category: "error",
+            type: "http",
             timestampMsec: 1234,
             sdkTimestamp: wallClock,
             globalAttributes: ["build": 42],
@@ -121,6 +154,7 @@ final class SentryEventMapperTests: XCTestCase {
 
         XCTAssertEqual(breadcrumb.message, "warning")
         XCTAssertEqual(breadcrumb.category, "error")
+        XCTAssertEqual(breadcrumb.type, "http")
         XCTAssertEqual(breadcrumb.level, .warning)
         XCTAssertEqual(breadcrumb.timestamp, wallClock)
         XCTAssertEqual(breadcrumb.data?["build"] as? Int, 42)
@@ -180,7 +214,53 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertNil(contexts["foundry_engine"]?["unsupported"])
         XCTAssertNil((contexts["foundry_engine"]?["cycle"] as? [String: Any])?["self"])
         XCTAssertNil(contexts[""])
-        XCTAssertNil(contexts["empty"])
+        XCTAssertEqual(contexts["empty"]?.count, 0)
+    }
+
+    func testBridgeConversionAndScopeMappingPreserveRecursiveNulls() {
+        let converted = foundryFoundationDictionary([
+            (
+                key: "nested",
+                value: FoundryFoundationValue(foundryFoundationDictionary([
+                    (key: "nullable", value: FoundryFoundationValue(NSNull())),
+                ]))
+            ),
+            (
+                key: "items",
+                value: FoundryFoundationValue(foundryFoundationArray([
+                    FoundryFoundationValue("first"),
+                    FoundryFoundationValue(NSNull()),
+                    FoundryFoundationValue("last"),
+                ]))
+            ),
+            (key: "unsupported", value: nil),
+        ])
+        let payload = foundryScopePayload([
+            "contexts": ["match": converted],
+        ])
+
+        XCTAssertTrue(payload.contexts["match"]?["nested"] is [String: Any])
+        XCTAssertTrue(
+            (payload.contexts["match"]?["nested"] as? [String: Any])?["nullable"]
+                is NSNull
+        )
+        let items = payload.contexts["match"]?["items"] as? [Any]
+        XCTAssertEqual(items?.count, 3)
+        XCTAssertEqual(items?[0] as? String, "first")
+        XCTAssertTrue(items?[1] is NSNull)
+        XCTAssertEqual(items?[2] as? String, "last")
+        XCTAssertNil(payload.contexts["match"]?["unsupported"])
+
+        let scope = Scope()
+        applyFoundryScope(payload, to: scope)
+        let serializedContexts = scope.serialize()["context"] as? [String: Any]
+        let serializedMatch = serializedContexts?["match"] as? [String: Any]
+        XCTAssertTrue(
+            (serializedMatch?["nested"] as? [String: Any])?["nullable"] is NSNull
+        )
+        let serializedItems = serializedMatch?["items"] as? [Any]
+        XCTAssertEqual(serializedItems?.count, 3)
+        XCTAssertTrue(serializedItems?[1] is NSNull)
     }
 
     func testAppliesRuntimeContextsToScope() {
@@ -195,6 +275,336 @@ final class SentryEventMapperTests: XCTestCase {
         XCTAssertEqual(
             (serialized?["foundry_engine"] as? [String: Any])?["version"] as? String,
             "4.5"
+        )
+    }
+
+    func testMapsRepresentativeFoundryScopePayloadWithoutAdditionalPII() {
+        let payload = foundryScopePayload([
+            "tags": ["region": "iad", "invalid": 42],
+            "contexts": [
+                "match": [
+                    "id": "match-9",
+                    "teams": [
+                        ["name": "red", "score": 2],
+                        ["name": "blue", "score": 1],
+                    ],
+                ],
+            ],
+            "user": [
+                "id": "player-7",
+                "display_name": "Mina",
+                "contact_email": "mina@example.com",
+                "ip_address": "203.0.113.1",
+            ],
+        ])
+
+        XCTAssertEqual(payload.tags, ["region": "iad"])
+        XCTAssertEqual(payload.user?["id"], "player-7")
+        XCTAssertEqual(payload.user?["display_name"], "Mina")
+        XCTAssertEqual(payload.user?["contact_email"], "mina@example.com")
+        XCTAssertNil(payload.user?["ip_address"])
+        let teams = payload.contexts["match"]?["teams"] as? [[String: Any]]
+        XCTAssertEqual(teams?[0]["name"] as? String, "red")
+        XCTAssertEqual(teams?[1]["score"] as? Int, 1)
+
+        let scope = Scope()
+        applyFoundryScope(payload, to: scope)
+        let serialized = scope.serialize()
+        XCTAssertEqual(
+            (serialized["tags"] as? [String: String])?["region"],
+            "iad"
+        )
+        XCTAssertEqual(
+            ((serialized["context"] as? [String: Any])?["match"] as? [String: Any])?["id"]
+                as? String,
+            "match-9"
+        )
+        let user = serialized["user"] as? [String: Any]
+        XCTAssertEqual(user?["id"] as? String, "player-7")
+        XCTAssertEqual(user?["username"] as? String, "Mina")
+        XCTAssertEqual(user?["email"] as? String, "mina@example.com")
+        XCTAssertNil(user?["ip_address"])
+        XCTAssertNil(user?["name"])
+    }
+
+    func testReplacingFoundryScopeRemovesStaleKeysAndPreservesUnownedValues() throws {
+        let scope = Scope()
+        scope.setTag(value: "native", key: "native-tag")
+        scope.setContext(value: ["os": "macOS"], key: "device")
+        let first = foundryScopePayload([
+            "tags": ["region": "iad", "mode": "ranked"],
+            "contexts": [
+                "match": ["id": "match-9"],
+                "round": ["number": 2],
+            ],
+            "user": ["id": "player-7"],
+        ])
+        let firstKeys = try XCTUnwrap(
+            replaceFoundryScope(
+                first,
+                previousKeys: FoundryInstalledScopeKeys(),
+                on: scope
+            )
+        )
+        let second = foundryScopePayload([
+            "tags": ["region": "fra"],
+            "contexts": ["match": ["id": "match-10"]],
+            "user": ["id": "player-8"],
+        ])
+
+        let secondKeys = try XCTUnwrap(
+            replaceFoundryScope(
+                second,
+                previousKeys: firstKeys,
+                on: scope
+            )
+        )
+
+        let serialized = scope.serialize()
+        let tags = serialized["tags"] as? [String: String]
+        XCTAssertEqual(tags?["native-tag"], "native")
+        XCTAssertEqual(tags?["region"], "fra")
+        XCTAssertNil(tags?["mode"])
+        let contexts = serialized["context"] as? [String: Any]
+        XCTAssertEqual(
+            (contexts?["device"] as? [String: Any])?["os"] as? String,
+            "macOS"
+        )
+        XCTAssertEqual(
+            (contexts?["match"] as? [String: Any])?["id"] as? String,
+            "match-10"
+        )
+        XCTAssertNil(contexts?["round"])
+        XCTAssertEqual(
+            (serialized["user"] as? [String: Any])?["id"] as? String,
+            "player-8"
+        )
+        XCTAssertEqual(secondKeys.tagKeys, ["region"])
+        XCTAssertEqual(secondKeys.contextKeys, ["match"])
+    }
+
+    func testEmptyFoundryScopeRemovesPreviouslyInstalledValues() throws {
+        let scope = Scope()
+        let installedKeys = try XCTUnwrap(
+            replaceFoundryScope(
+                foundryScopePayload([
+                    "tags": ["region": "iad"],
+                    "contexts": ["match": ["id": "match-9"]],
+                    "user": ["id": "player-7"],
+                ]),
+                previousKeys: FoundryInstalledScopeKeys(),
+                on: scope
+            )
+        )
+
+        let emptyKeys = try XCTUnwrap(
+            replaceFoundryScope(
+                foundryScopePayload([:]),
+                previousKeys: installedKeys,
+                on: scope
+            )
+        )
+
+        let serialized = scope.serialize()
+        XCTAssertNil((serialized["tags"] as? [String: String])?["region"])
+        XCTAssertNil((serialized["context"] as? [String: Any])?["match"])
+        XCTAssertNil(serialized["user"])
+        XCTAssertTrue(emptyKeys.tagKeys.isEmpty)
+        XCTAssertTrue(emptyKeys.contextKeys.isEmpty)
+    }
+
+    func testReplacingFoundryScopeRejectsLiveNativeCollisionsAtomically() throws {
+        let collisions: [(tagKey: String?, contextKey: String?)] = [
+            ("native-tag", nil),
+            (nil, "device"),
+            (nil, "foundry"),
+            (nil, "foundry_engine"),
+            (nil, "third_party_empty"),
+        ]
+
+        for (index, collision) in collisions.enumerated() {
+            let scope = Scope()
+            let installedKeys = try XCTUnwrap(
+                replaceFoundryScope(
+                    foundryScopePayload([
+                        "tags": ["region": "iad", "stale": "keep-on-rejection"],
+                        "contexts": ["match": ["id": "match-9"]],
+                        "user": ["id": "player-7"],
+                    ]),
+                    previousKeys: FoundryInstalledScopeKeys(),
+                    on: scope
+                )
+            )
+            if let tagKey = collision.tagKey {
+                scope.setTag(value: "native", key: tagKey)
+            }
+            if let contextKey = collision.contextKey {
+                scope.setContext(
+                    value: contextKey == "third_party_empty" ? [:] : ["owner": "native"],
+                    key: contextKey
+                )
+            }
+
+            var rejectedTags = ["new-tag": "must-not-install"]
+            if let tagKey = collision.tagKey {
+                rejectedTags[tagKey] = "foundry"
+            }
+            var rejectedContexts: [String: [String: Any]] = [
+                "new-context": ["value": "must-not-install"]
+            ]
+            if let contextKey = collision.contextKey {
+                rejectedContexts[contextKey] = ["owner": "foundry"]
+            }
+            let rejectedKeys = replaceFoundryScope(
+                FoundryScopePayload(
+                    tags: rejectedTags,
+                    contexts: rejectedContexts,
+                    user: ["id": "player-rejected"]
+                ),
+                previousKeys: installedKeys,
+                on: scope
+            )
+
+            XCTAssertNil(rejectedKeys, "Expected collision \(index) to reject")
+            let rejected = scope.serialize()
+            XCTAssertEqual((rejected["tags"] as? [String: String])?["region"], "iad")
+            XCTAssertEqual(
+                (rejected["tags"] as? [String: String])?["stale"],
+                "keep-on-rejection"
+            )
+            XCTAssertNil((rejected["tags"] as? [String: String])?["new-tag"])
+            XCTAssertEqual(
+                ((rejected["context"] as? [String: Any])?["match"] as? [String: Any])?["id"]
+                    as? String,
+                "match-9"
+            )
+            XCTAssertNil((rejected["context"] as? [String: Any])?["new-context"])
+            XCTAssertEqual(
+                (rejected["user"] as? [String: Any])?["id"] as? String,
+                "player-7"
+            )
+            if let tagKey = collision.tagKey {
+                XCTAssertEqual(
+                    (rejected["tags"] as? [String: String])?[tagKey],
+                    "native"
+                )
+            }
+            if let contextKey = collision.contextKey {
+                let nativeContext =
+                    (rejected["context"] as? [String: Any])?[contextKey]
+                        as? [String: Any]
+                if contextKey == "third_party_empty" {
+                    XCTAssertEqual(nativeContext?.count, 0)
+                } else {
+                    XCTAssertEqual(nativeContext?["owner"] as? String, "native")
+                }
+            }
+
+            let safeKeys = replaceFoundryScope(
+                foundryScopePayload([
+                    "tags": ["safe-tag": "safe-\(index)"],
+                    "contexts": ["safe-context": ["value": index]],
+                    "user": ["id": "player-safe-\(index)"],
+                ]),
+                previousKeys: installedKeys,
+                on: scope
+            )
+
+            XCTAssertNotNil(safeKeys)
+            let safe = scope.serialize()
+            XCTAssertNil((safe["tags"] as? [String: String])?["region"])
+            XCTAssertNil((safe["tags"] as? [String: String])?["stale"])
+            XCTAssertEqual(
+                (safe["tags"] as? [String: String])?["safe-tag"],
+                "safe-\(index)"
+            )
+            XCTAssertNil((safe["context"] as? [String: Any])?["match"])
+            XCTAssertEqual(
+                (
+                    (safe["context"] as? [String: Any])?["safe-context"]
+                        as? [String: Any]
+                )?["value"] as? Int,
+                index
+            )
+            XCTAssertEqual(
+                (safe["user"] as? [String: Any])?["id"] as? String,
+                "player-safe-\(index)"
+            )
+            if let tagKey = collision.tagKey {
+                XCTAssertEqual((safe["tags"] as? [String: String])?[tagKey], "native")
+            }
+            if let contextKey = collision.contextKey {
+                let nativeContext =
+                    (safe["context"] as? [String: Any])?[contextKey]
+                        as? [String: Any]
+                if contextKey == "third_party_empty" {
+                    XCTAssertEqual(nativeContext?.count, 0)
+                } else {
+                    XCTAssertEqual(nativeContext?["owner"] as? String, "native")
+                }
+            }
+        }
+    }
+
+    func testEventLocalScopeOverlaysGlobalWithoutRemovingOrMutatingIt() {
+        let globalScope = Scope()
+        applyFoundryScope(
+            foundryScopePayload([
+                "tags": ["region": "iad", "mode": "ranked"],
+                "contexts": [
+                    "match": ["id": "global", "round": 1],
+                    "device": ["class": "desktop"],
+                ],
+                "user": ["id": "global-player"],
+            ]),
+            to: globalScope
+        )
+        let captureScope = Scope(scope: globalScope)
+
+        applyFoundryScope(
+            foundryScopePayload([
+                "tags": ["region": "fra"],
+                "contexts": ["match": [:]],
+                "user": ["id": "local-player"],
+            ]),
+            to: captureScope
+        )
+
+        let captured = captureScope.serialize()
+        XCTAssertEqual(
+            (captured["tags"] as? [String: String])?["region"],
+            "fra"
+        )
+        XCTAssertEqual(
+            (captured["tags"] as? [String: String])?["mode"],
+            "ranked"
+        )
+        let capturedMatch =
+            (captured["context"] as? [String: Any])?["match"] as? [String: Any]
+        XCTAssertEqual(capturedMatch?.count, 0)
+        XCTAssertEqual(
+            ((captured["context"] as? [String: Any])?["device"] as? [String: Any])?["class"]
+                as? String,
+            "desktop"
+        )
+        XCTAssertEqual(
+            (captured["user"] as? [String: Any])?["id"] as? String,
+            "local-player"
+        )
+
+        let global = globalScope.serialize()
+        XCTAssertEqual(
+            (global["tags"] as? [String: String])?["region"],
+            "iad"
+        )
+        XCTAssertEqual(
+            ((global["context"] as? [String: Any])?["match"] as? [String: Any])?["id"]
+                as? String,
+            "global"
+        )
+        XCTAssertEqual(
+            (global["user"] as? [String: Any])?["id"] as? String,
+            "global-player"
         )
     }
 

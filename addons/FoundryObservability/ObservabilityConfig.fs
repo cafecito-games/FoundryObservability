@@ -54,6 +54,8 @@ var android_anr_detection_enabled: bool = true
 var android_anr_timeout_msec: int = 5000
 ## Attaches an Android operating-system ANR thread dump when available.
 var android_anr_attach_thread_dump: bool = false
+## Maximum retained breadcrumbs; zero disables breadcrumb storage.
+var max_breadcrumbs: int = 100
 var _global_attributes: Dictionary = {}
 var _provider_options: Dictionary = {}
 var _automatic_message_filter_prefixes: PackedStringArray = PackedStringArray()
@@ -90,6 +92,7 @@ func _init(
 		p_android_anr_detection_enabled: bool = true,
 		p_android_anr_timeout_msec: int = 5000,
 		p_android_anr_attach_thread_dump: bool = false,
+		p_max_breadcrumbs: int = 100,
 ) -> void:
 	enabled = p_enabled
 	environment = p_environment
@@ -116,6 +119,7 @@ func _init(
 	android_anr_detection_enabled = p_android_anr_detection_enabled
 	android_anr_timeout_msec = maxi(1000, p_android_anr_timeout_msec)
 	android_anr_attach_thread_dump = p_android_anr_attach_thread_dump
+	max_breadcrumbs = maxi(0, p_max_breadcrumbs)
 	_global_attributes = p_global_attributes.duplicate(true)
 	_provider_options = p_provider_options.duplicate(true)
 	_automatic_message_filter_prefixes = p_automatic_message_filter_prefixes.duplicate()

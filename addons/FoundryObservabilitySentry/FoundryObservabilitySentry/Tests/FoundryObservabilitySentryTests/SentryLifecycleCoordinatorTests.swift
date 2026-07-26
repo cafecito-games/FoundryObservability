@@ -35,6 +35,25 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.isAvailable(owner: "second"))
     }
 
+    func testChangedMaxBreadcrumbsClosesThenStarts() {
+        let driver = FakeSentryLifecycleDriver()
+        let coordinator = SentryLifecycleCoordinator(driver: driver)
+
+        XCTAssertTrue(coordinator.configure(
+            owner: "first",
+            configuration: configuration(maxBreadcrumbs: 100)
+        ))
+        XCTAssertTrue(coordinator.configure(
+            owner: "second",
+            configuration: configuration(maxBreadcrumbs: 2)
+        ))
+
+        XCTAssertEqual(
+            driver.operations,
+            ["start:1.0.0", "close", "start:1.0.0"]
+        )
+    }
+
     func testChangedConfigurationClosesThenStarts() {
         let driver = FakeSentryLifecycleDriver()
         let coordinator = SentryLifecycleCoordinator(driver: driver)
@@ -93,6 +112,54 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
         XCTAssertEqual(driver.operations, ["start:1.0.0", "flush:0.25"])
     }
 
+    func testAvailableOwnerCanPerformGuardedBreadcrumbClear() {
+        let driver = FakeSentryLifecycleDriver()
+        let coordinator = SentryLifecycleCoordinator(driver: driver)
+        let scope = Scope()
+        scope.addBreadcrumb(Breadcrumb())
+
+        XCTAssertTrue(coordinator.configure(owner: "first", configuration: configuration()))
+        XCTAssertFalse(coordinator.perform(owner: "stale") {
+            scope.clearBreadcrumbs()
+        })
+        XCTAssertNotNil(scope.serialize()["breadcrumbs"])
+        XCTAssertTrue(coordinator.perform(owner: "first") {
+            scope.clearBreadcrumbs()
+        })
+
+        XCTAssertNil(scope.serialize()["breadcrumbs"])
+    }
+
+    func testScopeKeysSurviveOwnerTransferAndResetAtSessionBoundary() {
+        let driver = FakeSentryLifecycleDriver()
+        let coordinator = SentryLifecycleCoordinator(driver: driver)
+        let config = configuration()
+
+        XCTAssertTrue(coordinator.configure(owner: "first", configuration: config))
+        XCTAssertTrue(coordinator.replaceScope(owner: "first") { previousKeys in
+            XCTAssertTrue(previousKeys.tagKeys.isEmpty)
+            return FoundryInstalledScopeKeys(tagKeys: ["region"])
+        })
+        XCTAssertFalse(coordinator.replaceScope(owner: "first") { _ in nil })
+        XCTAssertTrue(coordinator.configure(owner: "second", configuration: config))
+        XCTAssertTrue(coordinator.replaceScope(owner: "second") { previousKeys in
+            XCTAssertEqual(previousKeys.tagKeys, ["region"])
+            return FoundryInstalledScopeKeys()
+        })
+
+        XCTAssertTrue(coordinator.replaceScope(owner: "second") { _ in
+            FoundryInstalledScopeKeys(contextKeys: ["match"])
+        })
+        XCTAssertTrue(coordinator.configure(
+            owner: "third",
+            configuration: configuration(release: "2.0.0")
+        ))
+        XCTAssertTrue(coordinator.replaceScope(owner: "third") { previousKeys in
+            XCTAssertTrue(previousKeys.contextKeys.isEmpty)
+            return FoundryInstalledScopeKeys()
+        })
+    }
+
     func testFailedReplacementRestoresPreviousOwnerAndConfiguration() {
         let driver = FakeSentryLifecycleDriver()
         let coordinator = SentryLifecycleCoordinator(driver: driver)
@@ -144,6 +211,7 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
         XCTAssertEqual(options.releaseName, "game@1.2.3")
         XCTAssertEqual(options.environment, "qa")
         XCTAssertEqual(options.dist, "macos")
+        XCTAssertEqual(options.maxBreadcrumbs, 2)
         XCTAssertEqual(
             foundryCrashContext(config) as NSDictionary,
             ["global_attributes": ["build": 42]] as NSDictionary
@@ -160,12 +228,19 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
         )
     }
 
+    func testAppleOptionsClampNegativeMaxBreadcrumbsToZero() {
+        let options = makeAppleSentryOptions(configuration(maxBreadcrumbs: -5))
+
+        XCTAssertEqual(options.maxBreadcrumbs, 0)
+    }
+
     private func configuration(
         release: String = "1.0.0",
         environment: String = "test",
         dist: String = "macos",
         globalAttributes: [String: Any] = [:],
-        stableContexts: [String: Any] = [:]
+        stableContexts: [String: Any] = [:],
+        maxBreadcrumbs: Int = 2
     ) -> SentryLifecycleConfiguration {
         SentryLifecycleConfiguration(
             dsn: "https://public@example.com/1",
@@ -178,7 +253,8 @@ final class SentryLifecycleCoordinatorTests: XCTestCase {
             logsEnabled: true,
             metricsEnabled: true,
             applicationHangDetectionEnabled: true,
-            applicationHangTimeoutMsec: 3_200
+            applicationHangTimeoutMsec: 3_200,
+            maxBreadcrumbs: maxBreadcrumbs
         )
     }
 }

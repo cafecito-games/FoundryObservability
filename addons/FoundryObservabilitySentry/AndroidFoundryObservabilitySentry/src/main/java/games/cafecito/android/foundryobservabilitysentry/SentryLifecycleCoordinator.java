@@ -1,5 +1,11 @@
 package games.cafecito.android.foundryobservabilitysentry;
 
+import java.util.Collections;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.function.BooleanSupplier;
+import java.util.function.Function;
+
 interface SentryLifecycleDriver {
   boolean isEnabled();
 
@@ -11,9 +17,26 @@ interface SentryLifecycleDriver {
 }
 
 final class SentryLifecycleCoordinator {
+  static final class ScopeKeys {
+    final Set<String> tagKeys;
+    final Set<String> contextKeys;
+
+    ScopeKeys(Set<String> tagKeys, Set<String> contextKeys) {
+      this.tagKeys = immutableSet(tagKeys);
+      this.contextKeys = immutableSet(contextKeys);
+    }
+
+    private static Set<String> immutableSet(Set<String> values) {
+      return Collections.unmodifiableSet(new LinkedHashSet<>(values));
+    }
+  }
+
+  private static final ScopeKeys EMPTY_SCOPE_KEYS =
+      new ScopeKeys(Set.of(), Set.of());
   private final SentryLifecycleDriver driver;
   private String activeOwner;
   private SentryLifecycleConfiguration activeConfiguration;
+  private ScopeKeys installedScopeKeys = EMPTY_SCOPE_KEYS;
 
   SentryLifecycleCoordinator(SentryLifecycleDriver driver) {
     this.driver = driver;
@@ -34,6 +57,7 @@ final class SentryLifecycleCoordinator {
       return true;
     }
 
+    resetScopeKeys();
     String previousOwner = activeOwner;
     SentryLifecycleConfiguration previousConfiguration = activeConfiguration;
     if (driver.isEnabled()) {
@@ -72,6 +96,36 @@ final class SentryLifecycleCoordinator {
     return true;
   }
 
+  synchronized boolean replaceScope(
+      String owner,
+      Function<ScopeKeys, ScopeKeys> replacement) {
+    if (!isAvailable(owner)) {
+      return false;
+    }
+    ScopeKeys nextKeys;
+    try {
+      nextKeys = replacement.apply(installedScopeKeys);
+    } catch (RuntimeException exception) {
+      return false;
+    }
+    if (nextKeys == null) {
+      return false;
+    }
+    installedScopeKeys = nextKeys;
+    return true;
+  }
+
+  synchronized boolean perform(String owner, BooleanSupplier operation) {
+    if (!isAvailable(owner)) {
+      return false;
+    }
+    try {
+      return operation.getAsBoolean();
+    } catch (RuntimeException exception) {
+      return false;
+    }
+  }
+
   synchronized void shutdown(String owner) {
     if (owner == null || owner.isEmpty() || !owner.equals(activeOwner)) {
       return;
@@ -81,6 +135,7 @@ final class SentryLifecycleCoordinator {
     }
     activeOwner = null;
     activeConfiguration = null;
+    resetScopeKeys();
   }
 
   synchronized String activeOwner() {
@@ -89,5 +144,9 @@ final class SentryLifecycleCoordinator {
 
   synchronized SentryLifecycleConfiguration activeConfiguration() {
     return activeConfiguration;
+  }
+
+  private void resetScopeKeys() {
+    installedScopeKeys = EMPTY_SCOPE_KEYS;
   }
 }
