@@ -750,7 +750,10 @@ func test_rejected_scope_candidate_rolls_back_provider_state() -> void:
 
 func test_reconfigure_scope_reset_is_atomic_across_success_and_failure() -> void:
 	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
 	var initial_config := ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
@@ -1049,7 +1052,10 @@ func test_scope_reset_retained_scope_reapply_failure_fails_closed() -> void:
 
 func test_failed_configure_scope_resync_failure_fails_closed_with_original_error() -> void:
 	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
 	var initial_config := ObservabilityConfig.new(
 			p_environment = "production",
 			p_global_attributes = {},
