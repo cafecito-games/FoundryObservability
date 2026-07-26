@@ -7063,6 +7063,42 @@ func test_processing_pipeline_configures_structural_rules_and_rejects_matching_p
 	Expect.that(nonmatching.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
 
 
+func test_processing_pipeline_reports_rule_for_required_frame_field_removal() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.remove_field(
+						PackedStringArray(["event", "attributes", "unused"])),
+				ObservabilityRedactionRule.remove_field(PackedStringArray([
+					"event", "exception", "frames", "*", "file",
+				])),
+			]),
+		))).to_equal(Error.OK)
+	var result: Dictionary = pipeline.process_event(ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_attributes = {},
+			p_exception = ObservabilityException.new(
+					p_attributes = {},
+					p_frames = [
+						ObservabilityStackFrame.new(p_file = "res://failure.fs"),
+					],
+				),
+		))
+
+	Expect.that(result["accepted"]).to_be_false()
+	var diagnostic: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	Expect.that(diagnostic.reason()).to_equal(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED)
+	Expect.that(diagnostic.error()).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(diagnostic.rule_index()).to_equal(1)
+
+
 func test_processing_pipeline_records_provider_results_and_keeps_admission_consumed() -> void:
 	var pipeline := ObservabilityProcessingPipeline.new(
 			func() -> int: return 10,

@@ -503,6 +503,7 @@ func _redact_value(
 					):
 			return _failure(-1)
 		var rebuilt_array: Array = []
+		var removed_rule_index: int = -1
 		for index: int in range(value.size()):
 			var child_path: PackedStringArray = path.duplicate()
 			child_path.append(str(index))
@@ -528,8 +529,18 @@ func _redact_value(
 						applied_rule_index,
 						int(child_result["rule_index"]),
 					)
+			if child_result.get("removed_rule_index", -1) >= 0:
+				@warning_ignore("unsafe_call_argument")
+				removed_rule_index = maxi(
+						removed_rule_index,
+						int(child_result.get("removed_rule_index", -1)),
+					)
 		active_containers.pop_back()
-		return _success_with_rule(rebuilt_array, applied_rule_index)
+		return _traversal_success(
+				rebuilt_array,
+				applied_rule_index,
+				removed_rule_index,
+			)
 	return _success_with_rule(_copy_leaf(value), applied_rule_index)
 
 
