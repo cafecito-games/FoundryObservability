@@ -1,18 +1,22 @@
 package games.cafecito.android.foundryobservabilitysentry;
 
+import io.sentry.IScope;
 import io.sentry.SentryEvent;
 import io.sentry.SentryLevel;
 import io.sentry.protocol.Message;
 import io.sentry.protocol.SentryException;
 import io.sentry.protocol.SentryStackFrame;
 import io.sentry.protocol.SentryStackTrace;
+import io.sentry.protocol.User;
 import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -40,6 +44,23 @@ final class SentryEventMapper {
       this.value = value;
       this.unit = unit;
       this.attributes = attributes;
+    }
+  }
+
+  static final class ScopePayload {
+    final Map<String, String> tags;
+    final Map<String, Map<String, Object>> contexts;
+    final Map<String, String> user;
+
+    ScopePayload(
+        Map<String, String> tags,
+        Map<String, Map<String, Object>> contexts,
+        Map<String, String> user) {
+      this.tags = Collections.unmodifiableMap(new LinkedHashMap<>(tags));
+      this.contexts = immutableContexts(contexts);
+      this.user = user == null
+          ? null
+          : Collections.unmodifiableMap(new LinkedHashMap<>(user));
     }
   }
 
@@ -92,12 +113,40 @@ final class SentryEventMapper {
       Map<String, Object> context = sanitizeVariableMap(
           (Map<?, ?>) entry.getValue(),
           0,
-          new VariableCopyState());
-      if (context != null && !context.isEmpty()) {
+          new VariableCopyState(),
+          true);
+      if (context != null) {
         result.put((String) entry.getKey(), context);
       }
     }
     return result;
+  }
+
+  static ScopePayload scopePayload(Object value) {
+    if (!(value instanceof Map)) {
+      return new ScopePayload(Map.of(), Map.of(), null);
+    }
+    Map<?, ?> source = (Map<?, ?>) value;
+    return new ScopePayload(
+        scopeTags(source.get("tags")),
+        contexts(source.get("contexts")),
+        scopeUser(source.get("user")));
+  }
+
+  static void applyScope(IScope scope, ScopePayload payload) {
+    for (Map.Entry<String, String> entry : payload.tags.entrySet()) {
+      scope.setTag(entry.getKey(), entry.getValue());
+    }
+    for (Map.Entry<String, Map<String, Object>> entry : payload.contexts.entrySet()) {
+      scope.setContexts(entry.getKey(), entry.getValue());
+    }
+    if (payload.user != null) {
+      User user = new User();
+      user.setId(payload.user.get("id"));
+      user.setUsername(payload.user.get("display_name"));
+      user.setEmail(payload.user.get("contact_email"));
+      scope.setUser(user);
+    }
   }
 
   static Map<String, Object> mergedExtras(
@@ -324,14 +373,16 @@ final class SentryEventMapper {
     Map<String, Object> result = sanitizeVariableMap(
         (Map<?, ?>) value,
         0,
-        new VariableCopyState());
+        new VariableCopyState(),
+        false);
     return result == null || result.isEmpty() ? null : result;
   }
 
   private static Map<String, Object> sanitizeVariableMap(
       Map<?, ?> value,
       int depth,
-      VariableCopyState state) {
+      VariableCopyState state,
+      boolean preserveNull) {
     if (depth > MAX_VARIABLE_CONTAINER_DEPTH || !state.enter(value)) {
       return null;
     }
@@ -344,8 +395,9 @@ final class SentryEventMapper {
         if (!(entry.getKey() instanceof String)) {
           continue;
         }
-        Object copied = sanitizeVariableValue(entry.getValue(), depth, state);
-        if (copied != null) {
+        Object rawValue = entry.getValue();
+        Object copied = sanitizeVariableValue(rawValue, depth, state, preserveNull);
+        if (copied != null || (preserveNull && rawValue == null)) {
           result.put((String) entry.getKey(), copied);
         }
       }
@@ -358,7 +410,8 @@ final class SentryEventMapper {
   private static List<Object> sanitizeVariableCollection(
       Object value,
       int depth,
-      VariableCopyState state) {
+      VariableCopyState state,
+      boolean preserveNull) {
     if (depth > MAX_VARIABLE_CONTAINER_DEPTH || !state.enter(value)) {
       return null;
     }
@@ -369,8 +422,8 @@ final class SentryEventMapper {
           if (!state.consumeItem()) {
             break;
           }
-          Object copied = sanitizeVariableValue(element, depth, state);
-          if (copied != null) {
+          Object copied = sanitizeVariableValue(element, depth, state, preserveNull);
+          if (copied != null || (preserveNull && element == null)) {
             result.add(copied);
           }
         }
@@ -379,8 +432,9 @@ final class SentryEventMapper {
           if (!state.consumeItem()) {
             break;
           }
-          Object copied = sanitizeVariableValue(Array.get(value, index), depth, state);
-          if (copied != null) {
+          Object element = Array.get(value, index);
+          Object copied = sanitizeVariableValue(element, depth, state, preserveNull);
+          if (copied != null || (preserveNull && element == null)) {
             result.add(copied);
           }
         }
@@ -394,7 +448,8 @@ final class SentryEventMapper {
   private static Object sanitizeVariableValue(
       Object value,
       int parentDepth,
-      VariableCopyState state) {
+      VariableCopyState state,
+      boolean preserveNull) {
     if (value instanceof Boolean
         || value instanceof String
         || value instanceof Byte
@@ -412,12 +467,78 @@ final class SentryEventMapper {
       return Double.isFinite((Double) value) ? value : null;
     }
     if (value instanceof Map) {
-      return sanitizeVariableMap((Map<?, ?>) value, parentDepth + 1, state);
+      return sanitizeVariableMap(
+          (Map<?, ?>) value,
+          parentDepth + 1,
+          state,
+          preserveNull);
     }
     if (value instanceof Iterable || (value != null && value.getClass().isArray())) {
-      return sanitizeVariableCollection(value, parentDepth + 1, state);
+      return sanitizeVariableCollection(value, parentDepth + 1, state, preserveNull);
     }
     return null;
+  }
+
+  private static Map<String, String> scopeTags(Object value) {
+    Map<String, String> tags = new LinkedHashMap<>();
+    if (!(value instanceof Map)) {
+      return tags;
+    }
+    for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+      if (entry.getKey() instanceof String
+          && !((String) entry.getKey()).isEmpty()
+          && entry.getValue() instanceof String) {
+        tags.put((String) entry.getKey(), (String) entry.getValue());
+      }
+    }
+    return tags;
+  }
+
+  private static Map<String, String> scopeUser(Object value) {
+    if (!(value instanceof Map)) {
+      return null;
+    }
+    Map<String, String> user = new LinkedHashMap<>();
+    for (String key : List.of("id", "display_name", "contact_email")) {
+      Object candidate = ((Map<?, ?>) value).get(key);
+      if (candidate instanceof String && !((String) candidate).isEmpty()) {
+        user.put(key, (String) candidate);
+      }
+    }
+    return user.isEmpty() ? null : user;
+  }
+
+  private static Map<String, Map<String, Object>> immutableContexts(
+      Map<String, Map<String, Object>> contexts) {
+    Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+    for (Map.Entry<String, Map<String, Object>> entry : contexts.entrySet()) {
+      result.put(entry.getKey(), immutableMap(entry.getValue()));
+    }
+    return Collections.unmodifiableMap(result);
+  }
+
+  private static Map<String, Object> immutableMap(Map<?, ?> source) {
+    Map<String, Object> result = new LinkedHashMap<>();
+    for (Map.Entry<?, ?> entry : source.entrySet()) {
+      if (entry.getKey() instanceof String) {
+        result.put((String) entry.getKey(), immutableValue(entry.getValue()));
+      }
+    }
+    return Collections.unmodifiableMap(result);
+  }
+
+  private static Object immutableValue(Object value) {
+    if (value instanceof Map) {
+      return immutableMap((Map<?, ?>) value);
+    }
+    if (value instanceof List) {
+      List<Object> result = new ArrayList<>();
+      for (Object element : (List<?>) value) {
+        result.add(immutableValue(element));
+      }
+      return Collections.unmodifiableList(result);
+    }
+    return value;
   }
 
   private static final class VariableCopyState {

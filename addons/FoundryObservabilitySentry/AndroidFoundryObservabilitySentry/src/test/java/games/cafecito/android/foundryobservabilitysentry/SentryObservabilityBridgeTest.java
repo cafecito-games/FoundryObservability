@@ -7,6 +7,8 @@ import static org.junit.Assert.assertTrue;
 
 import games.cafecito.foundry.Dictionary;
 import games.cafecito.foundry.Foundry;
+import io.sentry.Breadcrumb;
+import io.sentry.IScope;
 import io.sentry.Sentry;
 import io.sentry.android.core.SentryAndroidOptions;
 import io.sentry.protocol.SentryId;
@@ -14,7 +16,9 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -321,6 +325,153 @@ public class SentryObservabilityBridgeTest {
 
       assertEquals(7300L, options.getAnrTimeoutIntervalMillis());
     }
+  }
+
+  @Test
+  public void parsesExactBoundedMaxBreadcrumbsWithCompatibleFallbackAndClamp() {
+    assertEquals(2, SentryObservabilityBridge.maxBreadcrumbsValue(2));
+    assertEquals(2, SentryObservabilityBridge.maxBreadcrumbsValue(2.0D));
+    assertEquals(0, SentryObservabilityBridge.maxBreadcrumbsValue(-5));
+    assertEquals(100, SentryObservabilityBridge.maxBreadcrumbsValue(null));
+    assertEquals(100, SentryObservabilityBridge.maxBreadcrumbsValue("2"));
+    assertEquals(100, SentryObservabilityBridge.maxBreadcrumbsValue(2.5D));
+    assertEquals(
+        100,
+        SentryObservabilityBridge.maxBreadcrumbsValue(
+            BigInteger.valueOf(Integer.MAX_VALUE).add(BigInteger.ONE)));
+  }
+
+  @SuppressWarnings("unchecked")
+  @Test
+  public void applyScopeReplacesFoundryValuesAndPreservesUnrelatedScopeData() {
+    SentryObservabilityBridge bridge = configuredBridge();
+    configureCurrentScope(scope -> {
+      scope.setTag("native", "preserved");
+      scope.setContexts("device", Map.of("model", "test-device"));
+    });
+
+    Dictionary first = new Dictionary();
+    first.put("tags", Map.of("region", "iad", "stale", "remove-me"));
+    first.put(
+        "contexts",
+        Map.of(
+            "match",
+            Map.of(
+                "id", 7,
+                "teams", List.of("red", "blue")),
+            "empty", Map.of()));
+    first.put(
+        "user",
+        Map.of(
+            "id", "player-7",
+            "display_name", "Mina",
+            "contact_email", "mina@example.com",
+            "ip_address", "127.0.0.1"));
+
+    assertTrue(bridge.applyScope(first));
+
+    IScope applied = currentScope();
+    assertEquals("iad", applied.getTags().get("region"));
+    assertEquals("preserved", applied.getTags().get("native"));
+    assertEquals(7, ((Map<?, ?>) applied.getContexts().get("match")).get("id"));
+    assertEquals(
+        List.of("red", "blue"),
+        ((Map<?, ?>) applied.getContexts().get("match")).get("teams"));
+    assertEquals(Collections.emptyMap(), applied.getContexts().get("empty"));
+    assertEquals("test-device", ((Map<?, ?>) applied.getContexts().get("device")).get("model"));
+    assertEquals("player-7", applied.getUser().getId());
+    assertEquals("Mina", applied.getUser().getUsername());
+    assertEquals("mina@example.com", applied.getUser().getEmail());
+    assertEquals(null, applied.getUser().getIpAddress());
+
+    Dictionary replacement = new Dictionary();
+    replacement.put("tags", Map.of("region", "fra"));
+    replacement.put("contexts", Map.of("session", Map.of("round", 2)));
+    assertTrue(bridge.applyScope(replacement));
+
+    IScope replaced = currentScope();
+    assertEquals("fra", replaced.getTags().get("region"));
+    assertFalse(replaced.getTags().containsKey("stale"));
+    assertEquals("preserved", replaced.getTags().get("native"));
+    assertFalse(replaced.getContexts().containsKey("match"));
+    assertFalse(replaced.getContexts().containsKey("empty"));
+    assertEquals(2, ((Map<?, ?>) replaced.getContexts().get("session")).get("round"));
+    assertEquals("test-device", ((Map<?, ?>) replaced.getContexts().get("device")).get("model"));
+    assertEquals(null, replaced.getUser());
+
+    assertTrue(bridge.applyScope(new Dictionary()));
+    IScope cleared = currentScope();
+    assertFalse(cleared.getTags().containsKey("region"));
+    assertFalse(cleared.getContexts().containsKey("session"));
+    assertEquals("preserved", cleared.getTags().get("native"));
+    assertEquals("test-device", ((Map<?, ?>) cleared.getContexts().get("device")).get("model"));
+
+    bridge.shutdown(OWNER);
+  }
+
+  @Test
+  public void clearBreadcrumbsClearsCurrentScopeAndBothMethodsHonorOwnerAvailability() {
+    SentryObservabilityBridge unavailable = newBridge();
+    assertFalse(unavailable.applyScope(new Dictionary()));
+    assertFalse(unavailable.clearBreadcrumbs());
+
+    SentryObservabilityBridge bridge = configuredBridge();
+    configureCurrentScope(scope -> {
+      scope.addBreadcrumb(new Breadcrumb("first"));
+      scope.addBreadcrumb(new Breadcrumb("second"));
+    });
+    assertEquals(2, currentScope().getBreadcrumbs().size());
+
+    assertTrue(bridge.clearBreadcrumbs());
+    assertTrue(currentScope().getBreadcrumbs().isEmpty());
+
+    bridge.shutdown(OWNER);
+    assertFalse(bridge.applyScope(new Dictionary()));
+    assertFalse(bridge.clearBreadcrumbs());
+  }
+
+  @Test
+  public void sameConfigurationOwnerTransferRetainsTrackingSoEmptyScopeClearsPriorValues() {
+    SentryObservabilityBridge bridge = newBridge();
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("lifecycle_owner", OWNER);
+    assertEquals(0, bridge.configure(configuration));
+
+    Dictionary scope = new Dictionary();
+    scope.put("tags", Map.of("region", "iad"));
+    scope.put("contexts", Map.of("match", Map.of("id", 7)));
+    assertTrue(bridge.applyScope(scope));
+
+    String replacementOwner = "replacement-owner";
+    configuration.put("lifecycle_owner", replacementOwner);
+    assertEquals(0, bridge.configure(configuration));
+    assertTrue(bridge.applyScope(new Dictionary()));
+
+    assertFalse(currentScope().getTags().containsKey("region"));
+    assertFalse(currentScope().getContexts().containsKey("match"));
+    bridge.shutdown(replacementOwner);
+  }
+
+  private static SentryObservabilityBridge configuredBridge() {
+    SentryObservabilityBridge bridge = newBridge();
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("lifecycle_owner", OWNER);
+    assertEquals(0, bridge.configure(configuration));
+    return bridge;
+  }
+
+  private static void configureCurrentScope(io.sentry.ScopeCallback callback) {
+    Sentry.configureScope(callback);
+  }
+
+  private static IScope currentScope() {
+    AtomicReference<IScope> result = new AtomicReference<>();
+    Sentry.configureScope(result::set);
+    return result.get();
   }
 
   private static SentryObservabilityBridge newBridge() {

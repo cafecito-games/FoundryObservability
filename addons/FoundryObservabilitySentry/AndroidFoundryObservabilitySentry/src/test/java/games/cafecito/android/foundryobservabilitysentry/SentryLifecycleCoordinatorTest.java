@@ -63,6 +63,33 @@ public class SentryLifecycleCoordinatorTest {
   }
 
   @Test
+  public void changedMaxBreadcrumbsRestartsAndFailedReplacementRestoresPreviousMaximum() {
+    FakeDriver driver = new FakeDriver();
+    SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
+
+    assertTrue(coordinator.configure("first", configuration("1.0.0", Map.of(), 2)));
+    assertTrue(coordinator.configure("second", configuration("1.0.0", Map.of(), 3)));
+    driver.failNextStart = true;
+
+    assertFalse(coordinator.configure("third", configuration("1.0.0", Map.of(), 4)));
+
+    assertEquals(List.of(2, 3, 4, 3), driver.startedMaxBreadcrumbs);
+    assertEquals(3, coordinator.activeConfiguration().maxBreadcrumbs);
+    assertEquals("second", coordinator.activeOwner());
+  }
+
+  @Test
+  public void maxBreadcrumbsParticipatesInConfigurationEqualityAndHashCode() {
+    SentryLifecycleConfiguration first = configuration("1.0.0", Map.of(), 2);
+    SentryLifecycleConfiguration equal = configuration("1.0.0", Map.of(), 2);
+    SentryLifecycleConfiguration different = configuration("1.0.0", Map.of(), 3);
+
+    assertEquals(first, equal);
+    assertEquals(first.hashCode(), equal.hashCode());
+    assertFalse(first.equals(different));
+  }
+
+  @Test
   public void changedStableContextsCloseThenStart() {
     FakeDriver driver = new FakeDriver();
     SentryLifecycleCoordinator coordinator = new SentryLifecycleCoordinator(driver);
@@ -169,7 +196,8 @@ public class SentryLifecycleCoordinatorTest {
         true,
         true,
         6_400L,
-        true);
+        true,
+        2);
     SentryAndroidOptions options = new SentryAndroidOptions();
 
     AndroidSentrySdkDriver.applyOptions(options, configuration);
@@ -181,6 +209,7 @@ public class SentryLifecycleCoordinatorTest {
     assertEquals("game@1.2.3", options.getRelease());
     assertEquals("qa", options.getEnvironment());
     assertEquals("android", options.getDist());
+    assertEquals(2, options.getMaxBreadcrumbs());
     assertEquals(
         Map.of("global_attributes", Map.of("build", 42)),
         AndroidSentrySdkDriver.foundryCrashContext(configuration));
@@ -199,6 +228,17 @@ public class SentryLifecycleCoordinatorTest {
         scope.getContexts().get("foundry_engine"));
   }
 
+  @Test
+  public void androidOptionsClampNegativeMaxBreadcrumbsToZero() {
+    SentryAndroidOptions options = new SentryAndroidOptions();
+
+    AndroidSentrySdkDriver.applyOptions(
+        options,
+        configuration("1.0.0", Map.of(), -5));
+
+    assertEquals(0, options.getMaxBreadcrumbs());
+  }
+
   private static SentryLifecycleConfiguration configuration(String release) {
     return configuration(release, Map.of());
   }
@@ -206,6 +246,13 @@ public class SentryLifecycleCoordinatorTest {
   private static SentryLifecycleConfiguration configuration(
       String release,
       Map<String, Object> stableContexts) {
+    return configuration(release, stableContexts, 100);
+  }
+
+  private static SentryLifecycleConfiguration configuration(
+      String release,
+      Map<String, Object> stableContexts,
+      int maxBreadcrumbs) {
     return new SentryLifecycleConfiguration(
         null,
         "https://public@example.com/1",
@@ -219,13 +266,15 @@ public class SentryLifecycleCoordinatorTest {
         true,
         true,
         3_200L,
-        true);
+        true,
+        maxBreadcrumbs);
   }
 
   private static final class FakeDriver implements SentryLifecycleDriver {
     private boolean enabled;
     private boolean failNextStart;
     private final List<String> operations = new ArrayList<>();
+    private final List<Integer> startedMaxBreadcrumbs = new ArrayList<>();
 
     @Override
     public boolean isEnabled() {
@@ -235,6 +284,7 @@ public class SentryLifecycleCoordinatorTest {
     @Override
     public boolean start(SentryLifecycleConfiguration configuration) {
       operations.add("start:" + configuration.release);
+      startedMaxBreadcrumbs.add(configuration.maxBreadcrumbs);
       if (failNextStart) {
         failNextStart = false;
         enabled = false;

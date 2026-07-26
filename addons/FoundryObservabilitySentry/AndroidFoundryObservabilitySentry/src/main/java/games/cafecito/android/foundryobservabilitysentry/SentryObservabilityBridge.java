@@ -15,7 +15,9 @@ import io.sentry.protocol.SentryId;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 public final class SentryObservabilityBridge extends FoundryPlugin {
@@ -26,6 +28,9 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       new SentryLifecycleCoordinator(new AndroidSentrySdkDriver());
 
   private Map<String, Object> globalAttributes = Collections.emptyMap();
+  private Set<String> foundryTagKeys = Collections.emptySet();
+  private Set<String> foundryContextKeys = Collections.emptySet();
+  private SentryLifecycleConfiguration lifecycleConfiguration;
   private String lifecycleOwner = "";
   private boolean logsEnabled;
   private boolean metricsEnabled;
@@ -46,6 +51,10 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   @UsedByFoundry
   public int configure(Dictionary payload) {
+    return configureLocked(payload);
+  }
+
+  private synchronized int configureLocked(Dictionary payload) {
     if (payload == null) {
       return BRIDGE_ERROR_FAILED;
     }
@@ -62,6 +71,8 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
         globalAttributes = Collections.emptyMap();
         logsEnabled = false;
         metricsEnabled = false;
+        lifecycleConfiguration = null;
+        resetScopeTracking();
       }
       return BRIDGE_ERROR_OK;
     }
@@ -96,13 +107,24 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
             booleanValue(payload.get("metrics_enabled")),
             diagnosticOptions.isAnrEnabled(),
             diagnosticOptions.getAnrTimeoutIntervalMillis(),
-            diagnosticOptions.isAttachAnrThreadDump());
+            diagnosticOptions.isAttachAnrThreadDump(),
+            maxBreadcrumbsValue(payload.get("max_breadcrumbs")));
+    boolean continuesNativeSession =
+        candidateConfiguration.equals(lifecycleConfiguration)
+            && isAvailable(lifecycleOwner);
 
     if (!LIFECYCLE_COORDINATOR.configure(candidateOwner, candidateConfiguration)) {
+      // A failed replacement may still have closed the candidate session and
+      // restored the prior one, so no installed-key snapshot remains valid.
+      resetScopeTracking();
       return BRIDGE_ERROR_FAILED;
     }
 
+    if (!continuesNativeSession) {
+      resetScopeTracking();
+    }
     lifecycleOwner = candidateOwner;
+    lifecycleConfiguration = candidateConfiguration;
     globalAttributes = candidateConfiguration.globalAttributes;
     logsEnabled = candidateConfiguration.logsEnabled;
     metricsEnabled = candidateConfiguration.metricsEnabled;
@@ -120,11 +142,12 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       return "";
     }
     SentryEvent event = SentryEventMapper.makeEvent(payload, globalAttributes);
-    Map<String, Map<String, Object>> contexts = SentryEventMapper.contexts(
-        payload == null ? null : payload.get("contexts"));
+    Object contexts = payload == null ? null : payload.get("contexts");
+    SentryEventMapper.ScopePayload localScope = SentryEventMapper.scopePayload(
+        payload == null ? null : payload.get("scope"));
     return eventIdString(Sentry.captureEvent(
         event,
-        scope -> AndroidSentrySdkDriver.applyContexts(scope, contexts)));
+        scope -> AndroidSentrySdkDriver.applyCaptureScope(scope, contexts, localScope)));
   }
 
   @UsedByFoundry
@@ -165,6 +188,36 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     } catch (RuntimeException exception) {
       return false;
     }
+  }
+
+  @UsedByFoundry
+  public boolean applyScope(Dictionary payload) {
+    return applyScopeLocked(payload);
+  }
+
+  private synchronized boolean applyScopeLocked(Dictionary payload) {
+    if (!isAvailable(lifecycleOwner)) {
+      return false;
+    }
+    SentryEventMapper.ScopePayload candidate = SentryEventMapper.scopePayload(payload);
+    if (!AndroidSentrySdkDriver.replaceFoundryScope(
+        candidate,
+        foundryTagKeys,
+        foundryContextKeys)) {
+      return false;
+    }
+    foundryTagKeys = immutableSet(candidate.tags.keySet());
+    foundryContextKeys = immutableSet(candidate.contexts.keySet());
+    return true;
+  }
+
+  @UsedByFoundry
+  public boolean clearBreadcrumbs() {
+    return clearBreadcrumbsLocked();
+  }
+
+  private synchronized boolean clearBreadcrumbsLocked() {
+    return isAvailable(lifecycleOwner) && AndroidSentrySdkDriver.clearBreadcrumbs();
   }
 
   @UsedByFoundry
@@ -240,12 +293,18 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   @UsedByFoundry
   public void shutdown(String owner) {
+    shutdownLocked(owner);
+  }
+
+  private synchronized void shutdownLocked(String owner) {
     LIFECYCLE_COORDINATOR.shutdown(owner);
     if (owner != null && owner.equals(lifecycleOwner)) {
       lifecycleOwner = "";
       globalAttributes = Collections.emptyMap();
       logsEnabled = false;
       metricsEnabled = false;
+      lifecycleConfiguration = null;
+      resetScopeTracking();
     }
   }
 
@@ -274,6 +333,25 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
 
   static String eventIdString(SentryId eventId) {
     return eventId == null || SentryId.EMPTY_ID.equals(eventId) ? "" : eventId.toString();
+  }
+
+  static int maxBreadcrumbsValue(Object value) {
+    Long exactValue = exactDiagnosticLong(value);
+    if (exactValue == null
+        || exactValue < Integer.MIN_VALUE
+        || exactValue > Integer.MAX_VALUE) {
+      return 100;
+    }
+    return Math.max(0, exactValue.intValue());
+  }
+
+  private static Set<String> immutableSet(Set<String> values) {
+    return Collections.unmodifiableSet(new LinkedHashSet<>(values));
+  }
+
+  private void resetScopeTracking() {
+    foundryTagKeys = Collections.emptySet();
+    foundryContextKeys = Collections.emptySet();
   }
 
   private static void setIfNotEmpty(
