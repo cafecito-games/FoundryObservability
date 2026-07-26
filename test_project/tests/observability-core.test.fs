@@ -1384,6 +1384,100 @@ func test_processing_signal_limits_normalize_negative_values() -> void:
 	Expect.that(copied.per_frame()).to_equal(0)
 
 
+func test_signal_limiter_samples_before_consuming_frame_capacity() -> void:
+	var limiter := ObservabilitySignalLimiter.new(
+			0.25, ObservabilitySignalLimits.new(1, 0, 0, 0))
+
+	for index: int in range(3):
+		Expect.that(limiter.admit("sample-%s" % index, index, 1)).to_equal({
+				"accepted": false, "reason": &"sampled", "limit_kind": &"",
+		})
+	Expect.that(limiter.admit("sample-3", 3, 1)).to_equal({
+			"accepted": true, "reason": &"", "limit_kind": &"",
+	})
+	Expect.that(limiter.admit("sample-4", 4, 1)).to_equal({
+			"accepted": false, "reason": &"sampled", "limit_kind": &"",
+	})
+
+
+func test_signal_limiter_combines_limits_at_expiry_boundaries() -> void:
+	var limiter := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(2, 100, 2, 1000))
+
+	Expect.that(limiter.admit("a", 0, 1)["accepted"]).to_be_true()
+	Expect.that(limiter.admit("a", 1, 1)).to_equal({
+			"accepted": false, "reason": &"rate_limited", "limit_kind": &"repeated",
+	})
+	Expect.that(limiter.admit("b", 2, 1)["accepted"]).to_be_true()
+	Expect.that(limiter.admit("c", 3, 1)).to_equal({
+			"accepted": false, "reason": &"rate_limited", "limit_kind": &"per_frame",
+	})
+	Expect.that(limiter.admit("c", 4, 2)).to_equal({
+			"accepted": false, "reason": &"rate_limited", "limit_kind": &"window",
+	})
+	Expect.that(limiter.admit("c", 1001, 2)["accepted"]).to_be_true()
+
+
+func test_signal_limiter_bounds_hashed_identities_and_resets_every_mode() -> void:
+	var limits := ObservabilitySignalLimits.new(0, 100000, 0, 0)
+	var limiter := ObservabilitySignalLimiter.new(1.0, limits)
+	limits = ObservabilitySignalLimits.new(0, 0, 0, 0)
+	for index: int in range(1025):
+		Expect.that(limiter.admit("identity-%s" % index, index, index)["accepted"]).to_be_true()
+	Expect.that(limiter.admit("identity-0", 2000, 2000)["accepted"]).to_be_true()
+	Expect.that(limiter.admit("identity-1024", 2001, 2001)).to_equal({
+			"accepted": false, "reason": &"rate_limited", "limit_kind": &"repeated",
+	})
+	limiter.reset()
+	Expect.that(limiter.admit("identity-1024", 2002, 2002)["accepted"]).to_be_true()
+	var resettable := ObservabilitySignalLimiter.new(
+			0.5, ObservabilitySignalLimits.new(1, 1000, 1, 1000), 1)
+	Expect.that(resettable.admit("reset", 0, 1)["reason"]).to_equal(&"sampled")
+	Expect.that(resettable.admit("reset", 0, 1)["accepted"]).to_be_true()
+	resettable.reset()
+	Expect.that(resettable.admit("reset", 0, 1)["reason"]).to_equal(&"sampled")
+	Expect.that(resettable.admit("reset", 0, 1)["accepted"]).to_be_true()
+
+
+func test_signal_limiter_rejections_do_not_reserve_any_other_limit() -> void:
+	var legacy := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(1, 0, 0, 0), 1)
+	Expect.that(legacy.admit("first", 0, 1)["accepted"]).to_be_true()
+	Expect.that(legacy.admit("legacy-drop", 500, 2)).to_equal({
+			"accepted": false, "reason": &"rate_limited", "limit_kind": &"legacy_log_window",
+	})
+	Expect.that(legacy.admit("next-second", 1000, 2)["accepted"]).to_be_true()
+
+	var repeated := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(1, 1000, 0, 0))
+	Expect.that(repeated.admit("a", 0, 1)["accepted"]).to_be_true()
+	Expect.that(repeated.admit("a", 1, 2)["limit_kind"]).to_equal(&"repeated")
+	Expect.that(repeated.admit("b", 2, 2)["accepted"]).to_be_true()
+
+	var window := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(1, 0, 1, 1000))
+	Expect.that(window.admit("a", 0, 1)["accepted"]).to_be_true()
+	Expect.that(window.admit("b", 1, 2)["limit_kind"]).to_equal(&"window")
+	Expect.that(window.admit("c", 2, 2)["limit_kind"]).to_equal(&"window")
+	Expect.that(window.admit("d", 1000, 2)["accepted"]).to_be_true()
+
+
+func test_signal_limiter_normalizes_samples_and_handles_backward_inputs() -> void:
+	var disabled := ObservabilitySignalLimiter.new(0.0)
+	Expect.that(disabled.admit("never", 0, 0)).to_equal({
+			"accepted": false, "reason": &"sampled", "limit_kind": &"",
+	})
+	var clamped := ObservabilitySignalLimiter.new(2.0)
+	Expect.that(clamped.admit("always", 0, 0)["accepted"]).to_be_true()
+	var negative := ObservabilitySignalLimiter.new(-1.0)
+	Expect.that(negative.admit("never", 0, 0)["accepted"]).to_be_false()
+	var backward := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(1, 100, 1, 100))
+	Expect.that(backward.admit("first", 100, 4)["accepted"]).to_be_true()
+	Expect.that(backward.admit("next", 50, 3)["limit_kind"]).to_equal(&"window")
+	Expect.that(backward.admit("next", 51, 3)["limit_kind"]).to_equal(&"window")
+
+
 func test_redaction_rules_copy_paths_and_structured_replacements() -> void:
 	var path := PackedStringArray(["request", "password"])
 	var replacement := {"status": "redacted", "nested": {"keep": false}}

@@ -126,6 +126,8 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/ObservabilityMetric.fs" ]] || fail "ObservabilityMetric.fs is missing"
 [[ -f "$addon/ObservabilitySignalLimits.fs" ]] \
 	|| fail "ObservabilitySignalLimits.fs is missing"
+[[ -f "$addon/ObservabilitySignalLimiter.fs" ]] \
+	|| fail "ObservabilitySignalLimiter.fs is missing"
 [[ -f "$addon/ObservabilityRedactionRule.fs" ]] \
 	|| fail "ObservabilityRedactionRule.fs is missing"
 [[ -f "$addon/ObservabilityRedactionPolicy.fs" ]] \
@@ -161,6 +163,7 @@ for attachment_resource in \
 done
 for processing_resource in \
 	ObservabilitySignalLimits \
+	ObservabilitySignalLimiter \
 	ObservabilityRedactionRule \
 	ObservabilityRedactionPolicy \
 	ObservabilityRedactor \
@@ -170,6 +173,8 @@ for processing_resource in \
 done
 grep -Fxq 'uid://d13rdctcore1' "$addon/ObservabilityRedactor.fs.uid" \
 	|| fail "ObservabilityRedactor.fs.uid has the wrong stable UID"
+grep -Fxq 'uid://d13sgnlmit1' "$addon/ObservabilitySignalLimiter.fs.uid" \
+	|| fail "ObservabilitySignalLimiter.fs.uid has the wrong stable UID"
 for sentry_attachment_resource in \
 	SentryAttachmentRuntimeProbe \
 	SentryBuiltInAttachmentCollector; do
@@ -260,6 +265,27 @@ rg -q '^trait_name ObservabilityBreadcrumbsProvider$' \
 	|| fail "optional breadcrumb provider contract is missing"
 rg -q '^class_name ObservabilityMetric$' "$addon/ObservabilityMetric.fs" \
 	|| fail "metric value type declaration is missing"
+rg -q '^class_name ObservabilitySignalLimiter$' "$addon/ObservabilitySignalLimiter.fs" \
+	|| fail "signal limiter declaration is missing"
+rg -q '^extends RefCounted$' "$addon/ObservabilitySignalLimiter.fs" \
+	|| fail "signal limiter must remain a RefCounted resource"
+rg -q '^const MAX_IDENTITIES: int = 1024$' "$addon/ObservabilitySignalLimiter.fs" \
+	|| fail "signal limiter identity bound is missing"
+rg -q -U \
+	'(?s)func _init\(.*p_sample_rate: float = 1\.0,.*p_limits: ObservabilitySignalLimits\? = null,.*p_legacy_limit_per_second: int = 0,' \
+	"$addon/ObservabilitySignalLimiter.fs" \
+	|| fail "signal limiter constructor contract has changed"
+rg -Fq '_limits = p_limits.duplicate() if p_limits != null else ObservabilitySignalLimits.new()' \
+	"$addon/ObservabilitySignalLimiter.fs" \
+	|| fail "signal limiter must defensively copy limits"
+rg -Fq 'func admit(identity: String, now_msec: int, frame_index: int) -> Dictionary:' \
+	"$addon/ObservabilitySignalLimiter.fs" \
+	|| fail "signal limiter admit contract is missing"
+rg -q 'identity\.sha256_text()' "$addon/ObservabilitySignalLimiter.fs" \
+	|| fail "signal limiter must hash identities before retention"
+if rg -q '^var [^_]' "$addon/ObservabilitySignalLimiter.fs"; then
+	fail "signal limiter runtime state must remain private"
+fi
 rg -q '^class_name ObservabilityRedactor$' "$addon/ObservabilityRedactor.fs" \
 	|| fail "redactor value type declaration is missing"
 rg -q '^class_name ObservabilityStackFrame$' "$addon/ObservabilityStackFrame.fs" \
