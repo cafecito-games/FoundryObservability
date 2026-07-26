@@ -82,8 +82,9 @@ Path and byte attachments use these rules:
   then used.
 - `content_type` may be empty, meaning `application/octet-stream`, or a trimmed
   nonempty MIME-style value without control characters.
-- `category` defaults to `event.attachment`; an explicitly supplied value must
-  be nonempty and contain no control characters.
+- `category` defaults to `event.attachment`. The portable values are
+  `event.attachment` and `event.view_hierarchy`; other values are rejected
+  because the pinned Sentry Cocoa SDK exposes only those two attachment types.
 - Relative filesystem paths are rejected. Absolute paths, `user://`, and
   `res://` are accepted. Providers globalize `user://`; packaged `res://`
   resources are read through Godot `FileAccess` and forwarded as bytes because
@@ -223,10 +224,14 @@ the candidate only after bridge success. Individual removal is therefore
 supported even though the pinned Sentry SDK scopes expose add and clear rather
 than remove-by-ID.
 
-The bridge clears only Foundry-owned attachment scope state and then restores
-the accepted candidate plus configured built-ins. Failed replacement restores
-the previous complete snapshot or fails the provider closed when restoration is
-not possible, matching the existing atomic scope-reconfiguration behavior.
+The bridge owns the native SDK attachment collection while the Foundry Sentry
+provider is active. Native scopes expose add and clear, not remove-by-owner, so
+replacement clears the SDK collection and restores the accepted Foundry
+candidate plus configured built-ins, matching Sentry Godot. Applications must
+use the provider-neutral API rather than mutating the native SDK attachment
+scope concurrently. Failed replacement restores the previous complete snapshot
+or fails the provider closed when restoration is not possible, matching the
+existing atomic scope-reconfiguration behavior.
 
 ## Lazy loading and event data flow
 
@@ -319,7 +324,7 @@ that a `user://` URI is meaningful to Java.
 Both bridges:
 
 - accept only complete, validated payload dictionaries;
-- preserve filename, content type, and category;
+- preserve filename, content type, and the two portable attachment categories;
 - return explicit booleans for attachment replacement;
 - keep mutation atomic from the Foundry provider's perspective;
 - clear Foundry attachment state during successful session reset and shutdown;
@@ -363,4 +368,6 @@ This issue does not add:
 - attachment encryption or redaction of caller-supplied files;
 - automatic capture of arbitrary node properties or user interface text;
 - attachment delivery for logs, metrics, or feedback;
+- coexistence with attachments installed directly into the native SDK scope
+  while the Foundry Sentry provider is active;
 - synchronous delivery guarantees for native crashes or SDK envelope assembly.
