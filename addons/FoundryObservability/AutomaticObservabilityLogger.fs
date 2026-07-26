@@ -9,20 +9,15 @@ const _ORIGIN: String = "auto.log.foundry"
 var _service: FoundryObservability
 var _config: ObservabilityConfig
 var _clock: Callable
-var _frame: Callable
-var _state_mutex: Mutex = Mutex.new()
-var _error_timepoints: Dictionary = {}
-var _event_timepoints: Array[int] = []
-var _current_frame: int = -1
-var _frame_event_count: int = 0
 
 
-## Creates a logger with optional deterministic clock and frame suppliers.
+## Creates a logger with an optional deterministic clock.
+## The frame supplier remains a positional compatibility seam; the shared pipeline owns admission.
 func _init(
 		service: FoundryObservability,
 		config: ObservabilityConfig,
 		clock: Callable = Callable(),
-		frame: Callable = Callable(),
+		_frame_supplier: Callable = Callable(),
 ) -> void:
 	_service = service
 	_config = config
@@ -30,10 +25,6 @@ func _init(
 		_clock = clock
 	else:
 		_clock = func() -> int: return Time.get_ticks_msec()
-	if frame.is_valid():
-		_frame = frame
-	else:
-		_frame = func() -> int: return Engine.get_process_frames()
 
 
 ## Receives structured engine diagnostics.
@@ -78,38 +69,11 @@ func _capture_error(
 	var type_name: String = _error_type_name(error_type)
 	var message: String = rationale if not rationale.is_empty() else code
 	var engine_ticks_msec: int = _now_msec()
-	var frame_index: int = _frame_index()
 	var as_event: bool = (_config.automatic_event_mask & category_mask) != 0
 	var as_breadcrumb: bool = (_config.automatic_breadcrumb_mask & category_mask) != 0
 	var as_log: bool = (_config.automatic_log_mask & category_mask) != 0
 	if not as_event and not as_breadcrumb and not as_log:
 		return
-
-	var error_key: String = JSON.stringify([message, file, line, error_type])
-	_state_mutex.lock()
-	if _error_timepoints.size() > 100:
-		_error_timepoints.clear()
-	var previous_timestamp: Variant = _error_timepoints.get(error_key, null)
-	if _config.automatic_repeated_error_window_msec > 0 \
-			and previous_timestamp is int:
-		var previous_engine_ticks_msec: int = previous_timestamp
-		if engine_ticks_msec - previous_engine_ticks_msec \
-				< _config.automatic_repeated_error_window_msec:
-			_state_mutex.unlock()
-			return
-
-	if frame_index != _current_frame:
-		_current_frame = frame_index
-		_frame_event_count = 0
-	_prune_event_timepoints(engine_ticks_msec)
-	if as_event and _config.automatic_events_per_frame > 0 \
-			and _frame_event_count >= _config.automatic_events_per_frame:
-		as_event = false
-	if as_event and _config.automatic_event_throttle_count > 0 \
-			and _config.automatic_event_throttle_window_msec > 0 \
-			and _event_timepoints.size() >= _config.automatic_event_throttle_count:
-		as_event = false
-	_state_mutex.unlock()
 
 	var backtrace_payload: Dictionary = _serialize_backtraces(script_backtraces)
 	var attributes: Dictionary = {
@@ -124,11 +88,8 @@ func _capture_error(
 		"observability.origin": _ORIGIN,
 	}
 
-	var event_accepted: bool = false
-	var breadcrumb_accepted: bool = false
-	var log_accepted: bool = false
 	if as_event:
-		event_accepted = not _service.capture_event(ObservabilityEvent.new(
+		_service.capture_event(ObservabilityEvent.new(
 				p_kind = &"exception",
 				p_level = level,
 				p_message = message,
@@ -141,9 +102,9 @@ func _capture_error(
 						p_attributes = attributes,
 					),
 				p_engine_ticks_msec = engine_ticks_msec,
-			)).is_empty()
+			))
 	if as_breadcrumb:
-		breadcrumb_accepted = _service._capture_automatic_breadcrumb(
+		_service._capture_automatic_breadcrumb(
 				ObservabilityBreadcrumb.new(
 						p_message = message,
 						p_level = level,
@@ -153,23 +114,14 @@ func _capture_error(
 					),
 			)
 	if as_log:
-		log_accepted = not _service.capture_log(
+		_service.capture_log(
 				message,
 				level,
 				&"foundry.engine",
 				ObservabilityEvent.UNASSIGNED_TIMESTAMP,
 				attributes,
 				engine_ticks_msec,
-			).is_empty()
-
-	if not event_accepted and not breadcrumb_accepted and not log_accepted:
-		return
-	_state_mutex.lock()
-	if event_accepted:
-		_frame_event_count += 1
-		_event_timepoints.append(engine_ticks_msec)
-	_error_timepoints[error_key] = engine_ticks_msec
-	_state_mutex.unlock()
+			)
 
 
 ## Receives ordinary engine output messages.
@@ -254,38 +206,14 @@ func _now_msec() -> int:
 	return Time.get_ticks_msec()
 
 
-func _frame_index() -> int:
-	var result: Variant = _frame.call()
-	if result is int:
-		var frame_index: int = result
-		return frame_index
-	return Engine.get_process_frames()
-
-
-func _prune_event_timepoints(engine_ticks_msec: int) -> void:
-	if _config.automatic_event_throttle_window_msec <= 0:
-		_event_timepoints.clear()
-		return
-	while not _event_timepoints.is_empty() \
-			and engine_ticks_msec - _event_timepoints[0] \
-				>= _config.automatic_event_throttle_window_msec:
-		_event_timepoints.pop_front()
-
-
-## Clears duplicate, frame, and sliding-window state.
+## Retained for logger registration lifecycle compatibility.
 func reset() -> void:
-	_state_mutex.lock()
-	_error_timepoints.clear()
-	_event_timepoints.clear()
-	_current_frame = -1
-	_frame_event_count = 0
-	_state_mutex.unlock()
+	pass
 
 
-## Replaces automatic policy and clears all throttle state.
+## Replaces automatic routing policy.
 func reconfigure(config: ObservabilityConfig) -> void:
 	_config = config
-	reset()
 
 
 func _serialize_backtraces(script_backtraces: Array[ScriptBacktrace]) -> Dictionary:

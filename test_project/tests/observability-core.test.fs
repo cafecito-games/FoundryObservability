@@ -35,6 +35,9 @@ var _state_reentry_error: int = Error.OK
 var _state_reentry_signal: StringName = &""
 var _state_reentry_reason: StringName = &""
 var _state_reentry_diagnostic_error: int = Error.OK
+var _automatic_nested_service: FoundryObservability
+var _automatic_nested_capture_result: String = ""
+var _automatic_nested_reason: StringName = &""
 
 class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/ObservabilityStackFrame.fs":
 	var public_variables_calls: int = 0
@@ -3831,18 +3834,25 @@ func test_automatic_logger_filters_and_routes_messages_without_events() -> void:
 	service.shutdown()
 
 
-func test_automatic_logger_suppresses_duplicate_errors_deterministically() -> void:
+func test_automatic_errors_share_event_limits_without_suppressing_other_destinations() -> void:
 	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {},
+			p_automatic_capture_enabled = false,
 			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_repeated_error_window_msec = 1000,
-			p_automatic_events_per_frame = 0,
-			p_automatic_event_throttle_count = 0,
+			p_automatic_events_per_frame = 1,
+			p_automatic_event_throttle_count = 2,
+			p_automatic_event_throttle_window_msec = 10000,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_log_limits = ObservabilitySignalLimits.new(),
 	)
 	var capture_time := AutomaticCaptureTime.new(1000, 1)
 	_service_processing_clock_msec = capture_time.now_msec
@@ -3851,21 +3861,87 @@ func test_automatic_logger_suppresses_duplicate_errors_deterministically() -> vo
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, capture_time.now, capture_time.frame)
 
-	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
+	for _index: int in range(3):
+		logger._capture_error(
+				"tick", "res://loop.fs", 9, "boom", "", false,
+				Logger.ERROR_TYPE_ERROR, [],
+			)
+
+	var non_log_count: int = 0
+	var log_count: int = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() != &"log":
+			non_log_count += 1
+		else:
+			log_count += 1
+	Expect.that(non_log_count).to_equal(1)
+	Expect.that(provider.breadcrumbs()).to_have_size(3)
+	Expect.that(log_count).to_equal(3)
+	Expect.that(provider.events()[0].engine_ticks_msec()).to_equal(1000)
+	Expect.that(provider.breadcrumbs()[0].timestamp_msec()).to_equal(1000)
+
+	capture_time.frame_index = 2
 	capture_time.now_msec = 1500
 	_service_processing_clock_msec = capture_time.now_msec
-	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(2)
-	Expect.that(provider.breadcrumbs()).to_have_size(1)
+	_service_processing_frame_index = capture_time.frame_index
+	logger._capture_error(
+			"tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [],
+		)
+	non_log_count = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() != &"log":
+			non_log_count += 1
+	Expect.that(non_log_count).to_equal(1)
 
+	capture_time.frame_index = 3
 	capture_time.now_msec = 2000
 	_service_processing_clock_msec = capture_time.now_msec
-	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(4)
-	Expect.that(provider.breadcrumbs()).to_have_size(2)
+	_service_processing_frame_index = capture_time.frame_index
+	logger._capture_error(
+			"tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [],
+		)
+	non_log_count = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() != &"log":
+			non_log_count += 1
+	Expect.that(non_log_count).to_equal(2)
+
+	capture_time.frame_index = 4
+	capture_time.now_msec = 2001
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
+	logger._capture_error(
+			"tick", "res://loop.fs", 10, "different", "", false,
+			Logger.ERROR_TYPE_ERROR, [],
+		)
+	non_log_count = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() != &"log":
+			non_log_count += 1
+	Expect.that(non_log_count).to_equal(2)
+
+	capture_time.frame_index = 5
+	capture_time.now_msec = 12001
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
+	Expect.that(service.capture_message("manual capacity")).not_().to_equal("")
+	logger._capture_error(
+			"tick", "res://loop.fs", 11, "automatic after manual", "", false,
+			Logger.ERROR_TYPE_ERROR, [],
+		)
+	non_log_count = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() != &"log":
+			non_log_count += 1
+	Expect.that(non_log_count).to_equal(3)
+	Expect.that(provider.breadcrumbs()).to_have_size(7)
+	log_count = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() == &"log":
+			log_count += 1
+	Expect.that(log_count).to_equal(7)
 	_shutdown_processing_service(service)
 
 
@@ -3957,13 +4033,17 @@ func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {},
+			p_automatic_capture_enabled = false,
 			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_repeated_error_window_msec = 0,
-			p_automatic_events_per_frame = 1,
-			p_automatic_event_throttle_count = 2,
-			p_automatic_event_throttle_window_msec = 1000,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1, 0, 0, 0),
+			p_log_limits = ObservabilitySignalLimits.new(2, 0, 0, 0),
 	)
 	var capture_time := AutomaticCaptureTime.new(1000, 1)
 	_service_processing_clock_msec = capture_time.now_msec
@@ -3972,73 +4052,64 @@ func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, capture_time.now, capture_time.frame)
 
-	logger._log_error("tick", "res://loop.fs", 9, "a", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	logger._log_error("tick", "res://loop.fs", 9, "b", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	capture_time.frame_index = 2
-	capture_time.now_msec = 1002
-	_service_processing_clock_msec = capture_time.now_msec
-	_service_processing_frame_index = capture_time.frame_index
-	logger._log_error("tick", "res://loop.fs", 9, "c", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	logger._log_error("tick", "res://loop.fs", 9, "d", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	capture_time.frame_index = 3
-	capture_time.now_msec = 1003
-	_service_processing_clock_msec = capture_time.now_msec
-	_service_processing_frame_index = capture_time.frame_index
-	logger._log_error("tick", "res://loop.fs", 9, "e", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
+	for index: int in range(3):
+		logger._capture_error(
+				"tick", "res://loop.fs", 9 + index, str(index), "", false,
+				Logger.ERROR_TYPE_ERROR, [],
+			)
 
 	var exception_count: int = 0
+	var log_count: int = 0
 	for event: ObservabilityEvent in provider.events():
 		if event.kind() == &"exception":
 			exception_count += 1
-	Expect.that(exception_count).to_equal(2)
-	Expect.that(provider.breadcrumbs()).to_have_size(5)
-	Expect.that(provider.events()).to_have_size(7)
-
-	capture_time.frame_index = 4
-	capture_time.now_msec = 2001
-	_service_processing_clock_msec = capture_time.now_msec
-	_service_processing_frame_index = capture_time.frame_index
-	logger._log_error("tick", "res://loop.fs", 9, "f", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.breadcrumbs()).to_have_size(6)
-	Expect.that(provider.events()).to_have_size(9)
+		elif event.kind() == &"log":
+			log_count += 1
+	Expect.that(exception_count).to_equal(1)
+	Expect.that(log_count).to_equal(2)
+	Expect.that(provider.breadcrumbs()).to_have_size(3)
 	_shutdown_processing_service(service)
 
 
-func test_automatic_logger_bounds_identity_state_and_resets_limits() -> void:
+func test_automatic_processor_recursion_drops_nested_message_without_payload_delivery() -> void:
 	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
+	_automatic_nested_service = service
+	_automatic_nested_capture_result = "not called"
+	_automatic_nested_reason = &""
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {},
+			p_automatic_capture_enabled = false,
 			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_repeated_error_window_msec = 100000,
-			p_automatic_events_per_frame = 0,
-			p_automatic_event_throttle_count = 0,
-		)
+			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [
+				Callable(self, "_automatic_capture_nested_message"),
+			],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	)
 	_service_processing_clock_msec = 1000
 	_service_processing_frame_index = 1
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, func() -> int: return 1000, func() -> int: return 1)
-	for index: int in range(101):
-		logger._log_error("tick", "res://loop.fs", index, str(index), "", false,
-				Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(101)
 
-	logger._log_error("tick", "res://loop.fs", 0, "0", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(101)
-	logger.reset()
-	logger._log_error("tick", "res://loop.fs", 0, "0", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(101)
+	logger._capture_error(
+			"tick", "res://loop.fs", 9, "outer", "", false,
+			Logger.ERROR_TYPE_ERROR, [],
+		)
+
+	Expect.that(_automatic_nested_capture_result).to_equal("")
+	Expect.that(_automatic_nested_reason).to_equal(
+			ObservabilityProcessingDiagnostic.RECURSIVE,
+		)
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].message()).to_equal("outer")
+	Expect.that(provider.events()[0].message()).not_().to_equal("nested")
 	_shutdown_processing_service(service)
 
 
@@ -7297,6 +7368,18 @@ func _service_replace_event(event: ObservabilityEvent) -> ObservabilityEvent:
 
 func _service_drop_event(_event: ObservabilityEvent) -> Variant:
 	return null
+
+
+func _automatic_capture_nested_message(
+		event: ObservabilityEvent,
+) -> ObservabilityEvent:
+	_automatic_nested_capture_result = _automatic_nested_service.capture_message("nested")
+	var diagnostic: ObservabilityProcessingDiagnostic? = (
+			_automatic_nested_service.last_processing_diagnostic()
+		)
+	if diagnostic != null:
+		_automatic_nested_reason = diagnostic.reason()
+	return event
 
 
 func _service_set_context_during_processing(
