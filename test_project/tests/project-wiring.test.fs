@@ -1,6 +1,7 @@
 namespace foundry.observability.tests
 
 import foundry.testlib
+import foundry.observability
 
 class_name ProjectWiringTests
 extends RefCounted
@@ -18,6 +19,32 @@ func test_project_enables_foundry_observability_editor_plugin() -> void:
 			"editor_plugins/enabled", PackedStringArray())
 	Expect.that(
 			"res://addons/FoundryObservability/plugin.cfg" in enabled_plugins).to_be_true()
+
+func test_project_registers_observability_startup_settings() -> void:
+	var defaults: Dictionary = ObservabilityStartupSettings.project_setting_defaults()
+	for setting_name: String in defaults:
+		Expect.that(ProjectSettings.has_setting(setting_name)).to_be_true()
+	Expect.that(ProjectSettings.get_setting(
+			ObservabilityStartupSettings.AUTO_INIT)).to_be_true()
+	Expect.that(ProjectSettings.get_setting(
+			ObservabilityStartupSettings.ENABLED)).to_be_true()
+
+func test_export_plugin_enter_tree_registers_observability_startup_settings() -> void:
+	var setting_name: String = ObservabilityStartupSettings.SKIP_EDITOR_PLAY
+	var was_present: bool = ProjectSettings.has_setting(setting_name)
+	var previous_value: Variant = ProjectSettings.get_setting(setting_name, null)
+	TestContext.current().add_teardown(
+		func() -> void:
+			_restore_project_setting(setting_name, was_present, previous_value),
+	)
+	ProjectSettings.clear(setting_name)
+	Expect.that(ProjectSettings.has_setting(setting_name)).to_be_false()
+
+	var plugin_script: Script = ResourceLoader.load(
+			"res://addons/FoundryObservability/export_plugin.fs") as Script
+	plugin_script.call(&"_register_startup_settings")
+	Expect.that(ProjectSettings.has_setting(setting_name)).to_be_true()
+	Expect.that(ProjectSettings.get_setting(setting_name)).to_be_false()
 
 func test_project_uses_foundrylib_adapter_from_core_addon() -> void:
 	var sink_source: String = FileAccess.get_file_as_string(
@@ -88,3 +115,47 @@ func test_project_uses_foundry_script_configuration_without_legacy_warning_keys(
 	]:
 		Expect.that(ProjectSettings.has_setting(old_key)).to_be_false()
 		Expect.that(project_source.find(old_key)).to_equal(-1)
+
+func test_project_contains_startup_status_and_settings_resources() -> void:
+	for resource_path: String in [
+		"res://addons/FoundryObservability/ObservabilityStartupStatus.fs",
+		"res://addons/FoundryObservability/ObservabilityStartupSettings.fs",
+	]:
+		Expect.that(FileAccess.file_exists(resource_path)).to_be_true()
+		Expect.that(FileAccess.file_exists(resource_path + ".uid")).to_be_true()
+	var plugin_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/export_plugin.fs")
+	Expect.that(plugin_source).to_contain(
+			"ObservabilityStartupSettings.register_project_settings()")
+	Expect.that(plugin_source).to_contain(
+			"func _enter_tree() -> void:\n\t_register_startup_settings()")
+
+func test_project_exposes_provider_neutral_startup_api() -> void:
+	var service_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/FoundryObservability.fs")
+	var api_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/FoundryObservabilityApi.fs")
+	for method_signature: String in [
+		"func initialize_from_project_settings() -> int:",
+		"func startup_status() -> StringName:",
+		"func startup_message() -> String:",
+	]:
+		Expect.that(service_source).to_contain(method_signature)
+		Expect.that(api_source).to_contain(
+				"abstract " + method_signature.trim_suffix(":"))
+
+func test_startup_settings_exposes_capture_enabled_query() -> void:
+	var settings_source: String = FileAccess.get_file_as_string(
+			"res://addons/FoundryObservability/ObservabilityStartupSettings.fs")
+	Expect.that(settings_source).to_contain(
+			"func capture_enabled() -> bool:")
+
+func _restore_project_setting(
+		setting_name: String,
+		was_present: bool,
+		previous_value: Variant,
+) -> void:
+	if was_present:
+		ProjectSettings.set_setting(setting_name, previous_value)
+	else:
+		ProjectSettings.clear(setting_name)

@@ -43,8 +43,22 @@ case "$platform" in
 		[[ "$package" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$ ]] \
 			|| fail "invalid Android package identifier: $package"
 		command -v adb >/dev/null 2>&1 || fail "adb is required"
-		pid=$(adb shell pidof -s "$package" | tr -d '\r' | tr -d '[:space:]')
-		[[ "$pid" =~ ^[0-9]+$ ]] || fail "Android package is not running: $package"
+		pid_output=$(adb shell pidof "$package" 2>/dev/null || true)
+		normalized_pid_output=$(printf '%s' "$pid_output" | tr '[:space:]' ' ')
+		pids=()
+		pid_count=0
+		if [[ "$normalized_pid_output" =~ [^[:space:]] ]]; then
+			read -r -a pids <<<"$normalized_pid_output"
+			pid_count=${#pids[@]}
+			for candidate_pid in "${pids[@]}"; do
+				[[ "$candidate_pid" =~ ^[0-9]+$ ]] \
+					|| fail "Android pidof returned an invalid PID for $package: $candidate_pid"
+			done
+		fi
+		(( pid_count > 0 )) || fail "Android package is not running: $package"
+		(( pid_count == 1 )) \
+			|| fail "multiple Android processes match package $package: ${pids[*]}"
+		pid=${pids[0]}
 		(( pid > 1 )) || fail "refusing to signal protected Android PID $pid"
 		echo "Sending SIGABRT to Android package $package at PID $pid"
 		adb shell run-as "$package" kill -6 "$pid"

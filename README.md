@@ -75,10 +75,43 @@ require the FoundrySwift companion addon. Configure
 
 The public namespace is `foundry.observability`.
 
-## Quick start
+## Automatic Sentry startup
 
-Configure a provider during game startup and emit typed events through the
-autoload:
+For games using the optional Sentry addon, configure early startup in
+`project.foundry`:
+
+```ini
+[foundry_observability]
+
+startup/auto_init=true
+startup/enabled=true
+options/dsn="NON_PRODUCTION_SENTRY_DSN"
+options/environment="production"
+options/release="oakhaven@1.0.0"
+options/dist="store-macos"
+options/debug_diagnostics=2
+options/provider_options={
+"send_default_pii": false
+}
+```
+
+`provider_options` must contain data only; see [docs/API.md](docs/API.md) for
+the accepted types and bounds. The fully qualified automatic-startup control is
+`foundry_observability/startup/auto_init`. Order `FoundryObservability` as the
+earliest startup hook that needs observability. Startup runs synchronously during
+`FoundryObservability` autoload construction, so it completes before the main
+scene and before later-ordered autoloads. Those later hooks may capture
+immediately. An autoload ordered before `FoundryObservability` is outside this
+guarantee.
+
+Do not call `configure()` after successful automatic Sentry startup unless replacing the active startup provider is intentional.
+Configuring a different provider shuts down and replaces the provider created
+by automatic startup.
+
+## Provider-neutral manual quick start
+
+As a provider-neutral manual alternative, configure a provider during game
+startup and emit typed events through the autoload:
 
 ```foundryscript
 import foundry.observability
@@ -127,14 +160,17 @@ Apple framework or Android AAR on supported platforms.
 
 ### Native crash lifecycle
 
-For native crash reporting, configure `SentryObservabilityProvider` from the
-earliest startup hook that has the DSN and release metadata. A successful
-configuration starts Sentry's process-wide crash handlers; a crash is persisted
-by the native SDK and normally delivered on the previous launch's next startup.
-Crashes before configuration cannot be recovered by the addon.
+For native crash reporting, prefer the project-settings startup above. Manual
+`SentryObservabilityProvider` configuration remains available for targeted
+integration. A successful configuration starts Sentry's process-wide crash
+handlers; a crash is persisted by the native SDK and normally delivered on the
+previous launch's next startup. Crashes before successful configuration cannot
+be recovered by the addon.
 
-Check the return value from `FoundryObservability.configure()` and then
-`FoundryObservability.is_available()` before considering reporting active.
+Require `FoundryObservability.startup_status()` to report `initialized` and
+then check `FoundryObservability.is_available()` before considering automatic
+reporting active. For manual setup, check the return value from
+`FoundryObservability.configure()` before availability.
 Use [docs/NATIVE_CRASH_VALIDATION.md](docs/NATIVE_CRASH_VALIDATION.md) for the
 destructive, non-production macOS, iOS, and Android validation procedure.
 

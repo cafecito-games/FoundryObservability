@@ -2,6 +2,7 @@ namespace foundry.observability.tests
 
 import foundry.testlib
 import foundry.observability
+import foundry.observability.sentry.tests
 
 class_name ObservabilityCoreTests
 extends RefCounted
@@ -1892,9 +1893,961 @@ func test_shutdown_is_idempotent() -> void:
 	Expect.that(service.is_enabled()).to_be_false()
 
 
+func test_startup_settings_resolve_project_environment_and_default_precedence() -> void:
+	var explicit := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.DSN: " https://project@example/1 ",
+				ObservabilityStartupSettings.RELEASE: "{app_name}-custom-{app_version}",
+				ObservabilityStartupSettings.ENVIRONMENT: " staging ",
+				ObservabilityStartupSettings.DIST: " ios ",
+			},
+			{
+				"SENTRY_DSN": "https://environment@example/2",
+				"SENTRY_RELEASE": "environment-release",
+				"SENTRY_ENVIRONMENT": "environment-name",
+			},
+			{
+				"app_name": "Oakhaven",
+				"app_version": "1.2.3",
+				"debug_build": true,
+			},
+		)
+	var explicit_config: ObservabilityConfig = explicit.observability_config()
+
+	Expect.that(explicit_config.provider_options().get("dsn")).to_equal(
+			"https://project@example/1",
+		)
+	Expect.that(explicit_config.release).to_equal("Oakhaven-custom-1.2.3")
+	Expect.that(explicit_config.environment).to_equal("staging")
+	Expect.that(explicit_config.dist).to_equal("ios")
+
+	var environment := ObservabilityStartupSettings.from_sources(
+			{},
+			{
+				"SENTRY_DSN": "https://environment@example/2",
+				"SENTRY_RELEASE": "environment-release",
+				"SENTRY_ENVIRONMENT": "environment-name",
+			},
+			{"app_name": "Oakhaven", "app_version": "1.2.3"},
+		)
+	var environment_config: ObservabilityConfig = environment.observability_config()
+	Expect.that(environment_config.provider_options().get("dsn")).to_equal(
+			"https://environment@example/2",
+		)
+	Expect.that(environment_config.release).to_equal("environment-release")
+	Expect.that(environment_config.environment).to_equal("environment-name")
+
+	var defaults := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{
+				"app_name": "Oakhaven",
+				"app_version": "1.2.3",
+				"debug_build": false,
+			},
+		)
+	var default_config: ObservabilityConfig = defaults.observability_config()
+	Expect.that(default_config.release).to_equal("Oakhaven@1.2.3")
+	Expect.that(default_config.environment).to_equal("export_release")
+
+
+func test_startup_settings_reject_declared_project_setting_type_mismatches() -> void:
+	for invalid_values: Dictionary in _malformed_startup_project_values():
+		var settings := ObservabilityStartupSettings.from_sources(invalid_values)
+		Expect.that(settings.validation_error()).to_equal(
+				Error.ERR_INVALID_PARAMETER,
+			)
+		Expect.that(settings.skip_status()).to_equal(
+				ObservabilityStartupStatus.NOT_STARTED,
+			)
+
+	var numeric_dsn := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: 7,
+	})
+	Expect.that(numeric_dsn.has_dsn()).to_be_false()
+
+	var array_environment := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.ENVIRONMENT: ["production"],
+	})
+	Expect.that(array_environment.observability_config().environment).to_equal(
+			"export_release",
+		)
+
+	var numeric_release := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.RELEASE: 123,
+	})
+	Expect.that(numeric_release.observability_config().release).to_equal(
+			"Unknown Foundry project@noversion",
+		)
+
+	var array_dist := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DIST: ["ios"],
+	})
+	Expect.that(array_dist.observability_config().dist).to_equal("")
+
+	var provider_options: Dictionary = {"kept": true}
+	var mixed_values := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: 7,
+		ObservabilityStartupSettings.ENVIRONMENT: "production",
+		ObservabilityStartupSettings.RELEASE: "1.2.3",
+		ObservabilityStartupSettings.DIST: "ios",
+		ObservabilityStartupSettings.PROVIDER_OPTIONS: provider_options,
+	})
+	provider_options["kept"] = false
+	var mixed_config: ObservabilityConfig = mixed_values.observability_config()
+	Expect.that(mixed_values.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+	Expect.that(mixed_config.environment).to_equal("production")
+	Expect.that(mixed_config.release).to_equal("1.2.3")
+	Expect.that(mixed_config.dist).to_equal("ios")
+	Expect.that(mixed_config.provider_options().get("kept")).to_be_true()
+
+
+func test_startup_settings_expands_release_tokens_in_a_single_pass() -> void:
+	var settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.RELEASE:
+						"{app_name}|{app_version}",
+			},
+			{},
+			{
+				"app_name": "Oakhaven-{app_version}",
+				"app_version": "1.2.3-{app_name}",
+			},
+		)
+
+	Expect.that(settings.observability_config().release).to_equal(
+			"Oakhaven-{app_version}|1.2.3-{app_name}",
+		)
+
+
+func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
+	var dedicated := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{"dedicated_server": true, "editor_hint": true, "debug_build": true},
+		)
+	Expect.that(dedicated.observability_config().environment).to_equal(
+			"dedicated_server",
+		)
+	Expect.that(dedicated.skip_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_EDITOR,
+		)
+
+	var editor := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.SKIP_EDITOR_PLAY: true,
+				ObservabilityStartupSettings.SKIP_DEBUG_EXPORTS: true,
+			},
+			{},
+			{
+				"editor_hint": true,
+				"editor_feature": true,
+				"debug_build": true,
+			},
+		)
+	Expect.that(editor.observability_config().environment).to_equal("editor_dev")
+	Expect.that(editor.skip_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_EDITOR,
+		)
+
+	var editor_play := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.SKIP_EDITOR_PLAY: true,
+				ObservabilityStartupSettings.SKIP_DEBUG_EXPORTS: true,
+			},
+			{},
+			{"editor_feature": true, "debug_build": true},
+		)
+	Expect.that(editor_play.skip_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_EDITOR_PLAY,
+		)
+	Expect.that(editor_play.observability_config().environment).to_equal(
+			"editor_dev_run",
+		)
+
+	var debug_export := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.SKIP_DEBUG_EXPORTS: true},
+			{},
+			{"debug_build": true},
+		)
+	Expect.that(debug_export.skip_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_DEBUG,
+		)
+	Expect.that(debug_export.observability_config().environment).to_equal(
+			"export_debug",
+		)
+
+	var not_started := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{"debug_build": true},
+		)
+	Expect.that(not_started.skip_status()).to_equal(
+			ObservabilityStartupStatus.NOT_STARTED,
+		)
+
+	var disabled := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.AUTO_INIT: false},
+			{},
+			{"editor_hint": true},
+		)
+	Expect.that(disabled.skip_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+	Expect.that(disabled.capture_enabled()).to_be_true()
+
+	var capture_disabled := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.ENABLED: false},
+		)
+	Expect.that(capture_disabled.skip_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+	Expect.that(capture_disabled.capture_enabled()).to_be_false()
+
+
+func test_startup_settings_validate_and_merge_provider_options() -> void:
+	var nested_options := {"sample_rate": 0.5}
+	var options := {
+		"dsn": "wrong",
+		"debug": false,
+		"send_default_pii": true,
+		"nested": nested_options,
+	}
+	var settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+				ObservabilityStartupSettings.DEBUG_DIAGNOSTICS:
+						ObservabilityStartupSettings.DEBUG_ON,
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: options,
+			},
+			{},
+			{"debug_build": false},
+		)
+	options["send_default_pii"] = false
+	nested_options["sample_rate"] = 0.1
+	var resolved: Dictionary = settings.observability_config().provider_options()
+
+	Expect.that(settings.validation_error()).to_equal(Error.OK)
+	Expect.that(settings.has_dsn()).to_be_true()
+	Expect.that(settings.debug_enabled()).to_be_true()
+	Expect.that(resolved.get("dsn")).to_equal("https://public@example/1")
+	Expect.that(resolved.get("debug")).to_be_true()
+	Expect.that(resolved.get("send_default_pii")).to_be_true()
+	Expect.that(resolved).to_equal({
+			"dsn": "https://public@example/1",
+			"debug": true,
+			"send_default_pii": true,
+			"nested": {"sample_rate": 0.5},
+		})
+
+	var auto_debug := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{"debug_build": true},
+		)
+	Expect.that(auto_debug.debug_enabled()).to_be_true()
+	Expect.that(
+			auto_debug.observability_config().provider_options().get("debug"),
+		).to_be_true()
+
+	var auto_release := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{"debug_build": false},
+		)
+	Expect.that(auto_release.debug_enabled()).to_be_false()
+	Expect.that(
+			auto_release.observability_config().provider_options().get("debug"),
+		).to_be_false()
+
+	var invalid_mode := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.DEBUG_DIAGNOSTICS: 99},
+		)
+	Expect.that(invalid_mode.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+	var invalid_options := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.PROVIDER_OPTIONS: Callable()},
+		)
+	Expect.that(invalid_options.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+	var nested_callable := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.PROVIDER_OPTIONS: {
+				"nested": {"callback": Callable()},
+			}},
+		)
+	Expect.that(nested_callable.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+
+func test_startup_settings_provider_option_depth_counts_containers() -> void:
+	var max_depth := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						_provider_options_with_container_depth(8),
+			},
+		)
+	Expect.that(max_depth.validation_error()).to_equal(Error.OK)
+
+	var too_deep := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						_provider_options_with_container_depth(9),
+			},
+		)
+	Expect.that(too_deep.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+
+func test_startup_settings_provider_options_reject_cycles_cleanly() -> void:
+	var self_cycle: Dictionary = {}
+	self_cycle["self"] = self_cycle
+	var self_cycle_settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: self_cycle,
+			},
+		)
+	Expect.that(self_cycle_settings.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+	var cyclic_array: Array = []
+	var cyclic_dictionary: Dictionary = {"array": cyclic_array}
+	cyclic_array.append(cyclic_dictionary)
+	var mutual_cycle_settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						cyclic_dictionary,
+			},
+		)
+	Expect.that(mutual_cycle_settings.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+
+func test_startup_settings_provider_options_enforce_item_budget() -> void:
+	var at_limit := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						_wide_provider_options(256),
+			},
+		)
+	Expect.that(at_limit.validation_error()).to_equal(Error.OK)
+
+	var over_limit := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						_wide_provider_options(257),
+			},
+		)
+	Expect.that(over_limit.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+	var shared: Dictionary = {"finite": 0.5, "label": &"shared"}
+	var repeated := {"left": shared, "right": shared}
+	var repeated_settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: repeated,
+			},
+		)
+	shared["finite"] = 0.25
+	Expect.that(repeated_settings.validation_error()).to_equal(Error.OK)
+	Expect.that(
+			repeated_settings.observability_config().provider_options(),
+		).to_equal({
+			"left": {"finite": 0.5, "label": &"shared"},
+			"right": {"finite": 0.5, "label": &"shared"},
+			"dsn": "",
+			"debug": false,
+		})
+
+
+func test_startup_settings_provider_options_charge_repeated_shared_subgraphs() -> void:
+	var shared: Dictionary = _wide_provider_options(64)
+	var repeated: Dictionary = {}
+	for index: int in range(4):
+		repeated["shared_%d" % index] = shared
+
+	var settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: repeated,
+			},
+		)
+
+	Expect.that(settings.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+
+func test_startup_settings_provider_options_validate_data_shapes() -> void:
+	var nested_array: Array = [
+		null,
+		true,
+		7,
+		0.5,
+		"text",
+		&"name",
+		[{"nested": "value"}],
+	]
+	var valid := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						{"values": nested_array},
+			},
+		)
+	nested_array[6][0]["nested"] = "mutated"
+	Expect.that(valid.validation_error()).to_equal(Error.OK)
+	Expect.that(
+			valid.observability_config().provider_options().get("values"),
+		).to_equal([
+			null,
+			true,
+			7,
+			0.5,
+			"text",
+			&"name",
+			[{"nested": "value"}],
+		])
+
+	var nonfinite := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						{"nan": NAN, "infinity": INF},
+			},
+		)
+	Expect.that(nonfinite.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+	var invalid_key: Dictionary = {}
+	invalid_key[7] = "not a provider option key"
+	var invalid_key_settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: invalid_key,
+			},
+		)
+	Expect.that(invalid_key_settings.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+
+func test_startup_settings_register_project_defaults_idempotently() -> void:
+	var had_auto_init: bool = ProjectSettings.has_setting(
+			ObservabilityStartupSettings.AUTO_INIT)
+	var previous_auto_init: Variant = ProjectSettings.get_setting(
+			ObservabilityStartupSettings.AUTO_INIT, null)
+	var had_debug_diagnostics: bool = ProjectSettings.has_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)
+	var previous_debug_diagnostics: Variant = ProjectSettings.get_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS, null)
+
+	ProjectSettings.set_setting(ObservabilityStartupSettings.AUTO_INIT, false)
+	ProjectSettings.set_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS,
+			ObservabilityStartupSettings.DEBUG_OFF,
+		)
+	ObservabilityStartupSettings.register_project_settings()
+	ObservabilityStartupSettings.register_project_settings()
+	var defaults: Dictionary = ObservabilityStartupSettings.project_setting_defaults()
+
+	for setting_name: String in defaults:
+		Expect.that(ProjectSettings.has_setting(setting_name)).to_be_true()
+		var property_info: Dictionary = _project_setting_property(setting_name)
+		var usage: int = property_info.get("usage", 0)
+		Expect.that(
+				usage & PROPERTY_USAGE_EDITOR_BASIC_SETTING,
+			).to_equal(PROPERTY_USAGE_EDITOR_BASIC_SETTING)
+		Expect.that(
+				usage & PROPERTY_USAGE_RESTART_IF_CHANGED,
+			).to_equal(0)
+	Expect.that(ProjectSettings.get_setting(
+			ObservabilityStartupSettings.AUTO_INIT)).to_be_false()
+	Expect.that(ProjectSettings.get_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)).to_equal(
+					ObservabilityStartupSettings.DEBUG_OFF,
+				)
+	var debug_info: Dictionary = _project_setting_property(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)
+	Expect.that(debug_info.get("type")).to_equal(TYPE_INT)
+	Expect.that(debug_info.get("hint")).to_equal(PROPERTY_HINT_ENUM)
+	Expect.that(debug_info.get("hint_string")).to_equal("Off,On,Auto")
+
+	_restore_project_setting(
+			ObservabilityStartupSettings.AUTO_INIT,
+			had_auto_init,
+			previous_auto_init,
+		)
+	_restore_project_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS,
+			had_debug_diagnostics,
+			previous_debug_diagnostics,
+		)
+	Expect.that(ProjectSettings.has_setting(
+			ObservabilityStartupSettings.AUTO_INIT)).to_equal(had_auto_init)
+	if had_auto_init:
+		Expect.that(ProjectSettings.get_setting(
+				ObservabilityStartupSettings.AUTO_INIT)).to_equal(
+						previous_auto_init,
+					)
+	Expect.that(ProjectSettings.has_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)).to_equal(
+					had_debug_diagnostics,
+				)
+	if had_debug_diagnostics:
+		Expect.that(ProjectSettings.get_setting(
+				ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)).to_equal(
+						previous_debug_diagnostics,
+					)
+
+
+func test_startup_initializes_before_immediate_capture() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+				ObservabilityStartupSettings.ENVIRONMENT: "production",
+				ObservabilityStartupSettings.RELEASE: "1.2.3",
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: {
+					"send_default_pii": true,
+				},
+			},
+			{},
+			{"debug_build": false},
+		)
+	var service: FoundryObservability = _startup_service(settings)
+
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.INITIALIZED,
+		)
+	Expect.that(service.startup_message()).to_contain("initialized")
+	Expect.that(service.provider_name()).to_equal(&"sentry")
+	Expect.that(service.capture_message("startup event")).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads).to_have_size(1)
+	if not bridge.configured_payload.is_empty():
+		Expect.that(bridge.configured_payload["environment"]).to_equal(
+				"production",
+			)
+		Expect.that(bridge.configured_payload["release"]).to_equal("1.2.3")
+		Expect.that(
+				bridge.configured_payload["provider_options"]["send_default_pii"],
+			).to_be_true()
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_autoload_startup_completes_before_later_autoload() -> void:
+	var tree: SceneTree = Engine.get_main_loop() as SceneTree
+	var service: Node = tree.root.get_node("FoundryObservability")
+	var probe: Node? = tree.root.get_node_or_null(
+			"FoundryObservabilityStartupProbe")
+
+	Expect.that(probe).to_not_be_null()
+	if probe == null:
+		return
+	Expect.that(service.get_index()).to_be_less_than(probe.get_index())
+	Expect.that(probe.get("observed_status")).to_not_equal(
+			ObservabilityStartupStatus.NOT_STARTED,
+		)
+
+
+func test_startup_reports_safe_disabled_missing_and_invalid_states() -> void:
+	var disabled: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.ENABLED: false,
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: {
+					"invalid": Vector2.ONE,
+				},
+			}),
+		)
+	Expect.that(disabled.startup_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+	Expect.that(disabled.last_error()).to_equal(Error.OK)
+	Expect.that(disabled.provider_name()).to_equal(&"null")
+	disabled.shutdown()
+	disabled.free()
+
+	var auto_init_disabled: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.AUTO_INIT: false,
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: {
+					"invalid": Vector2.ONE,
+				},
+			}),
+		)
+	Expect.that(auto_init_disabled.startup_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+	Expect.that(auto_init_disabled.last_error()).to_equal(Error.OK)
+	Expect.that(auto_init_disabled.provider_name()).to_equal(&"null")
+	auto_init_disabled.shutdown()
+	auto_init_disabled.free()
+
+	var missing_dsn: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources(),
+		)
+	Expect.that(missing_dsn.startup_status()).to_equal(
+			ObservabilityStartupStatus.MISSING_DSN,
+		)
+	Expect.that(missing_dsn.last_error()).to_equal(Error.ERR_UNCONFIGURED)
+	Expect.that(missing_dsn.provider_name()).to_equal(&"null")
+	missing_dsn.shutdown()
+	missing_dsn.free()
+
+	var invalid: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: {
+					"invalid": Vector2.ONE,
+				},
+			}),
+		)
+	Expect.that(invalid.startup_status()).to_equal(
+			ObservabilityStartupStatus.CONFIGURATION_FAILED,
+		)
+	Expect.that(invalid.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(invalid.startup_message()).to_contain("invalid")
+	Expect.that(invalid.provider_name()).to_equal(&"null")
+	invalid.shutdown()
+	invalid.free()
+
+	var null_settings: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.AUTO_INIT: false,
+			}),
+		)
+	Expect.that(null_settings._initialize_startup(null)).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+	Expect.that(null_settings.startup_status()).to_equal(
+			ObservabilityStartupStatus.CONFIGURATION_FAILED,
+		)
+	Expect.that(null_settings.startup_message()).to_contain("invalid")
+	null_settings.shutdown()
+	null_settings.free()
+
+
+func test_startup_rejects_malformed_project_values_before_skip_resolution() -> void:
+	for invalid_values: Dictionary in _malformed_startup_project_values():
+		var settings := ObservabilityStartupSettings.from_sources(
+				invalid_values,
+				{},
+				{"editor_feature": true, "debug_build": true},
+			)
+		var service: FoundryObservability = _startup_service(
+				settings,
+				"res://addons/FoundryObservability/ObservabilityProvider.fs",
+			)
+
+		Expect.that(service.startup_status()).to_equal(
+				ObservabilityStartupStatus.CONFIGURATION_FAILED,
+			)
+		Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+		Expect.that(service.provider_name()).to_equal(&"null")
+
+		service.shutdown()
+		service.free()
+
+
+func test_startup_reports_missing_noninstantiable_and_wrong_provider_scripts() -> void:
+	var settings := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: "https://public@example/1",
+	})
+	for provider_path: String in [
+		"res://addons/FoundryObservability/MissingProvider.fs",
+		"res://addons/FoundryObservability/ObservabilityProvider.fs",
+		"res://addons/FoundryObservability/ObservabilityConfig.fs",
+	]:
+		var service: FoundryObservability = _startup_service(
+				settings,
+				provider_path,
+			)
+		Expect.that(service.startup_status()).to_equal(
+				ObservabilityStartupStatus.PROVIDER_UNAVAILABLE,
+			)
+		Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+		Expect.that(service.startup_message()).to_contain("unavailable")
+		Expect.that(service.provider_name()).to_equal(&"null")
+		service.shutdown()
+		service.free()
+
+
+func test_startup_configures_provider_before_other_provider_behavior() -> void:
+	var service: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+			}),
+			(
+				"res://tests/support/"
+				+ "startup_order_observability_provider.notest.fs"
+			),
+		)
+	var candidate: Variant = service.get("_startup_provider")
+
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.INITIALIZED,
+		)
+	Expect.that(candidate is StartupOrderObservabilityProvider).to_be_true()
+	if not (candidate is StartupOrderObservabilityProvider):
+		service.shutdown()
+		service.free()
+		return
+	@warning_ignore("unsafe_cast")
+	var provider: StartupOrderObservabilityProvider = (
+		candidate as StartupOrderObservabilityProvider
+	)
+	Expect.that(provider.call_order).to_equal([&"configure"])
+	Expect.that(service.provider_name()).to_equal(&"startup_order")
+	Expect.that(provider.call_order).to_equal([
+		&"configure",
+		&"provider_name",
+	])
+
+	service.shutdown()
+	service.free()
+
+
+func test_startup_maps_provider_unavailable_configuration_result() -> void:
+	var bridge := FakeSentryBridge.new()
+	bridge.configure_result = Error.ERR_UNAVAILABLE
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var service: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+			}),
+		)
+
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.PROVIDER_UNAVAILABLE,
+		)
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(service.startup_message()).to_contain("failed")
+	Expect.that(service.provider_name()).to_equal(&"null")
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_startup_reuses_provider_for_reconfiguration_and_restart() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var first_settings := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: "https://public@example/1",
+		ObservabilityStartupSettings.ENVIRONMENT: "production",
+	})
+	var service: FoundryObservability = _startup_service(first_settings)
+	var first_owner: String = bridge.active_owner
+
+	Expect.that(service._initialize_startup(first_settings)).to_equal(Error.OK)
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(bridge.configured_payloads).to_have_size(2)
+
+	var changed_settings := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: "https://public@example/1",
+		ObservabilityStartupSettings.ENVIRONMENT: "staging",
+	})
+	Expect.that(service._initialize_startup(changed_settings)).to_equal(Error.OK)
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	if not bridge.configured_payload.is_empty():
+		Expect.that(bridge.configured_payload["environment"]).to_equal("staging")
+
+	service.shutdown()
+	Expect.that(service._initialize_startup(changed_settings)).to_equal(Error.OK)
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(service.provider_name()).to_equal(&"sentry")
+	Expect.that(service.is_available()).to_be_true()
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_startup_capture_disable_tears_down_once_and_can_restart() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var enabled_settings := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: "https://public@example/1",
+	})
+	var service: FoundryObservability = _startup_service(enabled_settings)
+	var first_owner: String = bridge.active_owner
+
+	Expect.that(service.capture_message("before disable")).to_equal("sentry:1")
+	Expect.that(service.get("_automatic_logger")).to_not_be_null()
+	bridge.flush_result = Error.FAILED
+	var disabled_settings := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.ENABLED: false,
+	})
+
+	Expect.that(service._initialize_startup(disabled_settings)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+	Expect.that(service.startup_message()).to_equal(
+			"Automatic startup is disabled.",
+		)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+	Expect.that(service.is_available()).to_be_false()
+	Expect.that(service.get("_automatic_logger")).to_be_null()
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.flush_owners).to_equal([first_owner])
+	Expect.that(bridge.shutdown_owners).to_equal([first_owner])
+	Expect.that(bridge.shutdown_count).to_equal(1)
+	Expect.that(service.capture_message("while disabled")).to_equal("")
+	Expect.that(bridge.captured_payloads).to_have_size(1)
+
+	Expect.that(service._initialize_startup(disabled_settings)).to_equal(Error.OK)
+	Expect.that(bridge.flush_owners).to_have_size(1)
+	Expect.that(bridge.shutdown_owners).to_have_size(1)
+	Expect.that(bridge.shutdown_count).to_equal(1)
+
+	bridge.flush_result = Error.OK
+	Expect.that(service._initialize_startup(enabled_settings)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.INITIALIZED,
+		)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.provider_name()).to_equal(&"sentry")
+	Expect.that(service.is_enabled()).to_be_true()
+	Expect.that(service.is_available()).to_be_true()
+	Expect.that(service.get("_automatic_logger")).to_not_be_null()
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(bridge.configured_payloads).to_have_size(2)
+	Expect.that(service.capture_message("after restart")).to_equal("sentry:2")
+	Expect.that(bridge.captured_payloads).to_have_size(2)
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_startup_only_skips_preserve_an_active_provider() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var service: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+			}),
+		)
+	var first_owner: String = bridge.active_owner
+	var automatic_logger: Variant = service.get("_automatic_logger")
+
+	var auto_init_disabled := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.AUTO_INIT: false,
+	})
+	Expect.that(service._initialize_startup(auto_init_disabled)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.DISABLED,
+		)
+
+	var editor := ObservabilityStartupSettings.from_sources(
+			{},
+			{},
+			{"editor_hint": true},
+		)
+	Expect.that(service._initialize_startup(editor)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_EDITOR,
+		)
+
+	var editor_play := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.SKIP_EDITOR_PLAY: true},
+			{},
+			{"editor_feature": true},
+		)
+	Expect.that(service._initialize_startup(editor_play)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_EDITOR_PLAY,
+		)
+
+	var debug_export := ObservabilityStartupSettings.from_sources(
+			{ObservabilityStartupSettings.SKIP_DEBUG_EXPORTS: true},
+			{},
+			{"debug_build": true},
+		)
+	Expect.that(service._initialize_startup(debug_export)).to_equal(Error.OK)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.SKIPPED_DEBUG,
+		)
+
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service.provider_name()).to_equal(&"sentry")
+	Expect.that(service.is_enabled()).to_be_true()
+	Expect.that(service.is_available()).to_be_true()
+	Expect.that(service.get("_automatic_logger")).to_equal(automatic_logger)
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(bridge.flush_owners).to_have_size(0)
+	Expect.that(bridge.shutdown_owners).to_have_size(0)
+	Expect.that(bridge.shutdown_count).to_equal(0)
+	Expect.that(service.capture_message("after startup skips")).to_equal("sentry:1")
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
+func test_startup_failure_preserves_working_provider_and_diagnostics() -> void:
+	var bridge := FakeSentryBridge.new()
+	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var service: FoundryObservability = _startup_service(
+			ObservabilityStartupSettings.from_sources({
+				ObservabilityStartupSettings.DSN: "https://public@example/1",
+			}),
+		)
+	var first_owner: String = bridge.active_owner
+	bridge.configure_result = Error.FAILED
+	var failed := ObservabilityStartupSettings.from_sources({
+		ObservabilityStartupSettings.DSN: "https://public@example/2",
+	})
+
+	Expect.that(service._initialize_startup(failed)).to_equal(Error.FAILED)
+	Expect.that(service.startup_status()).to_equal(
+			ObservabilityStartupStatus.CONFIGURATION_FAILED,
+		)
+	Expect.that(service.startup_message()).to_contain("failed")
+	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(service.provider_name()).to_equal(&"sentry")
+	Expect.that(service.is_available()).to_be_true()
+
+	service.shutdown()
+	service.free()
+	Engine.unregister_singleton("SentryObservabilityBridge")
+
+
 func _service() -> FoundryObservability:
 	var tree: SceneTree = Engine.get_main_loop() as SceneTree
 	return tree.root.get_node("FoundryObservability") as FoundryObservability
+
+
+func _startup_service(
+		settings: ObservabilityStartupSettings,
+		provider_path: String = (
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs"
+		),
+) -> FoundryObservability:
+	var service_script: Script = ResourceLoader.load(
+			"res://addons/FoundryObservability/FoundryObservability.fs",
+		) as Script
+	@warning_ignore("unsafe_method_access")
+	var candidate: Variant = service_script.new(settings, provider_path)
+	if not (candidate is FoundryObservability):
+		return null
+	@warning_ignore("unsafe_cast")
+	return candidate as FoundryObservability
 
 
 func _push_test_error(message: String) -> void:
@@ -1906,6 +2859,91 @@ func _repeated(value: String, count: int) -> String:
 	for _index in range(count):
 		result += value
 	return result
+
+
+func _provider_options_with_container_depth(depth: int) -> Dictionary:
+	var options: Dictionary = {}
+	var cursor: Dictionary = options
+	for _level: int in range(depth):
+		var nested: Dictionary = {}
+		cursor["nested"] = nested
+		cursor = nested
+	cursor["value"] = "leaf"
+	return options
+
+
+func _wide_provider_options(item_count: int) -> Dictionary:
+	var options: Dictionary = {}
+	for index: int in range(item_count):
+		options["item_%d" % index] = index
+	return options
+
+
+func _project_setting_property(setting_name: String) -> Dictionary:
+	for property_info: Dictionary in ProjectSettings.get_property_list():
+		if property_info.get("name") == setting_name:
+			return property_info
+	return {}
+
+
+func _malformed_startup_project_values() -> Array[Dictionary]:
+	var dsn: String = "https://public@example/1"
+	return [
+		{
+			ObservabilityStartupSettings.AUTO_INIT: 0,
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.ENABLED: "true",
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.SKIP_EDITOR_PLAY: "true",
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.SKIP_DEBUG_EXPORTS: "true",
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS:
+					ObservabilityStartupSettings.DEBUG_OFF,
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{ObservabilityStartupSettings.DSN: 7},
+		{
+			ObservabilityStartupSettings.ENVIRONMENT: ["production"],
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.RELEASE: 123,
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.DIST: ["ios"],
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.RELEASE: &"named-release",
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS: "Auto",
+			ObservabilityStartupSettings.DSN: dsn,
+		},
+		{
+			ObservabilityStartupSettings.ENABLED: false,
+			ObservabilityStartupSettings.DSN: 7,
+		},
+	]
+
+
+func _restore_project_setting(
+		setting_name: String,
+		was_present: bool,
+		previous_value: Variant,
+) -> void:
+	if was_present:
+		ProjectSettings.set_setting(setting_name, previous_value)
+	else:
+		ProjectSettings.clear(setting_name)
 
 
 func _keep_combat_metric(metric: ObservabilityMetric) -> bool:

@@ -13,6 +13,82 @@ fail() {
 	exit 1
 }
 
+require_doc_text() {
+	local relative_path=$1
+	local expected=$2
+	local failure_message=$3
+	rg -Fq -- "$expected" "$repo_root/$relative_path" \
+		|| fail "$failure_message"
+}
+
+require_content_text() {
+	local content=$1
+	local expected=$2
+	local failure_message=$3
+	rg -Fq -- "$expected" <<<"$content" \
+		|| fail "$failure_message"
+}
+
+reject_content_text() {
+	local content=$1
+	local rejected=$2
+	local failure_message=$3
+	if rg -Fiq -- "$rejected" <<<"$content"; then
+		fail "$failure_message"
+	fi
+}
+
+extract_marked_doc_section() {
+	local relative_path=$1
+	local marker_name=$2
+	awk \
+		-v start_marker="<!-- foundry-observability:$marker_name:start -->" \
+		-v end_marker="<!-- foundry-observability:$marker_name:end -->" \
+		'
+		$0 == start_marker {
+			start_count += 1
+			in_section = 1
+			next
+		}
+		$0 == end_marker {
+			end_count += 1
+			in_section = 0
+			next
+		}
+		in_section { print }
+		END {
+			if (start_count != 1 || end_count != 1 || in_section) {
+				exit 1
+			}
+		}
+		' "$repo_root/$relative_path"
+}
+
+extract_heading_doc_section() {
+	local relative_path=$1
+	local start_heading=$2
+	local end_heading=$3
+	awk \
+		-v start_heading="$start_heading" \
+		-v end_heading="$end_heading" \
+		'
+		$0 == start_heading {
+			found_start = 1
+			in_section = 1
+		}
+		$0 == end_heading && in_section {
+			found_end = 1
+			exit
+		}
+		in_section { print }
+		END {
+			if (!found_start || !found_end) {
+				exit 1
+			}
+		}
+		' "$repo_root/$relative_path"
+}
+
 resolve_foundry_bin() {
 	if [[ -n "${FOUNDRY_BIN:-}" ]]; then
 		[[ -x "$FOUNDRY_BIN" ]] || fail "FOUNDRY_BIN is not executable: $FOUNDRY_BIN"
@@ -32,6 +108,10 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/export_plugin.fs" ]] || fail "export_plugin.fs is missing"
 [[ -f "$addon/FoundryObservability.fs" ]] || fail "FoundryObservability.fs is missing"
 [[ -f "$addon/FoundryObservabilityApi.fs" ]] || fail "FoundryObservabilityApi.fs is missing"
+[[ -f "$addon/ObservabilityStartupStatus.fs" ]] \
+	|| fail "ObservabilityStartupStatus.fs is missing"
+[[ -f "$addon/ObservabilityStartupSettings.fs" ]] \
+	|| fail "ObservabilityStartupSettings.fs is missing"
 [[ -f "$addon/AutomaticObservabilityLogger.fs" ]] \
 	|| fail "AutomaticObservabilityLogger.fs is missing"
 [[ -f "$addon/ObservabilityFeedback.fs" ]] || fail "ObservabilityFeedback.fs is missing"
@@ -108,6 +188,159 @@ for current_doc in README.md BUILD.md CONTRIBUTING.md CHANGELOG.md docs/API.md; 
 	if rg -n 'games\.cafecito\.foundryobservability' "$repo_root/$current_doc"; then
 		fail "current documentation contains the removed namespace: $current_doc"
 	fi
+done
+
+require_doc_text \
+	"README.md" \
+	"foundry_observability/startup/auto_init" \
+	"README is missing automatic startup setup"
+
+api_doc="docs/API.md"
+require_doc_text \
+	"$api_doc" \
+	"## Project-settings startup" \
+	"API documentation is missing the project-settings startup section"
+require_doc_text \
+	"$api_doc" \
+	'The top-level `provider_options` value must be a `Dictionary`.' \
+	"API documentation must require a top-level provider options Dictionary"
+while IFS=$'\t' read -r setting_name documented_default; do
+	require_doc_text \
+		"$api_doc" \
+		"| \`$setting_name\` | $documented_default |" \
+		"API documentation is missing startup setting/default: $setting_name"
+done <<'STARTUP_SETTINGS'
+foundry_observability/startup/auto_init	`true`
+foundry_observability/startup/enabled	`true`
+foundry_observability/startup/skip_editor_play	`false`
+foundry_observability/startup/skip_debug_exports	`false`
+foundry_observability/options/dsn	`""`
+foundry_observability/options/environment	`""`
+foundry_observability/options/release	`""`
+foundry_observability/options/dist	`""`
+foundry_observability/options/debug_diagnostics	`2` (`Auto`)
+foundry_observability/options/provider_options	`{}`
+STARTUP_SETTINGS
+for required_api_text in \
+	'Nested values may be null, booleans, integers, finite floats, strings, `StringName` values, arrays, or dictionaries.' \
+	'Dictionary keys must be strings or `StringName` values.' \
+	'eight nested containers' \
+	'at most 256 dictionary entries' \
+	'before the main scene' \
+	'before any autoload ordered after `FoundryObservability`' \
+	'Autoloads ordered earlier' \
+	'engine work before autoload construction' \
+	'When `enabled=false` is reread after successful startup, observability flushes' \
+	'Repeating the same disabled settings is idempotent.' \
+	'a later `auto_init=false` reread records `disabled`' \
+	'Editor, editor-play, and debug-export skip outcomes have the' \
+	'same preservation behavior.' \
+	'`ObservabilityStartupSettings.capture_enabled()`'
+do
+	require_doc_text \
+		"$api_doc" \
+		"$required_api_text" \
+		"API documentation is missing startup contract: $required_api_text"
+done
+while IFS=$'\t' read -r startup_status startup_error; do
+	require_doc_text \
+		"$api_doc" \
+		"| \`$startup_status\` | $startup_error |" \
+		"API documentation is missing startup status/error: $startup_status"
+done <<'STARTUP_STATUSES'
+not_started	`Error.OK`
+initialized	`Error.OK`
+disabled	`Error.OK`
+skipped_editor	`Error.OK`
+skipped_editor_play	`Error.OK`
+skipped_debug	`Error.OK`
+missing_dsn	`Error.ERR_UNCONFIGURED`
+provider_unavailable	`Error.ERR_UNAVAILABLE`
+configuration_failed	`Error.ERR_INVALID_PARAMETER` or the provider's error
+STARTUP_STATUSES
+native_crash_doc="docs/NATIVE_CRASH_VALIDATION.md"
+if ! automatic_readiness_code=$(
+	extract_marked_doc_section \
+		"$native_crash_doc" \
+		"automatic-native-crash-readiness"
+); then
+	fail "native crash validation must mark the automatic readiness code fence"
+fi
+if ! manual_readiness_code=$(
+	extract_marked_doc_section \
+		"$native_crash_doc" \
+		"manual-native-crash-readiness"
+); then
+	fail "native crash validation must mark the manual readiness code fence"
+fi
+rg -q -U \
+	'(?s)func _automatic_crash_validation_ready\(\) -> bool:.*startup_status\(\).*ObservabilityStartupStatus\.INITIALIZED:.*return false.*if not FoundryObservability\.is_available\(\):.*return false.*return true' \
+	<<<"$automatic_readiness_code" \
+	|| fail "automatic native crash readiness must connect status and availability failures"
+rg -q -U \
+	'(?s)func _run_guarded_automatic_crash_validation\(\) -> void:.*if not _automatic_crash_validation_ready\(\):[[:space:]]*return' \
+	<<<"$automatic_readiness_code" \
+	|| fail "automatic native crash trigger must return behind its readiness guard"
+rg -q -U \
+	'(?s)func _configure_manual_crash_validation\(\) -> bool:.*FoundryObservability\.configure\(.*if result != Error\.OK:.*return false.*if not FoundryObservability\.is_available\(\):.*return false.*return true' \
+	<<<"$manual_readiness_code" \
+	|| fail "manual native crash readiness must connect configure and availability failures"
+rg -q -U \
+	'(?s)func _run_guarded_manual_crash_validation\(\) -> void:.*if not _configure_manual_crash_validation\(\):[[:space:]]*return' \
+	<<<"$manual_readiness_code" \
+	|| fail "manual native crash trigger must return behind its readiness guard"
+for required_native_text in \
+	'**Automatic Run A readiness:**' \
+	'**Manual Run A readiness:**' \
+	'**Automatic Run B readiness:**' \
+	'**Manual Run B readiness:**' \
+	'startup/auto_init=false' \
+	'FoundryObservability.startup_status()' \
+	'FoundryObservability.configure(' \
+	'FoundryObservability.is_available()' \
+	'Do not invoke any platform crash trigger when either readiness function returns false.' \
+	'Use the same DSN, release, environment, and distribution in Run A and Run B.' \
+	'native backend ownership'
+do
+	require_doc_text \
+		"$native_crash_doc" \
+		"$required_native_text" \
+		"native crash validation is missing recovery contract: $required_native_text"
+done
+require_doc_text \
+	"README.md" \
+	"## Provider-neutral manual quick start" \
+	"README must label the provider-neutral manual quick start"
+require_doc_text \
+	"README.md" \
+	'Do not call `configure()` after successful automatic Sentry startup unless replacing the active startup provider is intentional.' \
+	"README must warn that manual configure replaces automatic startup"
+require_doc_text \
+	"$api_doc" \
+	'- ObservabilityStartupStatus: stable project-settings startup result constants; see the [startup status table](#skip-decisions-and-results).' \
+	"API public index must list ObservabilityStartupStatus"
+if ! startup_resolver_section=$(
+	extract_heading_doc_section \
+		"$api_doc" \
+		"## Project-settings startup" \
+		"## Public API index"
+); then
+	fail "API documentation must have a bounded project-settings startup section"
+fi
+require_content_text \
+	"$startup_resolver_section" \
+	'Startup only tests whether the trimmed DSN is nonempty; the provider may reject its syntax during configuration.' \
+	"API documentation must define the core DSN validation boundary"
+for rejected_dsn_claim in \
+	"Startup validates DSN syntax" \
+	"The core validates DSN syntax" \
+	"Project-settings startup validates DSN syntax" \
+	"Startup requires a syntactically valid DSN"
+do
+	reject_content_text \
+		"$startup_resolver_section" \
+		"$rejected_dsn_claim" \
+		"project-settings startup docs must not claim core DSN syntax validation"
 done
 
 rg -Fq '"foundry_engine"' "$sentry_addon/SentryRuntimeContextCollector.fs" \

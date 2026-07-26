@@ -5,6 +5,12 @@ trait_name FoundryObservabilityApi
 
 ## Configures a provider and returns Error.OK or the provider's failure code.
 abstract func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = null) -> int
+## Rereads project settings and initializes the supported startup provider.
+abstract func initialize_from_project_settings() -> int
+## Returns the stable status of the latest project-settings startup attempt.
+abstract func startup_status() -> StringName
+## Returns the human-readable diagnostic for the latest startup attempt.
+abstract func startup_message() -> String
 ## Returns whether the active configuration permits capture.
 abstract func is_enabled() -> bool
 ## Returns whether the active provider is currently available.
