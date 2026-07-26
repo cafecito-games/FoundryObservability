@@ -1421,7 +1421,6 @@ func test_signal_limiter_combines_limits_at_expiry_boundaries() -> void:
 func test_signal_limiter_bounds_hashed_identities_and_resets_every_mode() -> void:
 	var limits := ObservabilitySignalLimits.new(0, 100000, 0, 0)
 	var limiter := ObservabilitySignalLimiter.new(1.0, limits)
-	limits = ObservabilitySignalLimits.new(0, 0, 0, 0)
 	for index: int in range(1025):
 		Expect.that(limiter.admit("identity-%s" % index, index, index)["accepted"]).to_be_true()
 	Expect.that(limiter.admit("identity-0", 2000, 2000)["accepted"]).to_be_true()
@@ -1437,6 +1436,17 @@ func test_signal_limiter_bounds_hashed_identities_and_resets_every_mode() -> voi
 	resettable.reset()
 	Expect.that(resettable.admit("reset", 0, 1)["reason"]).to_equal(&"sampled")
 	Expect.that(resettable.admit("reset", 0, 1)["accepted"]).to_be_true()
+
+
+func test_signal_limiter_defensively_copies_committed_limits() -> void:
+	var source := ObservabilitySignalLimits.new(7, 8, 9, 10)
+	var limiter := ObservabilitySignalLimiter.new(1.0, source)
+
+	Expect.that(limiter._limits).to_not_equal(source)
+	Expect.that(limiter._limits.per_frame()).to_equal(7)
+	Expect.that(limiter._limits.repeated_window_msec()).to_equal(8)
+	Expect.that(limiter._limits.window_count()).to_equal(9)
+	Expect.that(limiter._limits.window_msec()).to_equal(10)
 
 
 func test_signal_limiter_rejections_do_not_reserve_any_other_limit() -> void:
@@ -1460,6 +1470,11 @@ func test_signal_limiter_rejections_do_not_reserve_any_other_limit() -> void:
 	Expect.that(window.admit("b", 1, 2)["limit_kind"]).to_equal(&"window")
 	Expect.that(window.admit("c", 2, 2)["limit_kind"]).to_equal(&"window")
 	Expect.that(window.admit("d", 1000, 2)["accepted"]).to_be_true()
+	var repeated_boundary := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(0, 100, 0, 0))
+	Expect.that(repeated_boundary.admit("boundary", 0, 1)["accepted"]).to_be_true()
+	Expect.that(repeated_boundary.admit("boundary", 99, 2)["limit_kind"]).to_equal(&"repeated")
+	Expect.that(repeated_boundary.admit("boundary", 100, 3)["accepted"]).to_be_true()
 
 
 func test_signal_limiter_normalizes_samples_and_handles_backward_inputs() -> void:
@@ -1471,6 +1486,9 @@ func test_signal_limiter_normalizes_samples_and_handles_backward_inputs() -> voi
 	Expect.that(clamped.admit("always", 0, 0)["accepted"]).to_be_true()
 	var negative := ObservabilitySignalLimiter.new(-1.0)
 	Expect.that(negative.admit("never", 0, 0)["accepted"]).to_be_false()
+	var legacy_disabled := ObservabilitySignalLimiter.new(1.0, null, -1)
+	Expect.that(legacy_disabled.admit("first", 0, 0)["accepted"]).to_be_true()
+	Expect.that(legacy_disabled.admit("second", 1, 1)["accepted"]).to_be_true()
 	var backward := ObservabilitySignalLimiter.new(
 			1.0, ObservabilitySignalLimits.new(1, 100, 1, 100))
 	Expect.that(backward.admit("first", 100, 4)["accepted"]).to_be_true()
