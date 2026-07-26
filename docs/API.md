@@ -196,10 +196,12 @@ code may reconfigure or replace the active provider, and automatic startup does
 not lock it. Calling `initialize_from_project_settings()` later explicitly
 reapplies the project-settings configuration.
 
-`shutdown()` is idempotent and restores the disabled null-provider state. It
-does not erase the latest startup status. A later successful
-`initialize_from_project_settings()` reuses the cached startup provider and
-starts reporting again.
+Calling `shutdown()` closes admission immediately through the shutdown-request latch.
+If provider or configuration work is active, the void call returns before flush, provider shutdown, and the disabled null-state commit; teardown completes after that work drains.
+With no active work, the same call completes teardown directly. Repeated calls
+are safe. Shutdown does not erase the latest startup status. A later successful
+`initialize_from_project_settings()` intentionally reuses the cached startup
+provider and starts reporting again.
 
 ## Public API index
 
@@ -445,16 +447,30 @@ type produces `invalid_processor_result` and stores Error.ERR_INVALID_DATA.
 ### Provider-neutral signal processing
 
 Events, structured logs, and metrics enter one provider-neutral policy boundary
-before provider delivery. The high-level order is:
+before provider delivery. The core processing and admission order is:
 
 ~~~
-normalize → pre-redact → processors → post-redact → validate → sample → signal limit → provider
+Core admission: normalize → pre-redact → processors → post-redact → validate → sample → signal limit
+Event/log dispatch after admission: accepted replacement → final timestamp and exception normalization → provider
 ~~~
 
-The normalized candidate is structurally checked before callbacks run. The
-second validation in the sequence checks the final reconstructed replacement.
-Provider acceptance is recorded only after dispatch. An explicit processor
-drop, sampling drop, or limit drop never calls the provider.
+The service initially resolves the input event/log timestamp and applies the
+active exception-frame policy before pipeline entry. The normalized candidate
+is structurally checked before callbacks run. The validation shown after
+post-redaction checks the final reconstructed processor replacement. Sampling
+and signal limits then admit that replacement and commit capacity.
+
+`ObservabilityProcessingPipeline` ends at admission. The service takes the
+accepted event/log replacement and normalizes it once more before provider
+dispatch. Final event/log normalization resolves a replacement timestamp and reapplies the active exception frame, source-context, and variable policy.
+An explicit replacement timestamp is preserved; an unassigned timestamp is
+resolved from the capture's wall-clock/monotonic pair. Final exception
+normalization drops null or unusable frames, normalizes nonpositive line
+numbers, enforces the source-context opt-in and five-line bounds, and enforces
+the variable opt-in and bounded supported-value copy. Metrics do not have this
+extra service stage: the validated admitted metric replacement is dispatched
+directly. Provider acceptance is recorded only after dispatch. An explicit
+processor drop, sampling drop, or limit drop never calls the provider.
 
 Each processor receives an immutable signal DTO and returns either an immutable replacement of the exact same signal type or `null` to drop it.
 Processors run in array order, and each accepted replacement becomes the next
@@ -682,8 +698,11 @@ configuration atomically installs a new generation and resets processors,
 recursion tracking, sampling accumulators, all limit state, and diagnostics.
 Calls already processed by an older generation cannot cross into the new
 provider generation. Configuration attempted during an active provider call
-returns `Error.ERR_BUSY`. Shutdown waits for reserved provider calls, clears
-processing state and callables, and installs a disabled pipeline.
+returns `Error.ERR_BUSY`. Calling `shutdown()` closes admission immediately through the shutdown-request latch.
+If provider or configuration work is active, the void call returns before flush, provider shutdown, and the disabled null-state commit; teardown completes after that work drains.
+Completion clears processing state and callables and installs a disabled
+pipeline. A later intentional successful `configure()` can start a new
+generation.
 
 The service applies the policy to Foundry-owned global contexts, explicit user
 fields, breadcrumbs, attachment metadata, event-local scope, events, logs, and
@@ -1611,10 +1630,12 @@ func capture_distribution(
 ) -> bool
 ~~~
 
-capture_metric validates, normalizes, filters, samples, and dispatches one
-custom metric. The convenience methods construct the corresponding
-ObservabilityMetric. A true result means the active provider accepted the
-metric into its local SDK or store; it does not guarantee remote delivery.
+`capture_metric()` follows the shared processing section: pre-redaction, the legacy filter, ordered metric processors, post-redaction, validation, deterministic metric sampling, metric signal limits, and provider dispatch.
+Before that shared path, the service validates and normalizes the input metric
+and merges valid global and per-metric attributes. The convenience methods
+construct the corresponding `ObservabilityMetric`. A true result means the
+active provider accepted the processed replacement into its local SDK or
+store; it does not guarantee remote delivery.
 
 Metric names must contain 1 through 200 characters, have no leading or trailing
 whitespace, and contain no control characters. Values must be finite. Counters
@@ -1652,11 +1673,23 @@ FoundryObservability.capture_distribution(
 )
 ~~~
 
-When metrics or the whole service are disabled, a metric filtered out, or a
-metric dropped by sampling, capture returns false without treating the drop as
-a provider failure. Providers own batching, transport, offline retry, and
-delivery. flush() forwards the timeout to the active provider so its SDK can
-attempt delivery.
+Invalid input returns false with `Error.ERR_INVALID_PARAMETER` before entering
+the processing pipeline. A valid metric submitted while the service or metrics
+are disabled returns false without changing the prior processing diagnostic or
+error. A missing metric provider capability returns false with
+`Error.ERR_UNAVAILABLE`.
+
+Once processing begins, a false legacy filter result or processor `null`
+publishes `processor`; deterministic sampling publishes `sampled`; and a metric
+limit publishes `rate_limited`. A same-owner recursive metric capture publishes
+`recursive`. Those expected false results leave `last_error()` at `Error.OK`.
+Invalid processor results, redaction failures, or invalid final payloads return
+false and store `Error.ERR_INVALID_DATA`. A false or malformed provider result
+publishes `provider_rejected` and stores `Error.FAILED`. See
+[Provider-neutral signal processing](#provider-neutral-signal-processing) for
+the complete diagnostic fields and reason table. Providers own batching,
+transport, offline retry, and delivery. `flush()` forwards the timeout to the
+active provider so its SDK can attempt delivery.
 
 ### capture_exception
 
@@ -1728,11 +1761,16 @@ value. With no active provider, it returns Error.OK.
 func shutdown() -> void
 ~~~
 
-shutdown is idempotent. The first call flushes, shuts down the active provider,
-restores the NullObservabilityProvider, restores a disabled config, and resets
-last_error() to Error.OK. Provider shutdown clears live global scope, explicit
-user, and breadcrumbs. Later calls do nothing. The autoload also calls shutdown
-from _exit_tree.
+Calling `shutdown()` closes admission immediately through the shutdown-request latch.
+If provider or configuration work is active, the void call returns before flush, provider shutdown, and the disabled null-state commit; teardown completes after that work drains.
+When no provider or configuration work is active, the call performs the
+bounded flush and provider shutdown before it returns, then installs
+`NullObservabilityProvider`, a disabled config, a fresh disabled processing
+pipeline, and `Error.OK`. Provider shutdown clears live global scope, explicit
+user, breadcrumbs, and attachment handles. Repeated calls are safe after
+teardown. The autoload also calls `shutdown()` from `_exit_tree`. A later
+intentional successful `configure()` or project-settings initialization can
+start a fresh session.
 
 ## Built-in providers
 

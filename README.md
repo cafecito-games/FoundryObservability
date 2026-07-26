@@ -164,12 +164,12 @@ FoundryObservability.set_user(ObservabilityUser.new(
 		p_application_user_id = "player-7",
 		p_display_name = "Mina",
 ))
-FoundryObservability.capture_message("game started")
+FoundryObservability.capture_message("game started", ObservabilityLevel.WARN)
 var local_scope := ObservabilityScope.new()
 local_scope.set_tag("round", "final")
 FoundryObservability.capture_message(
 		"boss phase started",
-		ObservabilityLevel.INFO,
+		ObservabilityLevel.WARN,
 		{},
 		local_scope,
 )
@@ -204,6 +204,7 @@ FoundryObservability.clear_breadcrumbs()
 
 The event processor above receives an already-redacted immutable event and may
 return that event, a replacement `ObservabilityEvent`, or `null` to drop it.
+Both showcased message events use `WARN`, so they pass its threshold.
 Log and metric processors are configured separately. Redaction runs again after
 processors, and event, log, and metric sampling and limits never consume one
 another's capacity. Processing diagnostics contain only stable outcome

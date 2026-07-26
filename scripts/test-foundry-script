@@ -556,6 +556,14 @@ require_doc_text \
 	"README.md" \
 	'event.level() < ObservabilityLevel.WARN:' \
 	"README processing example must use the public WARN severity constant"
+require_doc_text \
+	"README.md" \
+	'FoundryObservability.capture_message("game started", ObservabilityLevel.WARN)' \
+	"README processing example must submit the first showcased event at WARN"
+rg -q -U \
+	'FoundryObservability\.capture_message\([[:space:]]*"boss phase started",[[:space:]]*ObservabilityLevel\.WARN,' \
+	"$repo_root/README.md" \
+	|| fail "README processing example must submit the local-scope event at WARN"
 if rg -Fq 'ObservabilityLevel.WARNING' "$repo_root/README.md"; then
 	fail "README must not use the nonexistent ObservabilityLevel.WARNING constant"
 fi
@@ -570,14 +578,29 @@ require_doc_text \
 for processing_doc_contract in \
 	'func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?' \
 	'Each processor receives an immutable signal DTO and returns either an immutable replacement of the exact same signal type or `null` to drop it.' \
-	'normalize → pre-redact → processors → post-redact → validate → sample → signal limit → provider' \
+	'Core admission: normalize → pre-redact → processors → post-redact → validate → sample → signal limit' \
+	'Event/log dispatch after admission: accepted replacement → final timestamp and exception normalization → provider' \
+	'Final event/log normalization resolves a replacement timestamp and reapplies the active exception frame, source-context, and variable policy.' \
 	'Diagnostics never retain payload objects, messages, attribute keys or values, context names, user fields, attachment paths or filenames, callable error strings, processor identities, or redaction patterns.' \
-	'Events, structured logs, and metrics have independent sampling accumulators and independent `ObservabilitySignalLimits` groups.'; do
+	'Events, structured logs, and metrics have independent sampling accumulators and independent `ObservabilitySignalLimits` groups.' \
+	'`capture_metric()` follows the shared processing section: pre-redaction, the legacy filter, ordered metric processors, post-redaction, validation, deterministic metric sampling, metric signal limits, and provider dispatch.'; do
 	require_doc_text \
 		"$api_doc" \
 		"$processing_doc_contract" \
 		"API documentation is missing processing contract: $processing_doc_contract"
 done
+stale_processing_order='normalize → pre-redact → processors → post-redact → validate → sample → signal limit → provider'
+if rg -Fq "$stale_processing_order" "$repo_root/$api_doc"; then
+	fail "API processing order must place final event/log normalization before provider dispatch"
+fi
+shutdown_latch_text='Calling `shutdown()` closes admission immediately through the shutdown-request latch.'
+shutdown_deferred_text='If provider or configuration work is active, the void call returns before flush, provider shutdown, and the disabled null-state commit; teardown completes after that work drains.'
+shutdown_latch_count=$(rg -F "$shutdown_latch_text" "$repo_root/$api_doc" | wc -l | tr -d ' ')
+shutdown_deferred_count=$(rg -F "$shutdown_deferred_text" "$repo_root/$api_doc" | wc -l | tr -d ' ')
+(( shutdown_latch_count == 3 )) \
+	|| fail "API docs must state immediate shutdown admission closure in all three lifecycle sections"
+(( shutdown_deferred_count == 3 )) \
+	|| fail "API docs must state deferred shutdown teardown in all three lifecycle sections"
 if ! startup_resolver_section=$(
 	extract_heading_doc_section \
 		"$api_doc" \
