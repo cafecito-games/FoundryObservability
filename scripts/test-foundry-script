@@ -136,6 +136,8 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 	|| fail "ObservabilityRedactor.fs is missing"
 [[ -f "$addon/ObservabilityProcessingDiagnostic.fs" ]] \
 	|| fail "ObservabilityProcessingDiagnostic.fs is missing"
+[[ -f "$addon/ObservabilityProcessingPipeline.fs" ]] \
+	|| fail "ObservabilityProcessingPipeline.fs is missing"
 [[ -f "$addon/ObservabilityStackFrame.fs" ]] || fail "ObservabilityStackFrame.fs is missing"
 [[ -f "$addon/ObservabilityMetricType.fs" ]] || fail "ObservabilityMetricType.fs is missing"
 [[ -f "$addon/ObservabilityMetricsProvider.fs" ]] || fail "ObservabilityMetricsProvider.fs is missing"
@@ -167,7 +169,8 @@ for processing_resource in \
 	ObservabilityRedactionRule \
 	ObservabilityRedactionPolicy \
 	ObservabilityRedactor \
-	ObservabilityProcessingDiagnostic; do
+	ObservabilityProcessingDiagnostic \
+	ObservabilityProcessingPipeline; do
 	[[ -s "$addon/${processing_resource}.fs.uid" ]] \
 		|| fail "${processing_resource}.fs.uid is missing or empty"
 done
@@ -175,6 +178,8 @@ grep -Fxq 'uid://d13rdctcore1' "$addon/ObservabilityRedactor.fs.uid" \
 	|| fail "ObservabilityRedactor.fs.uid has the wrong stable UID"
 grep -Fxq 'uid://d13sgnlmit1' "$addon/ObservabilitySignalLimiter.fs.uid" \
 	|| fail "ObservabilitySignalLimiter.fs.uid has the wrong stable UID"
+grep -Fxq 'uid://d13prcspipe1' "$addon/ObservabilityProcessingPipeline.fs.uid" \
+	|| fail "ObservabilityProcessingPipeline.fs.uid has the wrong stable UID"
 for sentry_attachment_resource in \
 	SentryAttachmentRuntimeProbe \
 	SentryBuiltInAttachmentCollector; do
@@ -218,6 +223,27 @@ done
 rg -q '^func processing_signal\(\) -> StringName:$' \
 	"$addon/ObservabilityProcessingDiagnostic.fs" \
 	|| fail "ObservabilityProcessingDiagnostic must expose processing_signal()"
+rg -q '^class_name ObservabilityProcessingPipeline$' \
+	"$addon/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline declaration is missing"
+rg -q '^extends RefCounted$' "$addon/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must remain a RefCounted resource"
+for pipeline_member in \
+	'func configure(config: ObservabilityConfig? = null) -> int:' \
+	'func process_event(event: ObservabilityEvent) -> Dictionary:' \
+	'func process_metric(metric: ObservabilityMetric) -> Dictionary:' \
+	'func record_provider_result(p_signal: StringName, accepted: bool, error: int) -> void:' \
+	'func last_diagnostic() -> ObservabilityProcessingDiagnostic?' \
+	'func recursive_drop_count() -> int:'; do
+	rg -Fq "$pipeline_member" "$addon/ObservabilityProcessingPipeline.fs" \
+		|| fail "processing pipeline is missing required API: $pipeline_member"
+done
+for pipeline_state in _redactor _event_processors _log_processors _metric_processors \
+	_metric_filter _event_limiter _log_limiter _metric_limiter _processing_depth \
+	_recursive_drops _diagnostic_sequence _last_diagnostic _state_mutex; do
+	rg -q "^var ${pipeline_state}:" "$addon/ObservabilityProcessingPipeline.fs" \
+		|| fail "processing pipeline is missing state: ${pipeline_state}"
+done
 rg -Fq '_is_active_container(value, active_containers)' \
 	"$addon/ObservabilityRedactionRule.fs" \
 	|| fail "ObservabilityRedactionRule must detect active replacement containers"
