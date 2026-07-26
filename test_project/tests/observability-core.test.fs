@@ -54,6 +54,15 @@ class MutableProcessingCallbacks extends Node:
 		return true
 
 
+class ConfigureCountingMemoryProvider extends \
+		"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var configure_calls: int = 0
+
+	func configure(config: ObservabilityConfig) -> int:
+		configure_calls += 1
+		return super.configure(config)
+
+
 class RecordingScopeProvider extends RefCounted:
 	uses ObservabilityProvider, ObservabilityScopeProvider, ObservabilityBreadcrumbsProvider
 
@@ -4030,6 +4039,108 @@ func test_service_processes_replacement_event_before_memory_provider_delivery() 
 	service.shutdown()
 
 
+func test_service_processor_drop_preserves_ok_error_and_publishes_diagnostic() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_service_drop_event")],
+	))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("dropped")).to_equal("")
+	Expect.that(provider.events()).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	var diagnostic: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
+	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingDiagnostic.DROPPED)
+	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingDiagnostic.PROCESSOR)
+	Expect.that(diagnostic.processor_index()).to_equal(0)
+	Expect.that(diagnostic.error()).to_equal(Error.OK)
+	service.shutdown()
+
+
+func test_service_processing_capacity_is_independent_per_event_log_and_metric() -> void:
+	var service := _processing_service()
+	var provider := MemoryObservabilityProvider.new()
+	_service_processing_clock_msec = 1000
+	_service_processing_frame_index = 1
+	var one_per_frame := ObservabilitySignalLimits.new(1, 0, 0, 0)
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = one_per_frame,
+			p_log_limits = one_per_frame,
+			p_metric_limits = one_per_frame,
+	))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("event first")).to_equal("memory:1")
+	Expect.that(service.capture_log("log first")).to_equal("memory:2")
+	Expect.that(service.capture_counter("metric.first")).to_be_true()
+	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.metrics()).to_have_size(1)
+
+	Expect.that(service.capture_message("event second")).to_equal("")
+	_expect_service_per_frame_diagnostic(service, ObservabilityProcessingDiagnostic.EVENT)
+	Expect.that(service.capture_log("log second")).to_equal("")
+	_expect_service_per_frame_diagnostic(service, ObservabilityProcessingDiagnostic.LOG)
+	Expect.that(service.capture_counter("metric.second")).to_be_false()
+	_expect_service_per_frame_diagnostic(service, ObservabilityProcessingDiagnostic.METRIC)
+	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.metrics()).to_have_size(1)
+	_shutdown_processing_service(service)
+
+
+func test_service_failed_reconfiguration_preserves_processing_diagnostic_and_admission() -> void:
+	var service := _processing_service()
+	var active := ConfigureCountingMemoryProvider.new()
+	_service_processing_clock_msec = 1000
+	_service_processing_frame_index = 1
+	var active_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1, 0, 0, 0),
+		)
+	Expect.that(service.configure(active, active_config)).to_equal(Error.OK)
+	Expect.that(service.capture_message("accepted")).to_equal("memory:1")
+	Expect.that(service.capture_message("limited")).to_equal("")
+	var prior: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
+
+	var invalid_candidate := ConfigureCountingMemoryProvider.new()
+	Expect.that(service.configure(invalid_candidate, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable()],
+		))).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(invalid_candidate.configure_calls).to_equal(0)
+	_expect_service_diagnostic_unchanged(service, prior)
+	Expect.that(service.capture_message("still limited after invalid")).to_equal("")
+
+	var failing_candidate := ConfigureCountingMemoryProvider.new()
+	failing_candidate.configure_result = Error.FAILED
+	prior = service.last_processing_diagnostic()
+	Expect.that(service.configure(failing_candidate, active_config)).to_equal(Error.FAILED)
+	Expect.that(failing_candidate.configure_calls).to_equal(1)
+	_expect_service_diagnostic_unchanged(service, prior)
+	Expect.that(service.capture_message("still limited after candidate failure")).to_equal("")
+
+	active.configure_result = Error.FAILED
+	prior = service.last_processing_diagnostic()
+	Expect.that(service.configure(active, active_config)).to_equal(Error.FAILED)
+	_expect_service_diagnostic_unchanged(service, prior)
+	Expect.that(service.capture_message("still limited after same provider failure")).to_equal("")
+	_shutdown_processing_service(service)
+
+
 func test_service_constructor_preserves_positional_arguments_and_uses_processing_seams() -> void:
 	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
@@ -6364,6 +6475,33 @@ func _processing_event_with_message(event: ObservabilityEvent, message: String) 
 func _service_replace_event(event: ObservabilityEvent) -> ObservabilityEvent:
 	_service_event_processor_calls += 1
 	return _processing_event_with_message(event, "processed")
+
+
+func _service_drop_event(_event: ObservabilityEvent) -> Variant:
+	return null
+
+
+func _expect_service_per_frame_diagnostic(
+		service: FoundryObservability,
+		processing_signal: StringName,
+) -> void:
+	var diagnostic: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
+	Expect.that(diagnostic.processing_signal()).to_equal(processing_signal)
+	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingDiagnostic.RATE_LIMITED)
+	Expect.that(diagnostic.limit_kind()).to_equal(ObservabilityProcessingDiagnostic.PER_FRAME)
+
+
+func _expect_service_diagnostic_unchanged(
+		service: FoundryObservability,
+		prior: ObservabilityProcessingDiagnostic,
+) -> void:
+	var current: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
+	Expect.that(current.sequence()).to_equal(prior.sequence())
+	Expect.that(current.processing_signal()).to_equal(prior.processing_signal())
+	Expect.that(current.outcome()).to_equal(prior.outcome())
+	Expect.that(current.reason()).to_equal(prior.reason())
+	Expect.that(current.limit_kind()).to_equal(prior.limit_kind())
+	Expect.that(current.error()).to_equal(prior.error())
 
 
 func _processing_service() -> FoundryObservability:

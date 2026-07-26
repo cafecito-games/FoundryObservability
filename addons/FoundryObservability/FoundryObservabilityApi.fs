@@ -19,7 +19,7 @@ abstract func is_available() -> bool
 abstract func provider_name() -> StringName
 ## Returns the most recent stored provider or capture error.
 abstract func last_error() -> int
-## Returns an isolated diagnostic from the latest processed event, log, or metric.
+## Returns a payload-free snapshot of the latest signal processing outcome without changing last_error.
 abstract func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?
 ## Adds a persistent diagnostic attachment and returns its provider-local handle.
 abstract func add_attachment(attachment: ObservabilityAttachment) -> String

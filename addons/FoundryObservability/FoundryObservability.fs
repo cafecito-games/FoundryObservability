@@ -264,7 +264,7 @@ func last_error() -> int:
 	return _last_error
 
 
-## Returns an isolated diagnostic from the latest processing attempt.
+## Returns a payload-free snapshot of the latest signal processing outcome without changing last_error.
 func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?:
 	return _pipeline.last_diagnostic() if _pipeline != null else null
 
