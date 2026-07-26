@@ -97,7 +97,8 @@ options/provider_options={
 
 `provider_options` must contain data only; see [docs/API.md](docs/API.md) for
 the accepted types and bounds. The fully qualified automatic-startup control is
-`foundry_observability/startup/auto_init`. Startup runs synchronously during
+`foundry_observability/startup/auto_init`. Order `FoundryObservability` as the
+earliest startup hook that needs observability. Startup runs synchronously during
 `FoundryObservability` autoload construction, so it completes before the main
 scene and before later-ordered autoloads. Those later hooks may capture
 immediately. An autoload ordered before `FoundryObservability` is outside this
