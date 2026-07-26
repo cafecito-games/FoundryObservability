@@ -130,6 +130,8 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 	|| fail "ObservabilityRedactionRule.fs is missing"
 [[ -f "$addon/ObservabilityRedactionPolicy.fs" ]] \
 	|| fail "ObservabilityRedactionPolicy.fs is missing"
+[[ -f "$addon/ObservabilityRedactor.fs" ]] \
+	|| fail "ObservabilityRedactor.fs is missing"
 [[ -f "$addon/ObservabilityProcessingDiagnostic.fs" ]] \
 	|| fail "ObservabilityProcessingDiagnostic.fs is missing"
 [[ -f "$addon/ObservabilityStackFrame.fs" ]] || fail "ObservabilityStackFrame.fs is missing"
@@ -161,10 +163,13 @@ for processing_resource in \
 	ObservabilitySignalLimits \
 	ObservabilityRedactionRule \
 	ObservabilityRedactionPolicy \
+	ObservabilityRedactor \
 	ObservabilityProcessingDiagnostic; do
 	[[ -s "$addon/${processing_resource}.fs.uid" ]] \
 		|| fail "${processing_resource}.fs.uid is missing or empty"
 done
+grep -Fxq 'uid://d13rdctcore1' "$addon/ObservabilityRedactor.fs.uid" \
+	|| fail "ObservabilityRedactor.fs.uid has the wrong stable UID"
 for sentry_attachment_resource in \
 	SentryAttachmentRuntimeProbe \
 	SentryBuiltInAttachmentCollector; do
@@ -200,6 +205,10 @@ done
 for field in _type _name _value _unit _attributes; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityMetric.fs" \
 		|| fail "ObservabilityMetric field must be immutable: ${field}"
+done
+for field in _policy _compiled_patterns; do
+	rg -q "^final var ${field}:" "$addon/ObservabilityRedactor.fs" \
+		|| fail "ObservabilityRedactor field must be immutable: ${field}"
 done
 rg -q '^func processing_signal\(\) -> StringName:$' \
 	"$addon/ObservabilityProcessingDiagnostic.fs" \
@@ -251,6 +260,8 @@ rg -q '^trait_name ObservabilityBreadcrumbsProvider$' \
 	|| fail "optional breadcrumb provider contract is missing"
 rg -q '^class_name ObservabilityMetric$' "$addon/ObservabilityMetric.fs" \
 	|| fail "metric value type declaration is missing"
+rg -q '^class_name ObservabilityRedactor$' "$addon/ObservabilityRedactor.fs" \
+	|| fail "redactor value type declaration is missing"
 rg -q '^class_name ObservabilityStackFrame$' "$addon/ObservabilityStackFrame.fs" \
 	|| fail "stack frame value type declaration is missing"
 rg -q '^class_name ObservabilityMetricType$' "$addon/ObservabilityMetricType.fs" \

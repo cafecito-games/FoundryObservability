@@ -1,0 +1,673 @@
+namespace foundry.observability
+
+## Applies a committed provider-neutral redaction policy.
+class_name ObservabilityRedactor
+extends RefCounted
+
+final var _policy: ObservabilityRedactionPolicy
+final var _compiled_patterns: Array[RegEx] = []
+
+
+func _init(policy: ObservabilityRedactionPolicy? = null) -> void:
+	_policy = (
+			policy.duplicate()
+			if policy != null
+			else ObservabilityRedactionPolicy.new()
+		)
+	for rule: ObservabilityRedactionRule in _policy.rules():
+		var compiled: RegEx = RegEx.new()
+		if rule != null \
+				and rule.action() == ObservabilityRedactionRule.REPLACE_TEXT \
+				and not rule.pattern().is_empty():
+			compiled.compile(rule.pattern())
+		_compiled_patterns.append(compiled)
+
+
+func redact_event(event: ObservabilityEvent, p_signal: StringName) -> Dictionary:
+	var invalid_rule_index: int = _first_invalid_rule_index()
+	if invalid_rule_index >= 0:
+		return _failure(invalid_rule_index)
+	if event == null or (p_signal != &"event" and p_signal != &"log"):
+		return _failure(-1)
+	var root_name: String = String(p_signal)
+	var tree: Dictionary = {
+		root_name: {
+			"kind": String(event.kind()),
+			"level": event.level(),
+			"message": event.message(),
+			"source": String(event.source()),
+			"timestamp_msec": event.timestamp_msec(),
+			"attributes": event.attributes(),
+			"exception": _exception_to_dictionary(event.exception()),
+			"engine_ticks_msec": event.engine_ticks_msec(),
+			"scope": _scope_to_dictionary(event.scope()),
+		},
+	}
+	var redacted: Dictionary = _redact_value(
+			tree,
+			PackedStringArray(),
+			false,
+		)
+	if not redacted["valid"]:
+		return redacted
+	if not (redacted["value"] is Dictionary):
+		return _typed_failure(redacted)
+	var redacted_root: Dictionary = redacted["value"]
+	if not redacted_root.has(root_name) or not (redacted_root[root_name] is Dictionary):
+		return _typed_failure(redacted)
+	var data: Dictionary = redacted_root[root_name]
+	if not _has_type(data, "kind", TYPE_STRING) \
+			or not _has_type(data, "level", TYPE_INT) \
+			or not _has_type(data, "message", TYPE_STRING) \
+			or not _has_type(data, "source", TYPE_STRING) \
+			or not _has_type(data, "timestamp_msec", TYPE_INT) \
+			or not _has_type(data, "attributes", TYPE_DICTIONARY) \
+			or not _has_type(data, "engine_ticks_msec", TYPE_INT):
+		return _typed_failure(redacted)
+	var exception_result: Dictionary = _exception_from_value(
+			data.get("exception", null),
+			redacted,
+		)
+	if not exception_result["valid"]:
+		return exception_result
+	var scope_result: Dictionary = _scope_from_value(
+			data.get("scope", null),
+			redacted,
+		)
+	if not scope_result["valid"]:
+		return scope_result
+	@warning_ignore("unsafe_cast")
+	var rebuilt_exception: ObservabilityException? = (
+			exception_result["value"] as ObservabilityException
+		)
+	@warning_ignore("unsafe_cast")
+	var rebuilt_scope: ObservabilityScope? = (
+			scope_result["value"] as ObservabilityScope
+		)
+	@warning_ignore("unsafe_call_argument", "unsafe_cast")
+	return _success(ObservabilityEvent.new(
+			StringName(str(data["kind"])),
+			int(data["level"]),
+			str(data["message"]),
+			StringName(str(data["source"])),
+			int(data["timestamp_msec"]),
+			data["attributes"] as Dictionary,
+			rebuilt_exception,
+			int(data["engine_ticks_msec"]),
+			rebuilt_scope,
+		))
+
+
+func redact_metric(metric: ObservabilityMetric) -> Dictionary:
+	var invalid_rule_index: int = _first_invalid_rule_index()
+	if invalid_rule_index >= 0:
+		return _failure(invalid_rule_index)
+	if metric == null:
+		return _failure(-1)
+	var redacted: Dictionary = _redact_root("metric", {
+		"type": metric.type(),
+		"name": metric.name(),
+		"value": metric.value(),
+		"unit": metric.unit(),
+		"attributes": metric.attributes(),
+	})
+	if not redacted["valid"]:
+		return redacted
+	var data_result: Dictionary = _root_dictionary(redacted, "metric")
+	if not data_result["valid"]:
+		return data_result
+	var data: Dictionary = data_result["value"]
+	if not _has_type(data, "type", TYPE_INT) \
+			or not _has_type(data, "name", TYPE_STRING) \
+			or not _has_type(data, "value", TYPE_FLOAT) \
+			or not _has_type(data, "unit", TYPE_STRING) \
+			or not _has_type(data, "attributes", TYPE_DICTIONARY):
+		return _typed_failure(redacted)
+	@warning_ignore("unsafe_call_argument", "unsafe_cast")
+	return _success(ObservabilityMetric.new(
+			int(data["type"]),
+			str(data["name"]),
+			float(data["value"]),
+			str(data["unit"]),
+			data["attributes"] as Dictionary,
+		))
+
+
+func redact_contexts(contexts: Dictionary) -> Dictionary:
+	var invalid_rule_index: int = _first_invalid_rule_index()
+	if invalid_rule_index >= 0:
+		return _failure(invalid_rule_index)
+	var redacted: Dictionary = _redact_root("contexts", contexts)
+	if not redacted["valid"]:
+		return redacted
+	var data_result: Dictionary = _root_dictionary(redacted, "contexts")
+	if not data_result["valid"]:
+		return data_result
+	var normalized_scope: ObservabilityScope = ObservabilityScope.new()
+	var data: Dictionary = data_result["value"]
+	for name: Variant in data:
+		if not (name is String) and not (name is StringName):
+			return _typed_failure(redacted)
+		@warning_ignore("unsafe_call_argument", "unsafe_cast")
+		if not (data[name] is Dictionary) \
+				or not normalized_scope.set_context(
+						str(name),
+						data[name] as Dictionary,
+					):
+			return _typed_failure(redacted)
+	return _success(normalized_scope.contexts())
+
+
+func redact_user(user: ObservabilityUser) -> Dictionary:
+	var invalid_rule_index: int = _first_invalid_rule_index()
+	if invalid_rule_index >= 0:
+		return _failure(invalid_rule_index)
+	if user == null:
+		return _failure(-1)
+	var redacted: Dictionary = _redact_root("user", {
+		"application_user_id": user.application_user_id(),
+		"display_name": user.display_name(),
+		"contact_email": user.contact_email(),
+	})
+	if not redacted["valid"]:
+		return redacted
+	var data_result: Dictionary = _root_dictionary(redacted, "user")
+	if not data_result["valid"]:
+		return data_result
+	var data: Dictionary = data_result["value"]
+	if not _has_type(data, "application_user_id", TYPE_STRING) \
+			or not _has_type(data, "display_name", TYPE_STRING) \
+			or not _has_type(data, "contact_email", TYPE_STRING):
+		return _typed_failure(redacted)
+	var rebuilt: ObservabilityUser = ObservabilityUser.new(
+			str(data["application_user_id"]),
+			str(data["display_name"]),
+			str(data["contact_email"]),
+		)
+	if not rebuilt.is_valid():
+		return _typed_failure(redacted)
+	return _success(rebuilt)
+
+
+func redact_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> Dictionary:
+	var invalid_rule_index: int = _first_invalid_rule_index()
+	if invalid_rule_index >= 0:
+		return _failure(invalid_rule_index)
+	if breadcrumb == null:
+		return _failure(-1)
+	var redacted: Dictionary = _redact_root("breadcrumbs", {
+		"message": breadcrumb.message(),
+		"level": breadcrumb.level(),
+		"category": String(breadcrumb.category()),
+		"timestamp_msec": breadcrumb.timestamp_msec(),
+		"attributes": breadcrumb.attributes(),
+		"type": String(breadcrumb.type()),
+	})
+	if not redacted["valid"]:
+		return redacted
+	var data_result: Dictionary = _root_dictionary(redacted, "breadcrumbs")
+	if not data_result["valid"]:
+		return data_result
+	var data: Dictionary = data_result["value"]
+	if not _has_type(data, "message", TYPE_STRING) \
+			or not _has_type(data, "level", TYPE_INT) \
+			or not _has_type(data, "category", TYPE_STRING) \
+			or not _has_type(data, "timestamp_msec", TYPE_INT) \
+			or not _has_type(data, "attributes", TYPE_DICTIONARY) \
+			or not _has_type(data, "type", TYPE_STRING):
+		return _typed_failure(redacted)
+	@warning_ignore("unsafe_call_argument", "unsafe_cast")
+	return _success(ObservabilityBreadcrumb.new(
+			str(data["message"]),
+			int(data["level"]),
+			StringName(str(data["category"])),
+			int(data["timestamp_msec"]),
+			data["attributes"] as Dictionary,
+			StringName(str(data["type"])),
+		))
+
+
+func redact_attachment(attachment: ObservabilityAttachment) -> Dictionary:
+	var invalid_rule_index: int = _first_invalid_rule_index()
+	if invalid_rule_index >= 0:
+		return _failure(invalid_rule_index)
+	if attachment == null or not attachment.is_valid():
+		return _failure(-1)
+	var redacted: Dictionary = _redact_root("attachments", {
+		"filename": attachment.effective_filename(),
+		"content_type": attachment.content_type(),
+		"category": String(attachment.category()),
+	})
+	if not redacted["valid"]:
+		return redacted
+	var data_result: Dictionary = _root_dictionary(redacted, "attachments")
+	if not data_result["valid"]:
+		return data_result
+	var data: Dictionary = data_result["value"]
+	if not _valid_attachment_metadata(data):
+		return _typed_failure(redacted)
+	var rebuilt: ObservabilityAttachment = ObservabilityAttachment.new(
+			attachment.path(),
+			attachment.bytes(),
+			str(data["filename"]),
+			str(data["content_type"]),
+			StringName(str(data["category"])),
+		)
+	if not rebuilt.is_valid():
+		return _typed_failure(redacted)
+	return _success(rebuilt)
+
+
+func redact_attachment_payload(payload: Dictionary) -> Dictionary:
+	var invalid_rule_index: int = _first_invalid_rule_index()
+	if invalid_rule_index >= 0:
+		return _failure(invalid_rule_index)
+	if not _valid_attachment_payload_source(payload):
+		return _failure(-1)
+	var metadata: Dictionary = {
+		"filename": payload["filename"],
+		"content_type": payload["content_type"],
+		"category": payload["category"],
+	}
+	var redacted: Dictionary = _redact_root("attachments", metadata)
+	if not redacted["valid"]:
+		return redacted
+	var data_result: Dictionary = _root_dictionary(redacted, "attachments")
+	if not data_result["valid"]:
+		return data_result
+	var data: Dictionary = data_result["value"]
+	if not _valid_attachment_metadata(data):
+		return _typed_failure(redacted)
+	var rebuilt: Dictionary = payload.duplicate(true)
+	rebuilt["filename"] = data["filename"]
+	rebuilt["content_type"] = data["content_type"]
+	rebuilt["category"] = data["category"]
+	if rebuilt.has("bytes"):
+		var source_bytes: PackedByteArray = payload["bytes"]
+		rebuilt["bytes"] = source_bytes.duplicate()
+	return _success(rebuilt)
+
+
+func _redact_root(root_name: String, value: Variant) -> Dictionary:
+	return _redact_value(
+			{root_name: value},
+			PackedStringArray(),
+			false,
+		)
+
+
+func _redact_value(
+		source_value: Variant,
+		path: PackedStringArray,
+		parent_is_dictionary: bool,
+) -> Dictionary:
+	var value: Variant = source_value
+	var applied_rule_index: int = -1
+	var rules: Array[ObservabilityRedactionRule] = _policy.rules()
+	for rule_index: int in range(rules.size()):
+		var rule: ObservabilityRedactionRule = rules[rule_index]
+		if rule == null or not rule.is_valid():
+			return _failure(rule_index)
+		if not _path_matches(rule.path(), path):
+			continue
+		if rule.action() == ObservabilityRedactionRule.REMOVE_FIELD:
+			if not parent_is_dictionary:
+				return _failure(rule_index)
+			return {
+				"valid": true,
+				"removed": true,
+				"rule_index": rule_index,
+			}
+		if rule.action() == ObservabilityRedactionRule.REPLACE_VALUE:
+			var replacement: Variant = rule.replacement()
+			if not _runtime_types_are_compatible(value, replacement):
+				return _failure(rule_index)
+			value = replacement
+			if applied_rule_index < 0:
+				applied_rule_index = rule_index
+			continue
+		if value is String or value is StringName:
+			var replacement_text: String = str(rule.replacement())
+			if rule.pattern().is_empty():
+				value = replacement_text
+			else:
+				value = _compiled_patterns[rule_index].sub(
+						str(value),
+						replacement_text,
+						true,
+					)
+			if applied_rule_index < 0:
+				applied_rule_index = rule_index
+
+	if value is Dictionary:
+		var rebuilt_dictionary: Dictionary = {}
+		var removed_rule_index: int = -1
+		for key: Variant in value:
+			var child_path: PackedStringArray = path.duplicate()
+			child_path.append(str(key))
+			var child_result: Dictionary = _redact_value(
+					value[key],
+					child_path,
+					true,
+				)
+			if not child_result["valid"]:
+				return child_result
+			if child_result.get("removed", false) == true:
+				if removed_rule_index < 0:
+					@warning_ignore("unsafe_call_argument")
+					removed_rule_index = int(child_result.get("rule_index", -1))
+				continue
+			rebuilt_dictionary[_copy_dictionary_key(key)] = child_result["value"]
+			if applied_rule_index < 0 \
+					and child_result.get("rule_index", -1) >= 0:
+				applied_rule_index = child_result["rule_index"]
+			if removed_rule_index < 0 \
+					and child_result.get("removed_rule_index", -1) >= 0:
+				@warning_ignore("unsafe_call_argument")
+				removed_rule_index = int(
+						child_result.get("removed_rule_index", -1))
+		return _traversal_success(
+				rebuilt_dictionary,
+				applied_rule_index,
+				removed_rule_index,
+			)
+	if value is Array:
+		var rebuilt_array: Array = []
+		for index: int in range(value.size()):
+			var child_path: PackedStringArray = path.duplicate()
+			child_path.append(str(index))
+			var child_result: Dictionary = _redact_value(
+					value[index],
+					child_path,
+					false,
+				)
+			if not child_result["valid"]:
+				return child_result
+			if child_result.get("removed", false) == true:
+				@warning_ignore("unsafe_call_argument")
+				return _failure(int(child_result.get("rule_index", -1)))
+			rebuilt_array.append(child_result["value"])
+			if applied_rule_index < 0 \
+					and child_result.get("rule_index", -1) >= 0:
+				applied_rule_index = child_result["rule_index"]
+		return _success_with_rule(rebuilt_array, applied_rule_index)
+	return _success_with_rule(_copy_leaf(value), applied_rule_index)
+
+
+func _path_matches(
+		pattern: PackedStringArray,
+		path: PackedStringArray,
+		pattern_index: int = 0,
+		path_index: int = 0,
+) -> bool:
+	if pattern_index == pattern.size():
+		return path_index == path.size()
+	var segment: String = pattern[pattern_index]
+	if segment == "**":
+		if _path_matches(pattern, path, pattern_index + 1, path_index):
+			return true
+		return path_index < path.size() and _path_matches(
+				pattern,
+				path,
+				pattern_index,
+				path_index + 1,
+			)
+	if path_index == path.size():
+		return false
+	if segment != "*" and segment.to_lower() != path[path_index].to_lower():
+		return false
+	return _path_matches(pattern, path, pattern_index + 1, path_index + 1)
+
+
+func _exception_to_dictionary(exception: ObservabilityException?) -> Variant:
+	if exception == null:
+		return null
+	var frame_values: Array = []
+	for frame: ObservabilityStackFrame in exception.frames():
+		if frame == null:
+			frame_values.append(null)
+			continue
+		frame_values.append({
+			"file": frame.file(),
+			"function": frame.function(),
+			"line": frame.line(),
+			"language": frame.language(),
+			"in_app": frame.in_app(),
+			"context_line": frame.context_line(),
+			"pre_context": Array(frame.pre_context()),
+			"post_context": Array(frame.post_context()),
+			"variables": frame.variables(),
+		})
+	return {
+		"type_name": exception.type_name(),
+		"message": exception.message(),
+		"stack_trace": exception.stack_trace(),
+		"attributes": exception.attributes(),
+		"frames": frame_values,
+	}
+
+
+func _exception_from_value(value: Variant, redacted: Dictionary) -> Dictionary:
+	if value == null:
+		return _success(null)
+	if not (value is Dictionary):
+		return _typed_failure(redacted)
+	var data: Dictionary = value
+	if not _has_type(data, "type_name", TYPE_STRING) \
+			or not _has_type(data, "message", TYPE_STRING) \
+			or not _has_type(data, "stack_trace", TYPE_STRING) \
+			or not _has_type(data, "attributes", TYPE_DICTIONARY) \
+			or not _has_type(data, "frames", TYPE_ARRAY):
+		return _typed_failure(redacted)
+	var rebuilt_frames: Array[ObservabilityStackFrame] = []
+	for frame_value: Variant in data["frames"]:
+		if not (frame_value is Dictionary):
+			return _typed_failure(redacted)
+		var frame: Dictionary = frame_value
+		if not _has_type(frame, "file", TYPE_STRING) \
+				or not _has_type(frame, "function", TYPE_STRING) \
+				or not _has_type(frame, "line", TYPE_INT) \
+				or not _has_type(frame, "language", TYPE_STRING) \
+				or not _has_type(frame, "in_app", TYPE_BOOL) \
+				or not _has_type(frame, "context_line", TYPE_STRING) \
+				or not _is_string_array(frame, "pre_context") \
+				or not _is_string_array(frame, "post_context") \
+				or not _has_type(frame, "variables", TYPE_DICTIONARY):
+			return _typed_failure(redacted)
+		@warning_ignore("unsafe_call_argument", "unsafe_cast")
+		rebuilt_frames.append(ObservabilityStackFrame.new(
+				str(frame["file"]),
+				str(frame["function"]),
+				int(frame["line"]),
+				str(frame["language"]),
+				bool(frame["in_app"]),
+				str(frame["context_line"]),
+				PackedStringArray(frame["pre_context"] as Array),
+				PackedStringArray(frame["post_context"] as Array),
+				frame["variables"] as Dictionary,
+			))
+	@warning_ignore("unsafe_call_argument", "unsafe_cast")
+	return _success(ObservabilityException.new(
+			str(data["type_name"]),
+			str(data["message"]),
+			str(data["stack_trace"]),
+			data["attributes"] as Dictionary,
+			rebuilt_frames,
+		))
+
+
+func _scope_to_dictionary(scope: ObservabilityScope?) -> Variant:
+	if scope == null:
+		return null
+	return {
+		"tags": scope.tags(),
+		"contexts": scope.contexts(),
+	}
+
+
+func _scope_from_value(value: Variant, redacted: Dictionary) -> Dictionary:
+	if value == null:
+		return _success(null)
+	if not (value is Dictionary):
+		return _typed_failure(redacted)
+	var data: Dictionary = value
+	if not _has_type(data, "tags", TYPE_DICTIONARY) \
+			or not _has_type(data, "contexts", TYPE_DICTIONARY):
+		return _typed_failure(redacted)
+	var rebuilt: ObservabilityScope = ObservabilityScope.new()
+	var tags: Dictionary = data["tags"]
+	for key: Variant in tags:
+		@warning_ignore("unsafe_call_argument")
+		if (not (key is String) and not (key is StringName)) \
+				or not (tags[key] is String) \
+				or not rebuilt.set_tag(str(key), str(tags[key])):
+			return _typed_failure(redacted)
+	var contexts: Dictionary = data["contexts"]
+	for name: Variant in contexts:
+		@warning_ignore("unsafe_call_argument", "unsafe_cast")
+		if (not (name is String) and not (name is StringName)) \
+				or not (contexts[name] is Dictionary) \
+				or not rebuilt.set_context(
+						str(name),
+						contexts[name] as Dictionary,
+					):
+			return _typed_failure(redacted)
+	return _success(rebuilt)
+
+
+func _root_dictionary(redacted: Dictionary, root_name: String) -> Dictionary:
+	if not (redacted["value"] is Dictionary):
+		return _typed_failure(redacted)
+	var root: Dictionary = redacted["value"]
+	if not root.has(root_name) or not (root[root_name] is Dictionary):
+		return _typed_failure(redacted)
+	return _success(root[root_name])
+
+
+func _first_invalid_rule_index() -> int:
+	var rules: Array[ObservabilityRedactionRule] = _policy.rules()
+	for rule_index: int in range(rules.size()):
+		if rules[rule_index] == null or not rules[rule_index].is_valid():
+			return rule_index
+	return -1
+
+
+func _runtime_types_are_compatible(current: Variant, replacement: Variant) -> bool:
+	return typeof(current) == typeof(replacement)
+
+
+func _has_type(data: Dictionary, key: String, expected_type: int) -> bool:
+	return data.has(key) and typeof(data[key]) == expected_type
+
+
+func _is_string_array(data: Dictionary, key: String) -> bool:
+	if not _has_type(data, key, TYPE_ARRAY):
+		return false
+	for value: Variant in data[key]:
+		if not (value is String):
+			return false
+	return true
+
+
+func _valid_attachment_metadata(data: Dictionary) -> bool:
+	return _has_type(data, "filename", TYPE_STRING) \
+			and _has_type(data, "content_type", TYPE_STRING) \
+			and _has_type(data, "category", TYPE_STRING)
+
+
+func _valid_attachment_payload_source(payload: Dictionary) -> bool:
+	if not _valid_attachment_metadata(payload):
+		return false
+	if payload.has("path") and not (payload["path"] is String):
+		return false
+	if payload.has("bytes") and not (payload["bytes"] is PackedByteArray):
+		return false
+	return not (payload.has("path") and payload.has("bytes"))
+
+
+func _copy_dictionary_key(key: Variant) -> Variant:
+	if key is PackedByteArray:
+		return key.duplicate()
+	if key is PackedInt32Array:
+		return key.duplicate()
+	if key is PackedInt64Array:
+		return key.duplicate()
+	if key is PackedFloat32Array:
+		return key.duplicate()
+	if key is PackedFloat64Array:
+		return key.duplicate()
+	if key is PackedStringArray:
+		return key.duplicate()
+	if key is PackedVector2Array:
+		return key.duplicate()
+	if key is PackedVector3Array:
+		return key.duplicate()
+	if key is PackedVector4Array:
+		return key.duplicate()
+	if key is PackedColorArray:
+		return key.duplicate()
+	return key
+
+
+func _copy_leaf(value: Variant) -> Variant:
+	if value is PackedByteArray:
+		return value.duplicate()
+	if value is PackedInt32Array:
+		return value.duplicate()
+	if value is PackedInt64Array:
+		return value.duplicate()
+	if value is PackedFloat32Array:
+		return value.duplicate()
+	if value is PackedFloat64Array:
+		return value.duplicate()
+	if value is PackedStringArray:
+		return value.duplicate()
+	if value is PackedVector2Array:
+		return value.duplicate()
+	if value is PackedVector3Array:
+		return value.duplicate()
+	if value is PackedVector4Array:
+		return value.duplicate()
+	if value is PackedColorArray:
+		return value.duplicate()
+	return value
+
+
+func _typed_failure(redacted: Dictionary) -> Dictionary:
+	@warning_ignore("unsafe_call_argument")
+	return _failure(int(redacted.get(
+			"removed_rule_index",
+			redacted.get("rule_index", -1),
+		)))
+
+
+func _failure(rule_index: int) -> Dictionary:
+	return {
+		"valid": false,
+		"rule_index": rule_index,
+	}
+
+
+func _success(value: Variant) -> Dictionary:
+	return {
+		"valid": true,
+		"value": value,
+	}
+
+
+func _success_with_rule(value: Variant, rule_index: int) -> Dictionary:
+	var result: Dictionary = _success(value)
+	if rule_index >= 0:
+		result["rule_index"] = rule_index
+	return result
+
+
+func _traversal_success(
+		value: Variant,
+		rule_index: int,
+		removed_rule_index: int,
+) -> Dictionary:
+	var result: Dictionary = _success_with_rule(value, rule_index)
+	if removed_rule_index >= 0:
+		result["removed_rule_index"] = removed_rule_index
+	return result

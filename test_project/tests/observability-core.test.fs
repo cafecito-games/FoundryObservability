@@ -1548,6 +1548,349 @@ func test_redaction_policy_keeps_null_rules_invalid_without_crashing() -> void:
 	Expect.that(copied.is_valid()).to_be_false()
 
 
+func test_redactor_applies_recursive_keys_paths_and_text_patterns() -> void:
+	var source_attributes: Dictionary = {
+		"password": "secret",
+		"nested": {"PASSWORD": "second"},
+		"delete_me": "gone",
+	}
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.sensitive_key("password"),
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["event", "attributes", "delete_me"]),
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["event", "**"]),
+				"[0-9]{3}-[0-9]{2}-[0-9]{4}",
+				"[ssn]",
+			),
+	])
+	var redactor := ObservabilityRedactor.new(policy)
+	var source := ObservabilityEvent.new(
+			p_message = "customer 123-45-6789 and 987-65-4321",
+			p_attributes = source_attributes,
+		)
+	var result: Dictionary = redactor.redact_event(source, &"event")
+
+	Expect.that(result["valid"]).to_be_true()
+	var event: ObservabilityEvent = result["value"]
+	Expect.that(event).to_not_equal(source)
+	Expect.that(event.message()).to_equal("customer [ssn] and [ssn]")
+	Expect.that(event.attributes()["password"]).to_equal("[REDACTED]")
+	Expect.that(event.attributes()["nested"]["PASSWORD"]).to_equal("[REDACTED]")
+	Expect.that(event.attributes().has("delete_me")).to_be_false()
+	Expect.that(source.message()).to_equal("customer 123-45-6789 and 987-65-4321")
+	Expect.that(source.attributes()).to_equal(source_attributes)
+
+
+func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["**"]),
+				"secret",
+				"safe",
+			),
+	])
+	var redactor := ObservabilityRedactor.new(policy)
+	var frame := ObservabilityStackFrame.new(
+			"secret.fs",
+			"secret_function",
+			7,
+			"secret-language",
+			true,
+			"secret context",
+			PackedStringArray(["secret pre"]),
+			PackedStringArray(["secret post"]),
+			{"secret_variable": "secret"},
+		)
+	var exception := ObservabilityException.new(
+			"secret-type",
+			"secret exception",
+			"secret stack",
+			{"detail": "secret"},
+			[frame],
+		)
+	var scope := ObservabilityScope.new()
+	Expect.that(scope.set_tag("secret-tag", "secret")).to_be_true()
+	Expect.that(scope.set_context("secret-context", {"detail": "secret"})).to_be_true()
+	var source_event := ObservabilityEvent.new(
+			&"secret-kind",
+			ObservabilityLevel.ERROR,
+			"secret event",
+			&"secret-source",
+			10,
+			{"token": "secret"},
+			exception,
+			11,
+			scope,
+		)
+	var event_result: Dictionary = redactor.redact_event(source_event, &"log")
+	Expect.that(event_result["valid"]).to_be_true()
+	var event: ObservabilityEvent = event_result["value"]
+	Expect.that(event.kind()).to_equal(&"safe-kind")
+	Expect.that(event.message()).to_equal("safe event")
+	Expect.that(event.source()).to_equal(&"safe-source")
+	Expect.that(event.attributes()["token"]).to_equal("safe")
+	Expect.that(event.exception().type_name()).to_equal("safe-type")
+	Expect.that(event.exception().message()).to_equal("safe exception")
+	Expect.that(event.exception().stack_trace()).to_equal("safe stack")
+	Expect.that(event.exception().attributes()["detail"]).to_equal("safe")
+	var rebuilt_frame: ObservabilityStackFrame = event.exception().frames()[0]
+	Expect.that(rebuilt_frame.file()).to_equal("safe.fs")
+	Expect.that(rebuilt_frame.function()).to_equal("safe_function")
+	Expect.that(rebuilt_frame.language()).to_equal("safe-language")
+	Expect.that(rebuilt_frame.context_line()).to_equal("safe context")
+	Expect.that(rebuilt_frame.pre_context()).to_equal(PackedStringArray(["safe pre"]))
+	Expect.that(rebuilt_frame.post_context()).to_equal(PackedStringArray(["safe post"]))
+	Expect.that(rebuilt_frame.variables()["secret_variable"]).to_equal("safe")
+	Expect.that(event.scope().tags()).to_equal({"secret-tag": "safe"})
+	Expect.that(event.scope().contexts()).to_equal({
+			"secret-context": {"detail": "safe"},
+		})
+	Expect.that(source_event.message()).to_equal("secret event")
+	Expect.that(frame.file()).to_equal("secret.fs")
+	Expect.that(scope.tags()).to_equal({"secret-tag": "secret"})
+
+	var metric_result: Dictionary = redactor.redact_metric(ObservabilityMetric.new(
+			ObservabilityMetricType.GAUGE,
+			"secret.metric",
+			1.0,
+			"secret-unit",
+			{"token": "secret"},
+	))
+	Expect.that(metric_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var metric: ObservabilityMetric = metric_result["value"] as ObservabilityMetric
+	Expect.that(metric.name()).to_equal("safe.metric")
+	Expect.that(metric.unit()).to_equal("safe-unit")
+	Expect.that(metric.attributes()["token"]).to_equal("safe")
+
+	var contexts_source := {"secret-context": {"token": "secret"}}
+	var contexts_result: Dictionary = redactor.redact_contexts(contexts_source)
+	Expect.that(contexts_result["valid"]).to_be_true()
+	Expect.that(contexts_result["value"]).to_equal({
+			"secret-context": {"token": "safe"},
+		})
+	Expect.that(contexts_source).to_equal({"secret-context": {"token": "secret"}})
+
+	var user_result: Dictionary = redactor.redact_user(ObservabilityUser.new(
+			"secret-id",
+			"secret-name",
+			"secret@example.invalid",
+	))
+	Expect.that(user_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var user: ObservabilityUser = user_result["value"] as ObservabilityUser
+	Expect.that(user.application_user_id()).to_equal("safe-id")
+	Expect.that(user.display_name()).to_equal("safe-name")
+	Expect.that(user.contact_email()).to_equal("safe@example.invalid")
+
+	var breadcrumb_result: Dictionary = redactor.redact_breadcrumb(
+			ObservabilityBreadcrumb.new(
+					"secret message",
+					ObservabilityLevel.INFO,
+					&"secret.category",
+					1,
+					{"token": "secret"},
+					&"secret-type",
+				),
+		)
+	Expect.that(breadcrumb_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var breadcrumb: ObservabilityBreadcrumb = (
+			breadcrumb_result["value"] as ObservabilityBreadcrumb
+		)
+	Expect.that(breadcrumb.message()).to_equal("safe message")
+	Expect.that(breadcrumb.category()).to_equal(&"safe.category")
+	Expect.that(breadcrumb.type()).to_equal(&"safe-type")
+	Expect.that(breadcrumb.attributes()["token"]).to_equal("safe")
+
+	var path_attachment: ObservabilityAttachment = ObservabilityAttachment.from_path(
+			"user://private.log",
+			"secret.log",
+			"secret/plain",
+		)
+	var attachment_result: Dictionary = redactor.redact_attachment(path_attachment)
+	Expect.that(attachment_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var rebuilt_path_attachment: ObservabilityAttachment = (
+			attachment_result["value"] as ObservabilityAttachment
+		)
+	Expect.that(rebuilt_path_attachment.path()).to_equal("user://private.log")
+	Expect.that(rebuilt_path_attachment.filename()).to_equal("safe.log")
+	Expect.that(rebuilt_path_attachment.content_type()).to_equal("safe/plain")
+	Expect.that(path_attachment.filename()).to_equal("secret.log")
+
+	var byte_source := PackedByteArray([1, 2, 3])
+	var byte_attachment: ObservabilityAttachment = ObservabilityAttachment.from_bytes(
+			byte_source,
+			"secret.bin",
+			"secret/binary",
+		)
+	var byte_result: Dictionary = redactor.redact_attachment(byte_attachment)
+	byte_source[0] = 9
+	Expect.that(byte_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var rebuilt_byte_attachment: ObservabilityAttachment = (
+			byte_result["value"] as ObservabilityAttachment
+		)
+	Expect.that(rebuilt_byte_attachment.bytes()).to_equal(PackedByteArray([1, 2, 3]))
+	Expect.that(rebuilt_byte_attachment.filename()).to_equal("safe.bin")
+
+	var payload_source: Dictionary = {
+		"path": "/tmp/secret-source.log",
+		"filename": "secret.log",
+		"content_type": "secret/plain",
+		"category": "secret-category",
+		"persistent": true,
+	}
+	var payload_result: Dictionary = redactor.redact_attachment_payload(payload_source)
+	Expect.that(payload_result["valid"]).to_be_true()
+	Expect.that(payload_result["value"]["path"]).to_equal("/tmp/secret-source.log")
+	Expect.that(payload_result["value"]["filename"]).to_equal("safe.log")
+	Expect.that(payload_result["value"]["content_type"]).to_equal("safe/plain")
+	Expect.that(payload_result["value"]["category"]).to_equal("safe-category")
+	Expect.that(payload_result["value"]["persistent"]).to_be_true()
+	Expect.that(payload_source["filename"]).to_equal("secret.log")
+
+	var payload_bytes := PackedByteArray([4, 5, 6])
+	var byte_payload_result: Dictionary = redactor.redact_attachment_payload({
+		"bytes": payload_bytes,
+		"filename": "secret.data",
+		"content_type": "secret/binary",
+		"category": "secret-category",
+	})
+	payload_bytes[0] = 9
+	Expect.that(byte_payload_result["valid"]).to_be_true()
+	Expect.that(byte_payload_result["value"]["bytes"]).to_equal(
+			PackedByteArray([4, 5, 6]))
+	Expect.that(byte_payload_result["value"]["filename"]).to_equal("safe.data")
+
+
+func test_redactor_wildcards_are_case_insensitive_and_preserve_input() -> void:
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["MeTrIc", "*"]),
+				"secret",
+				"first",
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["metric", "**"]),
+				"first|secret",
+				"safe",
+			),
+	])
+	var source := ObservabilityMetric.new(
+			ObservabilityMetricType.COUNTER,
+			"secret",
+			3.0,
+			"secret",
+			{"nested": ["secret", {"token": "secret"}]},
+		)
+	var result: Dictionary = ObservabilityRedactor.new(policy).redact_metric(source)
+
+	Expect.that(result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var rebuilt: ObservabilityMetric = result["value"] as ObservabilityMetric
+	Expect.that(rebuilt.name()).to_equal("safe")
+	Expect.that(rebuilt.unit()).to_equal("safe")
+	Expect.that(rebuilt.attributes()).to_equal({
+			"nested": ["safe", {"token": "safe"}],
+		})
+	Expect.that(source.name()).to_equal("secret")
+	Expect.that(source.attributes()).to_equal({
+			"nested": ["secret", {"token": "secret"}],
+		})
+
+
+func test_redactor_fails_closed_without_returning_sensitive_payloads() -> void:
+	var incompatible := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["event", "level"]),
+				"not-an-integer",
+			),
+	])
+	var source := ObservabilityEvent.new(
+			p_message = "do-not-leak-this-message",
+			p_attributes = {"token": "do-not-leak-this-token"},
+		)
+	var result: Dictionary = ObservabilityRedactor.new(incompatible).redact_event(
+			source,
+			&"event",
+		)
+	Expect.that(result).to_equal({"valid": false, "rule_index": 0})
+	Expect.that(source.message()).to_equal("do-not-leak-this-message")
+
+	var malformed_rules: Array[ObservabilityRedactionRule] = [null]
+	var malformed := ObservabilityRedactor.new(
+			ObservabilityRedactionPolicy.new(malformed_rules),
+		).redact_event(source, &"event")
+	Expect.that(malformed).to_equal({"valid": false, "rule_index": 0})
+
+	var no_policy: Dictionary = ObservabilityRedactor.new(null).redact_event(
+			source,
+			&"event",
+		)
+	Expect.that(no_policy["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var isolated: ObservabilityEvent = no_policy["value"] as ObservabilityEvent
+	Expect.that(isolated).to_not_equal(source)
+	Expect.that(isolated.message()).to_equal("do-not-leak-this-message")
+
+
+func test_redactor_remove_field_only_removes_dictionary_children() -> void:
+	var attribute_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["event", "attributes", "delete_me"]),
+			),
+	])
+	var attribute_result: Dictionary = ObservabilityRedactor.new(
+			attribute_policy,
+	).redact_event(ObservabilityEvent.new(
+			p_attributes = {"delete_me": "secret", "keep": "safe"},
+		), &"event")
+	Expect.that(attribute_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var rebuilt: ObservabilityEvent = (
+			attribute_result["value"] as ObservabilityEvent
+		)
+	Expect.that(rebuilt.attributes()).to_equal({"keep": "safe"})
+
+	for path: PackedStringArray in [
+		PackedStringArray(["event"]),
+		PackedStringArray(["event", "message"]),
+		PackedStringArray(["event", "attributes", "items", "*"]),
+	]:
+		var policy := ObservabilityRedactionPolicy.new([
+			ObservabilityRedactionRule.remove_field(path),
+		])
+		var result: Dictionary = ObservabilityRedactor.new(policy).redact_event(
+				ObservabilityEvent.new(
+						p_message = "sensitive-message",
+						p_attributes = {"items": ["sensitive-item"]},
+					),
+				&"event",
+			)
+		Expect.that(result).to_equal({"valid": false, "rule_index": 0})
+
+	var ordered_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["event", "kind"]),
+				"message",
+				"renamed",
+			),
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["event", "message"]),
+			),
+	])
+	var ordered_result: Dictionary = ObservabilityRedactor.new(
+			ordered_policy,
+		).redact_event(ObservabilityEvent.new(
+			p_message = "sensitive-message",
+		), &"event")
+	Expect.that(ordered_result).to_equal({"valid": false, "rule_index": 1})
+
+
 func test_processing_diagnostic_preserves_payload_free_fields() -> void:
 	var diagnostic := ObservabilityProcessingDiagnostic.new(
 			7,
