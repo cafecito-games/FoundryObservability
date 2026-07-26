@@ -13,8 +13,9 @@ A complete check proves that the native SDK:
 1. installs its crash handler after either automatic project-settings
    initialization or successful manual provider configuration;
 2. records a fatal macOS, iOS, or Android failure;
-3. discovers, processes, and sends the durable Run A event after the selected
-   readiness path starts the native backend again in Run B; and
+3. discovers, processes, and sends the durable Run A event from the previous launch
+   after the selected readiness path starts the native backend again in Run B;
+   and
 4. assigns the expected release, environment, distribution, attributes,
    mechanism, stack, device, OS, and app contexts.
 
@@ -48,6 +49,7 @@ options/provider_options={}
 Use a target-specific `dist`. The automatic path is ready only when startup
 reports `initialized` and the provider is available:
 
+<!-- foundry-observability:automatic-native-crash-readiness:start -->
 ```foundryscript
 import foundry.observability
 
@@ -74,6 +76,7 @@ func _run_guarded_automatic_crash_validation() -> void:
 	# Invoke the selected platform crash trigger only after this guard.
 	pass
 ```
+<!-- foundry-observability:automatic-native-crash-readiness:end -->
 
 If the guard returns, stop the procedure. Do not trigger a crash.
 
@@ -90,6 +93,7 @@ startup/auto_init=false
 
 Then configure from the earliest supported hook:
 
+<!-- foundry-observability:manual-native-crash-readiness:start -->
 ```foundryscript
 import foundry.observability
 import foundry.observability.sentry
@@ -122,6 +126,7 @@ func _run_guarded_manual_crash_validation() -> void:
 	# Invoke the selected platform crash trigger only after this guard.
 	pass
 ```
+<!-- foundry-observability:manual-native-crash-readiness:end -->
 
 Successful `configure()` plus availability verifies native backend ownership.
 Use the same DSN, release, environment, and distribution in Run A and Run B.

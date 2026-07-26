@@ -70,6 +70,77 @@ cleanup_probes() {
 	rm -rf "$probe_root"
 }
 trap cleanup_probes EXIT
+
+fake_adb_dir="$probe_root/fake-adb"
+fake_adb_log="$probe_root/fake-adb.log"
+mkdir -p "$fake_adb_dir"
+cat >"$fake_adb_dir/adb" <<'FAKE_ADB'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >>"$FAKE_ADB_LOG"
+if [[ ${1:-} == "shell" && ${2:-} == "pidof" ]]; then
+	printf '%s' "${FAKE_ADB_PIDOF_OUTPUT:-}"
+	exit "${FAKE_ADB_PIDOF_STATUS:-0}"
+fi
+if [[ ${1:-} == "shell" && ${2:-} == "run-as" ]]; then
+	exit 0
+fi
+exit 64
+FAKE_ADB
+chmod +x "$fake_adb_dir/adb"
+
+if ambiguous_crash_output=$(
+	PATH="$fake_adb_dir:$PATH" \
+		FAKE_ADB_LOG="$fake_adb_log" \
+		FAKE_ADB_PIDOF_OUTPUT="2468 3579" \
+		"$crash_helper" \
+			android \
+			com.example.foundrygame \
+			--i-understand-this-will-crash 2>&1
+); then
+	fail "native crash helper accepted ambiguous Android package PIDs"
+fi
+rg -Fq 'multiple Android processes match package com.example.foundrygame' \
+	<<<"$ambiguous_crash_output" \
+	|| fail "native crash helper did not explain ambiguous Android package PIDs"
+if rg -Fq 'shell run-as' "$fake_adb_log"; then
+	fail "native crash helper signaled an Android process after ambiguous PID resolution"
+fi
+
+: >"$fake_adb_log"
+if missing_crash_output=$(
+	PATH="$fake_adb_dir:$PATH" \
+		FAKE_ADB_LOG="$fake_adb_log" \
+		FAKE_ADB_PIDOF_OUTPUT="" \
+		"$crash_helper" \
+			android \
+			com.example.foundrygame \
+			--i-understand-this-will-crash 2>&1
+); then
+	fail "native crash helper accepted a missing Android package PID"
+fi
+rg -Fq 'Android package is not running: com.example.foundrygame' \
+	<<<"$missing_crash_output" \
+	|| fail \
+		"native crash helper did not explain a missing Android package PID: $missing_crash_output"
+if rg -Fq 'shell run-as' "$fake_adb_log"; then
+	fail "native crash helper signaled an Android process without a resolved PID"
+fi
+
+: >"$fake_adb_log"
+PATH="$fake_adb_dir:$PATH" \
+	FAKE_ADB_LOG="$fake_adb_log" \
+	FAKE_ADB_PIDOF_OUTPUT=$'2468\r\n' \
+	"$crash_helper" \
+		android \
+		com.example.foundrygame \
+		--i-understand-this-will-crash >/dev/null
+grep -Fxq 'shell pidof com.example.foundrygame' "$fake_adb_log" \
+	|| fail "native crash helper did not query all exact package-name PIDs"
+grep -Fxq 'shell run-as com.example.foundrygame kill -6 2468' "$fake_adb_log" \
+	|| fail "native crash helper did not signal the one exact Android package PID"
+
 if [[ -e "$probe_artifact" ]]; then
 	probe_backup_dir="$probe_root/artifact-backup"
 	mkdir -p "$probe_backup_dir"

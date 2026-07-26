@@ -103,10 +103,14 @@ scene and before later-ordered autoloads. Those later hooks may capture
 immediately. An autoload ordered before `FoundryObservability` is outside this
 guarantee.
 
-## Quick start
+Do not call `configure()` after successful automatic Sentry startup unless replacing the active startup provider is intentional.
+Configuring a different provider shuts down and replaces the provider created
+by automatic startup.
 
-Configure a provider during game startup and emit typed events through the
-autoload:
+## Provider-neutral manual quick start
+
+As a provider-neutral manual alternative, configure a provider during game
+startup and emit typed events through the autoload:
 
 ```foundryscript
 import foundry.observability

@@ -94,6 +94,7 @@ project setting, the corresponding `SENTRY_DSN`, `SENTRY_RELEASE`, or
 `SENTRY_ENVIRONMENT` process environment variable, then a deterministic
 default. A DSN has no usable final default, so an unresolved DSN produces the
 `missing_dsn` status. `dist` comes only from the project setting.
+Startup only tests whether the trimmed DSN is nonempty; the provider may reject its syntax during configuration.
 
 The default release is `{app_name}@{app_version}`. The release setting and
 `SENTRY_RELEASE` may contain `{app_name}` and `{app_version}` tokens. Expansion
@@ -207,6 +208,7 @@ Value types:
 - ObservabilityFeedback
 - ObservabilityMetricType
 - ObservabilityMetric
+- ObservabilityStartupStatus: stable project-settings startup result constants; see the [startup status table](#skip-decisions-and-results).
 
 Optional provider capabilities:
 
