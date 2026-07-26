@@ -2068,6 +2068,117 @@ func test_redactor_wildcards_are_case_insensitive_and_preserve_input() -> void:
 		})
 
 
+func test_redactor_child_rules_do_not_reapply_to_later_parent_replacements() -> void:
+	var replacement_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray([
+					"contexts",
+					"profile",
+					"credentials",
+					"token",
+				]),
+				"",
+				"child-first",
+			),
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["contexts", "profile", "credentials"]),
+				{"token": "parent-replacement", "source": "parent"},
+			),
+	])
+	var replacement_result: Dictionary = ObservabilityRedactor.new(
+			replacement_policy,
+		).redact_contexts({
+			"profile": {
+				"credentials": {"token": "original", "source": "original"},
+			},
+		})
+	Expect.that(replacement_result["valid"]).to_be_true()
+	Expect.that(replacement_result["value"]["profile"]["credentials"]).to_equal({
+		"token": "parent-replacement",
+		"source": "parent",
+	})
+
+	var removal_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.remove_field(PackedStringArray([
+			"contexts",
+			"profile",
+			"credentials",
+			"token",
+		])),
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["contexts", "profile", "credentials"]),
+				{"token": "restored-by-parent", "source": "parent"},
+			),
+	])
+	var removal_result: Dictionary = ObservabilityRedactor.new(
+			removal_policy,
+		).redact_contexts({
+			"profile": {
+				"credentials": {"token": "original", "source": "original"},
+			},
+		})
+	Expect.that(removal_result["valid"]).to_be_true()
+	Expect.that(removal_result["value"]["profile"]["credentials"]).to_equal({
+		"token": "restored-by-parent",
+		"source": "parent",
+	})
+
+
+func test_redactor_later_child_rules_see_earlier_parent_replacements() -> void:
+	var replacement_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["contexts", "profile", "credentials"]),
+				{"token": "parent-replacement", "source": "parent"},
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray([
+					"contexts",
+					"profile",
+					"credentials",
+					"token",
+				]),
+				"",
+				"child-after-parent",
+			),
+	])
+	var replacement_result: Dictionary = ObservabilityRedactor.new(
+			replacement_policy,
+		).redact_contexts({
+			"profile": {
+				"credentials": {"token": "original", "source": "original"},
+			},
+		})
+	Expect.that(replacement_result["valid"]).to_be_true()
+	Expect.that(replacement_result["value"]["profile"]["credentials"]).to_equal({
+		"token": "child-after-parent",
+		"source": "parent",
+	})
+
+	var removal_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["contexts", "profile", "credentials"]),
+				{"token": "remove-after-parent", "source": "parent"},
+			),
+		ObservabilityRedactionRule.remove_field(PackedStringArray([
+			"contexts",
+			"profile",
+			"credentials",
+			"token",
+		])),
+	])
+	var removal_result: Dictionary = ObservabilityRedactor.new(
+			removal_policy,
+		).redact_contexts({
+			"profile": {
+				"credentials": {"token": "original", "source": "original"},
+			},
+		})
+	Expect.that(removal_result["valid"]).to_be_true()
+	Expect.that(removal_result["value"]["profile"]["credentials"]).to_equal({
+		"source": "parent",
+	})
+
+
 func test_redactor_fails_closed_without_returning_sensitive_payloads() -> void:
 	var incompatible := ObservabilityRedactionPolicy.new([
 		ObservabilityRedactionRule.replace_value(

@@ -121,9 +121,11 @@ key creates the equivalent of `["**", key]`.
 `REMOVE_FIELD` removes a matching dictionary entry or optional DTO field.
 `REPLACE_VALUE` replaces the complete matching value with a type-compatible
 configured value. `REPLACE_TEXT` replaces either a complete string or every
-match of its compiled regular expression. Rules execute in declaration order;
-removing a field ends traversal for that field while later rules see earlier
-replacements.
+match of its compiled regular expression. Rules execute in declaration order
+across the complete rebuilt tree. An earlier child rule is not reapplied inside
+a later parent replacement, while a later child rule sees an earlier parent
+replacement. Removing a field ends traversal for that field. Each rule pass
+independently enforces the payload depth and visited-value bounds.
 
 Invalid paths, patterns, action/value combinations, or replacements reject
 configuration. A wildcard that resolves to an incompatible target at runtime

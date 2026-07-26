@@ -590,8 +590,13 @@ replacement to have the same runtime type as the matched value.
 `REMOVE_FIELD` removes dictionary entries and optional reconstructed fields;
 removing a required typed field makes that payload invalid.
 
-Rules run in declaration order. A later rule sees an earlier replacement;
-removal ends traversal for that dictionary field. Invalid paths, actions,
+Rules run in declaration order across the complete rebuilt tree. Each rule sees
+the prior rule's complete result: an earlier child rule does not run again
+inside a later parent replacement, while a later child rule does inspect an
+earlier parent replacement. Removal ends traversal for that dictionary field
+for its rule and leaves it absent to later rules unless a later ancestor
+replacement recreates it. Each rule pass independently enforces the
+64-container-depth and 10,000-value traversal bounds. Invalid paths, actions,
 regular expressions, cyclic replacements, or policies reject configuration.
 At runtime, incompatible wildcard matches, cyclic source containers, excessive
 depth, excessive traversal, or a result that cannot reconstruct the typed DTO

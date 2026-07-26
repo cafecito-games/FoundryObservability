@@ -322,16 +322,41 @@ func _redact_root(root_name: String, value: Variant) -> Dictionary:
 	}
 	if not _validate_source_tree(source_root, validation, 0):
 		return _failure(-1)
-	var traversal: Dictionary = {
-		"remaining": MAX_VISITED_ITEMS,
-		"active_containers": [],
-	}
-	return _redact_value(
-			source_root,
-			PackedStringArray(),
-			false,
-			traversal,
-			0,
+	var current: Variant = source_root
+	var applied_rule_index: int = -1
+	var removed_rule_index: int = -1
+	var pass_count: int = maxi(1, _rules.size())
+	for pass_index: int in range(pass_count):
+		var rule_index: int = -1 if _rules.is_empty() else pass_index
+		var traversal: Dictionary = {
+			"remaining": MAX_VISITED_ITEMS,
+			"active_containers": [],
+		}
+		var pass_result: Dictionary = _redact_value(
+				current,
+				PackedStringArray(),
+				false,
+				traversal,
+				0,
+				rule_index,
+			)
+		if not pass_result["valid"]:
+			return pass_result
+		current = pass_result["value"]
+		@warning_ignore("unsafe_call_argument")
+		applied_rule_index = maxi(
+				applied_rule_index,
+				int(pass_result.get("rule_index", -1)),
+			)
+		@warning_ignore("unsafe_call_argument")
+		removed_rule_index = maxi(
+				removed_rule_index,
+				int(pass_result.get("removed_rule_index", -1)),
+			)
+	return _traversal_success(
+			current,
+			applied_rule_index,
+			removed_rule_index,
 		)
 
 
@@ -378,6 +403,7 @@ func _redact_value(
 		parent_is_dictionary: bool,
 		traversal: Dictionary,
 		container_depth: int,
+		rule_index: int,
 ) -> Dictionary:
 	if not _consume_traversal_item(traversal):
 		return _failure(-1)
@@ -385,42 +411,40 @@ func _redact_value(
 	var active_containers: Array = traversal["active_containers"] as Array
 	var value: Variant = source_value
 	var applied_rule_index: int = -1
-	for rule_index: int in range(_rules.size()):
+	if rule_index >= 0:
 		var rule: ObservabilityRedactionRule = _rules[rule_index]
 		if rule == null:
 			return _failure(rule_index)
-		if not _path_matches(_rule_paths[rule_index], path):
-			continue
-		if rule.action() == ObservabilityRedactionRule.REMOVE_FIELD:
-			if not parent_is_dictionary:
-				return _failure(rule_index)
-			return {
-				"valid": true,
-				"removed": true,
-				"rule_index": rule_index,
-			}
-		if rule.action() == ObservabilityRedactionRule.REPLACE_VALUE:
-			var replacement: Variant = rule.replacement()
-			if not _runtime_types_are_compatible(value, replacement):
-				return _failure(rule_index)
-			if value != replacement:
-				value = replacement
-				applied_rule_index = rule_index
-			continue
-		if value is String or value is StringName:
-			var replacement_text: String = str(rule.replacement())
-			var redacted_text: String
-			if rule.pattern().is_empty():
-				redacted_text = replacement_text
-			else:
-				redacted_text = _compiled_patterns[rule_index].sub(
-						str(value),
-						replacement_text,
-						true,
-					)
-			if redacted_text != str(value):
-				value = redacted_text
-				applied_rule_index = rule_index
+		if _path_matches(_rule_paths[rule_index], path):
+			if rule.action() == ObservabilityRedactionRule.REMOVE_FIELD:
+				if not parent_is_dictionary:
+					return _failure(rule_index)
+				return {
+					"valid": true,
+					"removed": true,
+					"rule_index": rule_index,
+				}
+			if rule.action() == ObservabilityRedactionRule.REPLACE_VALUE:
+				var replacement: Variant = rule.replacement()
+				if not _runtime_types_are_compatible(value, replacement):
+					return _failure(rule_index)
+				if value != replacement:
+					value = replacement
+					applied_rule_index = rule_index
+			elif value is String or value is StringName:
+				var replacement_text: String = str(rule.replacement())
+				var redacted_text: String
+				if rule.pattern().is_empty():
+					redacted_text = replacement_text
+				else:
+					redacted_text = _compiled_patterns[rule_index].sub(
+							str(value),
+							replacement_text,
+							true,
+						)
+				if redacted_text != str(value):
+					value = redacted_text
+					applied_rule_index = rule_index
 
 	if value is Dictionary:
 		if container_depth > MAX_CONTAINER_DEPTH \
@@ -440,6 +464,7 @@ func _redact_value(
 					true,
 					traversal,
 					container_depth + 1,
+					rule_index,
 				)
 			if not child_result["valid"]:
 				active_containers.pop_back()
@@ -487,6 +512,7 @@ func _redact_value(
 					false,
 					traversal,
 					container_depth + 1,
+					rule_index,
 				)
 			if not child_result["valid"]:
 				active_containers.pop_back()
