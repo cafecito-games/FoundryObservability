@@ -30,6 +30,8 @@ bridge_source="$android_source/src/main/java/games/cafecito/android/foundryobser
 lifecycle_source="$android_source/src/main/java/games/cafecito/android/foundryobservabilitysentry/SentryLifecycleCoordinator.java"
 configuration_source="$android_source/src/main/java/games/cafecito/android/foundryobservabilitysentry/SentryLifecycleConfiguration.java"
 driver_source="$android_source/src/main/java/games/cafecito/android/foundryobservabilitysentry/AndroidSentrySdkDriver.java"
+attachment_mapper="$android_source/src/main/java/games/cafecito/android/foundryobservabilitysentry/SentryAttachmentMapper.java"
+attachment_tests="$android_source/src/test/java/games/cafecito/android/foundryobservabilitysentry/SentryAttachmentMapperTest.java"
 lifecycle_tests="$android_source/src/test/java/games/cafecito/android/foundryobservabilitysentry/SentryLifecycleCoordinatorTest.java"
 breadcrumb_mapper="$android_source/src/main/java/games/cafecito/android/foundryobservabilitysentry/SentryBreadcrumbMapper.java"
 breadcrumb_tests="$android_source/src/test/java/games/cafecito/android/foundryobservabilitysentry/SentryBreadcrumbMapperTest.java"
@@ -41,6 +43,8 @@ gradle_file="$android_source/build.gradle"
 [[ -f "$lifecycle_source" ]] || fail "Android lifecycle coordinator is missing"
 [[ -f "$configuration_source" ]] || fail "Android lifecycle configuration is missing"
 [[ -f "$driver_source" ]] || fail "Android Sentry lifecycle driver is missing"
+[[ -f "$attachment_mapper" ]] || fail "Android Sentry attachment mapper is missing"
+[[ -f "$attachment_tests" ]] || fail "Android Sentry attachment mapper tests are missing"
 [[ -f "$lifecycle_tests" ]] || fail "Android lifecycle coordinator tests are missing"
 [[ -f "$breadcrumb_mapper" ]] || fail "Android breadcrumb mapper is missing"
 [[ -f "$breadcrumb_tests" ]] || fail "Android breadcrumb mapper tests are missing"
@@ -59,6 +63,10 @@ rg -q 'public int flush\(String owner, int timeoutMsec\)' "$bridge_source" \
 	|| fail "Android flush must require a lifecycle owner"
 rg -q 'public void shutdown\(String owner\)' "$bridge_source" \
 	|| fail "Android shutdown must require a lifecycle owner"
+rg -q 'public boolean replaceAttachments\(Object\[\] payloads\)' "$bridge_source" \
+	|| fail "Android attachment replacement must consume the Foundry Array representation"
+rg -q 'public String captureWithAttachments\(Dictionary payload\)' "$bridge_source" \
+	|| fail "Android attachment-aware capture method is missing"
 rg -q 'static final SentryLifecycleCoordinator LIFECYCLE_COORDINATOR' "$bridge_source" \
 	|| fail "Android bridge instances must share a process-global lifecycle coordinator"
 rg -q 'lifecycle_owner' "$bridge_source" \
@@ -96,6 +104,8 @@ rg -q 'options\.setEnableNdk\(true\)' "$driver_source" \
 	|| fail "Android lifecycle must explicitly enable NDK crash handling"
 rg -q 'options\.setEnableScopeSync\(true\)' "$driver_source" \
 	|| fail "Android lifecycle must synchronize scope data to native crashes"
+rg -q 'options\.setMaxAttachmentSize\(configuration\.maxAttachmentBytes\)' "$driver_source" \
+	|| fail "Android lifecycle must configure the attachment size maximum"
 rg -q 'options\.setShutdownTimeoutMillis\(SHUTDOWN_TIMEOUT_MSEC\)' "$driver_source" \
 	|| fail "Android lifecycle must use a bounded native shutdown"
 rg -q 'Sentry\.configureScope' "$driver_source" \
@@ -103,6 +113,8 @@ rg -q 'Sentry\.configureScope' "$driver_source" \
 rg -q '"foundry"' "$driver_source" \
 	|| fail "Android lifecycle must use the stable foundry crash context"
 rg -q 'Sentry\.captureEvent' "$bridge_source" || fail "bridge must capture Sentry events"
+rg -q 'new Attachment\(' "$attachment_mapper" \
+	|| fail "Android attachment mapper must construct native Sentry attachments"
 rg -q 'Sentry\.logger\(\)' "$bridge_source" || fail "bridge must capture structured Sentry logs"
 rg -q 'Sentry\.addBreadcrumb' "$bridge_source" || fail "bridge must capture Sentry breadcrumbs"
 rg -q 'new Breadcrumb' "$breadcrumb_mapper" || fail "mapper must construct Sentry breadcrumbs"

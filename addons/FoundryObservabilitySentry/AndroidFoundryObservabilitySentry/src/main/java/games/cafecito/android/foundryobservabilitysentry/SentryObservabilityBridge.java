@@ -4,6 +4,8 @@ import games.cafecito.foundry.Dictionary;
 import games.cafecito.foundry.Foundry;
 import games.cafecito.foundry.plugin.FoundryPlugin;
 import games.cafecito.foundry.plugin.UsedByFoundry;
+import io.sentry.Attachment;
+import io.sentry.ScopeCallback;
 import io.sentry.Sentry;
 import io.sentry.SentryAttributes;
 import io.sentry.SentryEvent;
@@ -15,23 +17,35 @@ import io.sentry.protocol.SentryId;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
 public final class SentryObservabilityBridge extends FoundryPlugin {
+  interface EventCapturer {
+    SentryId capture(SentryEvent event, ScopeCallback callback);
+  }
+
   static final int BRIDGE_ERROR_OK = 0;
   static final int BRIDGE_ERROR_FAILED = 1;
   static final int LIFECYCLE_VERSION = 1;
+  static final long DEFAULT_MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L;
   private static final SentryLifecycleCoordinator LIFECYCLE_COORDINATOR =
       new SentryLifecycleCoordinator(new AndroidSentrySdkDriver());
 
   private Map<String, Object> globalAttributes = Collections.emptyMap();
+  private final EventCapturer eventCapturer;
   private String lifecycleOwner = "";
   private boolean logsEnabled;
   private boolean metricsEnabled;
 
   public SentryObservabilityBridge(Foundry foundry) {
+    this(foundry, (event, callback) -> Sentry.captureEvent(event, callback));
+  }
+
+  SentryObservabilityBridge(Foundry foundry, EventCapturer eventCapturer) {
     super(foundry);
+    this.eventCapturer = eventCapturer;
   }
 
   @Override
@@ -101,7 +115,8 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
             diagnosticOptions.isAnrEnabled(),
             diagnosticOptions.getAnrTimeoutIntervalMillis(),
             diagnosticOptions.isAttachAnrThreadDump(),
-            maxBreadcrumbsValue(payload.get("max_breadcrumbs")));
+            maxBreadcrumbsValue(payload.get("max_breadcrumbs")),
+            maxAttachmentBytesValue(payload.get("max_attachment_bytes")));
 
     if (!LIFECYCLE_COORDINATOR.configure(candidateOwner, candidateConfiguration)) {
       return BRIDGE_ERROR_FAILED;
@@ -124,13 +139,36 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     if (!isAvailable(lifecycleOwner)) {
       return "";
     }
+    return captureEvent(payload, List.of());
+  }
+
+  @UsedByFoundry
+  public String captureWithAttachments(Dictionary payload) {
+    if (!isAvailable(lifecycleOwner)) {
+      return "";
+    }
+    List<Attachment> attachments = List.of();
+    if (payload != null && payload.containsKey("attachments")) {
+      attachments = SentryAttachmentMapper.mapAll(payload.get("attachments"));
+      if (attachments == null) {
+        return "";
+      }
+    }
+    return captureEvent(payload, attachments);
+  }
+
+  private String captureEvent(Dictionary payload, List<Attachment> attachments) {
     SentryEvent event = SentryEventMapper.makeEvent(payload, globalAttributes);
     Object contexts = payload == null ? null : payload.get("contexts");
     SentryEventMapper.ScopePayload localScope = SentryEventMapper.scopePayload(
         payload == null ? null : payload.get("scope"));
-    return eventIdString(Sentry.captureEvent(
+    return eventIdString(eventCapturer.capture(
         event,
-        scope -> AndroidSentrySdkDriver.applyCaptureScope(scope, contexts, localScope)));
+        scope -> AndroidSentrySdkDriver.applyCaptureScope(
+            scope,
+            contexts,
+            localScope,
+            attachments)));
   }
 
   @UsedByFoundry
@@ -200,6 +238,17 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
     return LIFECYCLE_COORDINATOR.perform(
         lifecycleOwner,
         AndroidSentrySdkDriver::clearBreadcrumbs);
+  }
+
+  @UsedByFoundry
+  public boolean replaceAttachments(Object[] payloads) {
+    List<Attachment> candidate = SentryAttachmentMapper.mapAll(payloads);
+    if (candidate == null) {
+      return false;
+    }
+    return LIFECYCLE_COORDINATOR.perform(
+        lifecycleOwner,
+        () -> AndroidSentrySdkDriver.replaceAttachments(candidate));
   }
 
   @UsedByFoundry
@@ -323,6 +372,14 @@ public final class SentryObservabilityBridge extends FoundryPlugin {
       return 100;
     }
     return Math.max(0, exactValue.intValue());
+  }
+
+  static long maxAttachmentBytesValue(Object value) {
+    Long exactValue = exactDiagnosticLong(value);
+    if (exactValue == null) {
+      return DEFAULT_MAX_ATTACHMENT_BYTES;
+    }
+    return Math.max(0L, exactValue);
   }
 
   private static void setIfNotEmpty(

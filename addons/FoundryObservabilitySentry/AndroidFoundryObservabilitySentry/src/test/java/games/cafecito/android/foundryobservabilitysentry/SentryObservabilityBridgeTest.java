@@ -7,14 +7,17 @@ import static org.junit.Assert.assertTrue;
 
 import games.cafecito.foundry.Dictionary;
 import games.cafecito.foundry.Foundry;
+import io.sentry.Attachment;
 import io.sentry.Breadcrumb;
 import io.sentry.IScope;
 import io.sentry.ScopeType;
 import io.sentry.Sentry;
+import io.sentry.SentryEvent;
 import io.sentry.android.core.SentryAndroidOptions;
 import io.sentry.protocol.SentryId;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -385,6 +388,191 @@ public class SentryObservabilityBridgeTest {
             BigInteger.valueOf(Integer.MAX_VALUE).add(BigInteger.ONE)));
   }
 
+  @Test
+  public void parsesNormalizedNonnegativeMaxAttachmentBytes() {
+    long defaultMaximum = 20L * 1024L * 1024L;
+    assertEquals(2L, SentryObservabilityBridge.maxAttachmentBytesValue(2));
+    assertEquals(2L, SentryObservabilityBridge.maxAttachmentBytesValue(2.0D));
+    assertEquals(0L, SentryObservabilityBridge.maxAttachmentBytesValue(-5));
+    assertEquals(defaultMaximum, SentryObservabilityBridge.maxAttachmentBytesValue(null));
+    assertEquals(defaultMaximum, SentryObservabilityBridge.maxAttachmentBytesValue("2"));
+    assertEquals(defaultMaximum, SentryObservabilityBridge.maxAttachmentBytesValue(2.5D));
+    assertEquals(
+        defaultMaximum,
+        SentryObservabilityBridge.maxAttachmentBytesValue(
+            BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE)));
+  }
+
+  @Test
+  public void configurationAppliesNormalizedAttachmentMaximumToNativeOptions() {
+    SentryObservabilityBridge bridge = newBridge();
+    Dictionary configuration = configuration(OWNER);
+    configuration.put("max_attachment_bytes", -5);
+
+    assertEquals(0, bridge.configure(configuration));
+    assertEquals(0L, currentScope().getOptions().getMaxAttachmentSize());
+
+    configuration.put("max_attachment_bytes", 12L);
+    assertEquals(0, bridge.configure(configuration));
+    assertEquals(12L, currentScope().getOptions().getMaxAttachmentSize());
+
+    bridge.shutdown(OWNER);
+  }
+
+  @Test
+  public void replaceAttachmentsIsCompleteAtomicAndOwnerGuarded() {
+    SentryObservabilityBridge first = configuredBridge();
+    Object[] initial = {
+        attachmentPayload("first.bin", new byte[] {1}),
+        Map.of(
+            "filename", "second.txt",
+            "content_type", "text/plain",
+            "category", "event.attachment",
+            "path", "/tmp/second.txt")
+    };
+
+    assertTrue(first.replaceAttachments(initial));
+    assertEquals(
+        List.of("first.bin", "second.txt"),
+        attachmentFilenames(currentScope()));
+
+    Object[] malformed = {
+        attachmentPayload("new.bin", new byte[] {2}),
+        "unsupported-slot",
+        attachmentPayload("never-reached.bin", new byte[] {3})
+    };
+    assertFalse(first.replaceAttachments(malformed));
+    assertEquals(
+        List.of("first.bin", "second.txt"),
+        attachmentFilenames(currentScope()));
+    assertFalse(first.replaceAttachments(new Object[] {
+        attachmentPayload("new.bin", new byte[] {2}),
+        null
+    }));
+    assertEquals(
+        List.of("first.bin", "second.txt"),
+        attachmentFilenames(currentScope()));
+
+    SentryObservabilityBridge replacement = newBridge();
+    Dictionary configuration = configuration("replacement-owner");
+    assertEquals(0, replacement.configure(configuration));
+    assertFalse(first.replaceAttachments(
+        new Object[] {attachmentPayload("stale.bin", new byte[] {9})}));
+    assertEquals(
+        List.of("first.bin", "second.txt"),
+        attachmentFilenames(currentScope()));
+    assertTrue(replacement.replaceAttachments(
+        new Object[] {attachmentPayload("current.bin", new byte[] {4})}));
+    assertEquals(List.of("current.bin"), attachmentFilenames(currentScope()));
+
+    replacement.shutdown("replacement-owner");
+  }
+
+  @Test
+  public void shutdownAndLifecycleRestartClearGlobalAttachmentState() {
+    SentryObservabilityBridge bridge = configuredBridge();
+    assertTrue(bridge.replaceAttachments(
+        new Object[] {attachmentPayload("before-restart.bin", new byte[] {1})}));
+    IScope priorScope = currentScope();
+    assertEquals(List.of("before-restart.bin"), attachmentFilenames(priorScope));
+
+    Dictionary changed = configuration(OWNER);
+    changed.put("release", "changed-release");
+    assertEquals(0, bridge.configure(changed));
+
+    assertTrue(priorScope.getAttachments().isEmpty());
+    assertTrue(currentScope().getAttachments().isEmpty());
+    assertTrue(bridge.replaceAttachments(
+        new Object[] {attachmentPayload("before-shutdown.bin", new byte[] {2})}));
+    IScope shutdownScope = currentScope();
+
+    bridge.shutdown(OWNER);
+
+    assertTrue(shutdownScope.getAttachments().isEmpty());
+  }
+
+  @Test
+  public void attachmentAwareCaptureHandlesAllEventRoutesLocallyAndStrictly() {
+    RecordingCapturer capturer = new RecordingCapturer();
+    SentryObservabilityBridge bridge = newBridge(capturer);
+    assertEquals(0, bridge.configure(configuration(OWNER)));
+    assertTrue(bridge.replaceAttachments(
+        new Object[] {attachmentPayload("global.bin", new byte[] {7})}));
+
+    for (String kind : List.of("message", "event", "exception")) {
+      Dictionary event = new Dictionary();
+      event.put("kind", kind);
+      event.put("message", kind + " message");
+      event.put("contexts", Map.of("foundry_runtime", Map.of("scene", "Arena")));
+      event.put("scope", Map.of("tags", Map.of("round", "final")));
+      event.put(
+          "attachments",
+          new Object[] {attachmentPayload(kind + ".bin", new byte[] {1, 2})});
+      if ("exception".equals(kind)) {
+        event.put(
+            "exception",
+            Map.of(
+                "type_name", "InvalidState",
+                "message", "bad state",
+                "stack_trace", "frame",
+                "attributes", Map.of()));
+      }
+
+      assertNotEquals("", bridge.captureWithAttachments(event));
+    }
+
+    assertEquals(3, capturer.events.size());
+    assertEquals(
+        List.of("global.bin", "message.bin"),
+        attachmentFilenames(capturer.scopes.get(0)));
+    assertEquals(
+        List.of("global.bin", "event.bin"),
+        attachmentFilenames(capturer.scopes.get(1)));
+    assertEquals(
+        List.of("global.bin", "exception.bin"),
+        attachmentFilenames(capturer.scopes.get(2)));
+    for (IScope scope : capturer.scopes) {
+      assertEquals("final", scope.getTags().get("round"));
+      assertEquals(
+          "Arena",
+          ((Map<?, ?>) scope.getContexts().get("foundry_runtime")).get("scene"));
+    }
+    assertEquals("InvalidState", capturer.events.get(2).getExceptions().get(0).getType());
+    assertEquals(List.of("global.bin"), attachmentFilenames(currentScope()));
+
+    Dictionary mixed = new Dictionary();
+    mixed.put("kind", "message");
+    mixed.put("message", "must reject");
+    mixed.put(
+        "attachments",
+        new Object[] {
+            attachmentPayload("valid.bin", new byte[] {1}),
+            Map.of(
+                "filename", "bad.bin",
+                "category", "unsupported",
+                "bytes", new byte[] {2})
+        });
+    assertEquals("", bridge.captureWithAttachments(mixed));
+    assertEquals(3, capturer.events.size());
+    assertEquals(List.of("global.bin"), attachmentFilenames(currentScope()));
+
+    Dictionary absent = new Dictionary();
+    absent.put("kind", "message");
+    absent.put("message", "compatible");
+    assertNotEquals("", bridge.captureWithAttachments(absent));
+    absent.put("attachments", new Object[0]);
+    assertNotEquals("", bridge.captureWithAttachments(absent));
+    assertEquals(
+        List.of("global.bin"),
+        attachmentFilenames(capturer.scopes.get(3)));
+    assertEquals(
+        List.of("global.bin"),
+        attachmentFilenames(capturer.scopes.get(4)));
+    assertEquals(List.of("global.bin"), attachmentFilenames(currentScope()));
+
+    bridge.shutdown(OWNER);
+  }
+
   @SuppressWarnings("unchecked")
   @Test
   public void applyScopeReplacesFoundryValuesAndPreservesUnrelatedScopeData() {
@@ -714,12 +902,31 @@ public class SentryObservabilityBridgeTest {
 
   private static SentryObservabilityBridge configuredBridge() {
     SentryObservabilityBridge bridge = newBridge();
+    assertEquals(0, bridge.configure(configuration(OWNER)));
+    return bridge;
+  }
+
+  private static Dictionary configuration(String owner) {
     Dictionary configuration = new Dictionary();
     configuration.put("enabled", true);
     configuration.put("dsn", "https://public@example.com/1");
-    configuration.put("lifecycle_owner", OWNER);
-    assertEquals(0, bridge.configure(configuration));
-    return bridge;
+    configuration.put("lifecycle_owner", owner);
+    return configuration;
+  }
+
+  private static Map<String, Object> attachmentPayload(String filename, byte[] bytes) {
+    return Map.of(
+        "filename", filename,
+        "category", "event.attachment",
+        "bytes", bytes);
+  }
+
+  private static List<String> attachmentFilenames(IScope scope) {
+    List<String> filenames = new ArrayList<>();
+    for (Attachment attachment : scope.getAttachments()) {
+      filenames.add(attachment.getFilename());
+    }
+    return filenames;
   }
 
   private static int assertCollisionRejectedAndSafeReplacementSucceeds(
@@ -831,5 +1038,26 @@ public class SentryObservabilityBridgeTest {
   private static SentryObservabilityBridge newBridge() {
     return new SentryObservabilityBridge(
         Foundry.getInstance(RuntimeEnvironment.getApplication()));
+  }
+
+  private static SentryObservabilityBridge newBridge(RecordingCapturer capturer) {
+    return new SentryObservabilityBridge(
+        Foundry.getInstance(RuntimeEnvironment.getApplication()),
+        capturer);
+  }
+
+  private static final class RecordingCapturer
+      implements SentryObservabilityBridge.EventCapturer {
+    final List<SentryEvent> events = new ArrayList<>();
+    final List<IScope> scopes = new ArrayList<>();
+
+    @Override
+    public SentryId capture(SentryEvent event, io.sentry.ScopeCallback callback) {
+      IScope scope = currentScope().clone();
+      callback.run(scope);
+      events.add(event);
+      scopes.add(scope);
+      return new SentryId();
+    }
   }
 }

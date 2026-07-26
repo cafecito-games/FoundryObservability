@@ -1,10 +1,12 @@
 package games.cafecito.android.foundryobservabilitysentry;
 
+import io.sentry.Attachment;
 import io.sentry.IScope;
 import io.sentry.ScopeType;
 import io.sentry.Sentry;
 import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
@@ -53,6 +55,7 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
 
   @Override
   public void close() {
+    replaceAttachments(List.of());
     Sentry.close();
   }
 
@@ -73,6 +76,7 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
     options.setAnrTimeoutIntervalMillis(configuration.anrTimeoutMsec);
     options.setAttachAnrThreadDump(configuration.attachAnrThreadDump);
     options.setMaxBreadcrumbs(Math.max(0, configuration.maxBreadcrumbs));
+    options.setMaxAttachmentSize(configuration.maxAttachmentBytes);
     setIfNotEmpty(options::setEnvironment, configuration.environment);
     setIfNotEmpty(options::setRelease, configuration.release);
     setIfNotEmpty(options::setDist, configuration.dist);
@@ -95,8 +99,31 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
       IScope scope,
       Object runtimeContexts,
       SentryEventMapper.ScopePayload localScope) {
+    applyCaptureScope(scope, runtimeContexts, localScope, List.of());
+  }
+
+  static void applyCaptureScope(
+      IScope scope,
+      Object runtimeContexts,
+      SentryEventMapper.ScopePayload localScope,
+      List<Attachment> attachments) {
     applyContexts(scope, SentryEventMapper.contexts(runtimeContexts));
     SentryEventMapper.applyScope(scope, localScope);
+    for (Attachment attachment : attachments) {
+      scope.addAttachment(attachment);
+    }
+  }
+
+  static boolean replaceAttachments(List<Attachment> attachments) {
+    boolean[] replaced = {false};
+    Sentry.configureScope(scope -> {
+      scope.clearAttachments();
+      for (Attachment attachment : attachments) {
+        scope.addAttachment(attachment);
+      }
+      replaced[0] = true;
+    });
+    return replaced[0];
   }
 
   static boolean replaceFoundryScope(
