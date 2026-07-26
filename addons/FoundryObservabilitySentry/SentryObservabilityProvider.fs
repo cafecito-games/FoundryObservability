@@ -45,9 +45,9 @@ func is_available() -> bool:
 	if not _enabled or _shutdown:
 		return false
 	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not _has_lifecycle_contract(bridge):
+	if bridge == null:
 		return false
-	return bridge.call("isAvailable", _owner) == true
+	return _is_bridge_available(bridge)
 
 
 ## Validates and forwards the complete provider configuration.
@@ -114,17 +114,42 @@ func configure(config: ObservabilityConfig) -> int:
 		}
 	if config.enabled:
 		payload["stable_contexts"] = candidate_stable_contexts
+	var retained_scope_payload: Dictionary = _scope_payload(_scope, _user)
+	var retained_scope_was_enabled: bool = _enabled and not _shutdown
 	var result: Variant = bridge.call("configure", payload)
 	if not (result is int):
+		_restore_retained_scope(
+				bridge,
+				retained_scope_was_enabled,
+				retained_scope_payload,
+			)
 		return Error.FAILED
 	var result_code: int = result
-	if result_code == Error.OK:
-		_enabled = config.enabled
-		_stable_contexts = candidate_stable_contexts
-		_scope = ObservabilityScope.new()
-		_user = null
-		_shutdown = false
-	return result_code
+	if result_code != Error.OK:
+		_restore_retained_scope(
+				bridge,
+				retained_scope_was_enabled,
+				retained_scope_payload,
+			)
+		return result_code
+	if config.enabled and _has_scope_contract(bridge):
+		var empty_scope_payload: Dictionary = _scope_payload(
+				ObservabilityScope.new(),
+				null,
+			)
+		if not _apply_scope_payload(bridge, empty_scope_payload):
+			_restore_retained_scope(
+					bridge,
+					retained_scope_was_enabled,
+					retained_scope_payload,
+				)
+			return Error.FAILED
+	_enabled = config.enabled
+	_stable_contexts = candidate_stable_contexts
+	_scope = ObservabilityScope.new()
+	_user = null
+	_shutdown = false
+	return Error.OK
 
 
 ## Translates one normalized event and returns the native provider ID.
@@ -134,6 +159,11 @@ func capture(event: ObservabilityEvent) -> String:
 
 	var bridge: Object? = _resolve_bridge()
 	if bridge == null or not is_available():
+		return ""
+	var event_scope: ObservabilityScope? = event.scope()
+	if event_scope != null \
+			and not event_scope.is_empty() \
+			and not _has_scope_contract(bridge):
 		return ""
 
 	var payload: Dictionary = {
@@ -148,7 +178,6 @@ func capture(event: ObservabilityEvent) -> String:
 	var contexts: Dictionary = _context_collector.contexts_for_capture(_stable_contexts)
 	if not contexts.is_empty():
 		payload["contexts"] = contexts
-	var event_scope: ObservabilityScope? = event.scope()
 	if event_scope != null and not event_scope.is_empty():
 		payload["scope"] = _scope_payload(event_scope, null)
 	var exception: ObservabilityException? = event.exception()
@@ -397,18 +426,46 @@ func _has_lifecycle_contract(bridge: Object) -> bool:
 	return version_result is int and version_result >= _LIFECYCLE_VERSION
 
 
+func _has_scope_contract(bridge: Object) -> bool:
+	return bridge.has_method("applyScope")
+
+
+func _is_bridge_available(bridge: Object) -> bool:
+	if not _has_lifecycle_contract(bridge):
+		return false
+	return bridge.call("isAvailable", _owner) == true
+
+
 func _apply_scope_candidate(
 		candidate_scope: ObservabilityScope,
 		candidate_user: ObservabilityUser?,
 ) -> bool:
 	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not is_available() or not bridge.has_method("applyScope"):
+	if bridge == null:
+		return false
+	return _apply_scope_payload(
+			bridge,
+			_scope_payload(candidate_scope, candidate_user),
+		)
+
+
+func _apply_scope_payload(bridge: Object, payload: Dictionary) -> bool:
+	if not _has_scope_contract(bridge) or not _is_bridge_available(bridge):
 		return false
 	var result: Variant = bridge.call(
 			"applyScope",
-			_scope_payload(candidate_scope, candidate_user),
+			payload,
 		)
 	return result is bool and result == true
+
+
+func _restore_retained_scope(
+		bridge: Object,
+		retained_scope_was_enabled: bool,
+		retained_scope_payload: Dictionary,
+) -> void:
+	if retained_scope_was_enabled:
+		_apply_scope_payload(bridge, retained_scope_payload)
 
 
 func _scope_payload(

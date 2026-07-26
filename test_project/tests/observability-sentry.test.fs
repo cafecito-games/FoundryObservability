@@ -112,6 +112,31 @@ class FakeRuntimeContextProbe extends RefCounted:
 			}
 
 
+class CountingBreadcrumblessSentryBridge extends \
+		"res://tests/support/breadcrumbless_sentry_bridge.notest.fs":
+	var capture_count: int = 0
+
+	func capture(_payload: Dictionary) -> String:
+		capture_count += 1
+		return "sentry:%s" % capture_count
+
+
+class MalformedScopeSentryBridge extends \
+		"res://tests/support/breadcrumbless_sentry_bridge.notest.fs":
+	var apply_scope_result: Variant = true
+	var clear_breadcrumbs_result: Variant = true
+	var applied_scope_payloads: Array[Dictionary] = []
+	var clear_breadcrumbs_count: int = 0
+
+	func applyScope(payload: Dictionary) -> Variant:
+		applied_scope_payloads.append(payload.duplicate(true))
+		return apply_scope_result
+
+	func clearBreadcrumbs() -> Variant:
+		clear_breadcrumbs_count += 1
+		return clear_breadcrumbs_result
+
+
 func test_runtime_context_collector_builds_stable_context_without_pii() -> void:
 	var probe := FakeRuntimeContextProbe.new()
 	var collector := SentryRuntimeContextCollector.new(probe)
@@ -519,6 +544,7 @@ func test_scope_mutations_forward_complete_candidate_payloads_and_nested_copies(
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 	))).to_equal(Error.OK)
+	bridge.applied_scope_payloads.clear()
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
 	Expect.that(provider.set_context("match", context)).to_be_true()
 	context["round"]["waves"][1]["boss"] = false
@@ -561,6 +587,7 @@ func test_scope_remove_and_clear_operations_forward_complete_candidates() -> voi
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 	))).to_equal(Error.OK)
+	bridge.applied_scope_payloads.clear()
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
 	Expect.that(provider.set_tag("mode", "ranked")).to_be_true()
 	Expect.that(provider.set_context("match", {"round": 3})).to_be_true()
@@ -602,6 +629,7 @@ func test_scope_user_replacement_and_removal_use_exact_native_mapping() -> void:
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 	))).to_equal(Error.OK)
+	bridge.applied_scope_payloads.clear()
 	Expect.that(provider.set_user(ObservabilityUser.new(
 			p_application_user_id = "player-1",
 			p_display_name = "Player One",
@@ -649,6 +677,7 @@ func test_rejected_scope_candidate_rolls_back_provider_state() -> void:
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 	))).to_equal(Error.OK)
+	bridge.applied_scope_payloads.clear()
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
 	bridge.apply_scope_result = false
 	Expect.that(provider.set_context("rejected", {"value": 1})).to_be_false()
@@ -708,6 +737,115 @@ func test_reconfigure_scope_reset_is_atomic_across_success_and_failure() -> void
 	provider.shutdown()
 
 
+func test_same_configuration_success_clears_native_and_local_scope_immediately() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	Expect.that(provider.set_context("match", {"round": 3})).to_be_true()
+	Expect.that(provider.set_user(ObservabilityUser.new(
+			p_application_user_id = "player-1",
+	))).to_be_true()
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(bridge.current_scope_payload).to_equal({
+			"tags": {},
+			"contexts": {},
+		})
+
+	Expect.that(provider.set_tag("fresh", "scope")).to_be_true()
+	Expect.that(bridge.current_scope_payload).to_equal({
+			"tags": {"fresh": "scope"},
+			"contexts": {},
+		})
+	provider.shutdown()
+
+
+func test_failed_replacement_reapplies_retained_scope_to_restored_native_session() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var initial_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+	var retained_scope: Dictionary = {
+			"tags": {"region": "iad"},
+			"contexts": {"match": {"round": 3}},
+			"user": {
+				"id": "player-1",
+				"display_name": "",
+				"contact_email": "",
+			},
+		}
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	Expect.that(provider.set_context("match", {"round": 3})).to_be_true()
+	Expect.that(provider.set_user(ObservabilityUser.new(
+			p_application_user_id = "player-1",
+	))).to_be_true()
+	Expect.that(bridge.current_scope_payload).to_equal(retained_scope)
+
+	bridge.configure_result = Error.FAILED
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "replacement",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+	))).to_equal(Error.FAILED)
+	Expect.that(bridge.current_scope_payload).to_equal(retained_scope)
+
+	bridge.configure_result = Error.OK
+	Expect.that(provider.set_tag("mode", "ranked")).to_be_true()
+	Expect.that(bridge.current_scope_payload["tags"]).to_equal({
+			"region": "iad",
+			"mode": "ranked",
+		})
+	provider.shutdown()
+
+
+func test_rejected_configure_scope_reset_fails_and_restores_prior_scope() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var initial_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+	var retained_scope: Dictionary = {
+			"tags": {"region": "iad"},
+			"contexts": {},
+		}
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	bridge.apply_scope_results = [false, true]
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "replacement",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+	))).to_equal(Error.FAILED)
+	Expect.that(bridge.applied_scope_payloads.slice(-2)).to_equal([
+		{
+			"tags": {},
+			"contexts": {},
+		},
+		retained_scope,
+	])
+	Expect.that(bridge.current_scope_payload).to_equal(retained_scope)
+
+	Expect.that(provider.set_tag("mode", "ranked")).to_be_true()
+	Expect.that(bridge.current_scope_payload["tags"]).to_equal({
+			"region": "iad",
+			"mode": "ranked",
+		})
+	provider.shutdown()
+
+
 func test_scope_operations_require_enabled_available_native_capability() -> void:
 	var disabled_bridge := FakeSentryBridge.new()
 	var disabled := SentryObservabilityProvider.new(p_bridge = disabled_bridge)
@@ -745,6 +883,7 @@ func test_scope_operations_require_enabled_available_native_capability() -> void
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 	))).to_equal(Error.OK)
+	shutdown_bridge.applied_scope_payloads.clear()
 	Expect.that(shutdown_provider.set_tag("before", "shutdown")).to_be_true()
 	shutdown_provider.shutdown()
 	shutdown_provider.shutdown()
@@ -766,6 +905,7 @@ func test_event_local_scope_is_forwarded_once_without_mutating_global_scope() ->
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 	))).to_equal(Error.OK)
+	bridge.applied_scope_payloads.clear()
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "scoped",
 			p_attributes = {},
@@ -786,6 +926,30 @@ func test_event_local_scope_is_forwarded_once_without_mutating_global_scope() ->
 		})
 	Expect.that(bridge.captured_payloads[1].has("scope")).to_be_false()
 	Expect.that(bridge.applied_scope_payloads).to_equal([])
+	provider.shutdown()
+
+
+func test_event_local_scope_requires_native_scope_capability_before_capture() -> void:
+	var bridge := CountingBreadcrumblessSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var local_scope := ObservabilityScope.new()
+	Expect.that(local_scope.set_tag("region", "iad")).to_be_true()
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.OK)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "unsupported scoped event",
+			p_attributes = {},
+			p_scope = local_scope,
+	))).to_equal("")
+	Expect.that(bridge.capture_count).to_equal(0)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "supported unscoped event",
+	))).to_equal("sentry:1")
+	Expect.that(bridge.capture_count).to_equal(1)
 	provider.shutdown()
 
 
@@ -1029,15 +1193,47 @@ func test_clear_breadcrumbs_returns_explicit_native_result_and_respects_lifecycl
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.clear_breadcrumbs()).to_be_false()
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(0)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 	))).to_equal(Error.OK)
 	Expect.that(provider.clear_breadcrumbs()).to_be_true()
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
 	bridge.clear_breadcrumbs_result = false
 	Expect.that(provider.clear_breadcrumbs()).to_be_false()
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
 	provider.shutdown()
 	Expect.that(provider.clear_breadcrumbs()).to_be_false()
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
+
+
+func test_non_boolean_native_scope_and_clear_results_are_rejected() -> void:
+	var bridge := MalformedScopeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.OK)
+	bridge.applied_scope_payloads.clear()
+
+	bridge.apply_scope_result = "true"
+	Expect.that(provider.set_tag("rejected", "value")).to_be_false()
+	bridge.apply_scope_result = true
+	Expect.that(provider.set_tag("accepted", "value")).to_be_true()
+	Expect.that(bridge.applied_scope_payloads.back()).to_equal({
+			"tags": {"accepted": "value"},
+			"contexts": {},
+		})
+
+	bridge.clear_breadcrumbs_result = "true"
+	Expect.that(provider.clear_breadcrumbs()).to_be_false()
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
+	bridge.clear_breadcrumbs_result = true
+	Expect.that(provider.clear_breadcrumbs()).to_be_true()
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
+	provider.shutdown()
 
 
 func test_missing_native_breadcrumb_capability_preserves_event_capture() -> void:

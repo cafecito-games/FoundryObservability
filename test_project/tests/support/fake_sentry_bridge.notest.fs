@@ -7,10 +7,16 @@ var available: bool = true
 var configure_result: int = Error.OK
 var flush_result: int = Error.OK
 var apply_scope_result: bool = true
+var apply_scope_results: Array[bool] = []
 var clear_breadcrumbs_result: bool = true
+var clear_breadcrumbs_count: int = 0
 var configured_payload: Dictionary = {}
 var configured_payloads: Array[Dictionary] = []
 var applied_scope_payloads: Array[Dictionary] = []
+var current_scope_payload: Dictionary = {
+		"tags": {},
+		"contexts": {},
+	}
 var captured_payloads: Array[Dictionary] = []
 var captured_log_payloads: Array[Dictionary] = []
 var captured_breadcrumb_payloads: Array[Dictionary] = []
@@ -24,6 +30,7 @@ var shutdown_count: int = 0
 var next_event_id: int = 1
 var next_log_id: int = 1
 var next_feedback_id: int = 1
+var _active_configuration: Dictionary = {}
 
 
 func lifecycleVersion() -> int:
@@ -36,9 +43,25 @@ func configure(payload: Dictionary) -> int:
 	if configure_result == Error.OK:
 		var owner: String = str(payload.get("lifecycle_owner", ""))
 		if payload.get("enabled", false):
+			if active_owner.is_empty() or configured_payload != _active_configuration:
+				current_scope_payload = {
+					"tags": {},
+					"contexts": {},
+				}
 			active_owner = owner
+			_active_configuration = configured_payload.duplicate(true)
 		elif owner == active_owner:
 			active_owner = ""
+			_active_configuration = {}
+			current_scope_payload = {
+				"tags": {},
+				"contexts": {},
+			}
+	elif not active_owner.is_empty():
+		current_scope_payload = {
+			"tags": {},
+			"contexts": {},
+		}
 	return configure_result
 
 
@@ -67,10 +90,16 @@ func captureBreadcrumb(payload: Dictionary) -> bool:
 
 func applyScope(payload: Dictionary) -> bool:
 	applied_scope_payloads.append(payload.duplicate(true))
-	return apply_scope_result
+	var result: bool = apply_scope_result
+	if not apply_scope_results.is_empty():
+		result = apply_scope_results.pop_front()
+	if result:
+		current_scope_payload = payload.duplicate(true)
+	return result
 
 
 func clearBreadcrumbs() -> bool:
+	clear_breadcrumbs_count += 1
 	return clear_breadcrumbs_result
 
 
