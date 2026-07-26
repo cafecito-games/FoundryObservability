@@ -73,6 +73,22 @@ private func intValue(_ value: Any?) -> Int {
     return 0
 }
 
+private func intValue(_ value: Any?, default defaultValue: Int) -> Int {
+    guard value != nil else {
+        return defaultValue
+    }
+    if let value = value as? Int {
+        return value
+    }
+    if let value = value as? Int64 {
+        return Int(exactly: value) ?? defaultValue
+    }
+    if let value = value as? Double, value.isFinite {
+        return Int(exactly: value) ?? defaultValue
+    }
+    return defaultValue
+}
+
 private func doubleValue(_ value: Any?) -> Double? {
     if let value = value as? Double {
         return value
@@ -148,12 +164,14 @@ class SentryObservabilityBridge: RefCounted {
             applicationHangDetectionEnabled:
                 boolValue(values["application_hang_detection_enabled"]),
             applicationHangTimeoutMsec:
-                intValue(values["application_hang_timeout_msec"])
+                intValue(values["application_hang_timeout_msec"]),
+            maxBreadcrumbs: intValue(values["max_breadcrumbs"], default: 100)
         )
-        guard Self.lifecycleCoordinator.configure(
+        let configured = Self.lifecycleCoordinator.configure(
             owner: candidateOwner,
             configuration: candidateConfiguration
-        ) else {
+        )
+        guard configured else {
             return bridgeErrorFailed
         }
 
@@ -189,8 +207,10 @@ class SentryObservabilityBridge: RefCounted {
             exception: exception
         )
         let contexts = foundrySentryContexts(values["contexts"])
+        let localScope = foundryScopePayload(values["scope"])
         let eventID = SentrySDK.capture(event: event) { scope in
             applySentryContexts(contexts, to: scope)
+            applyFoundryScope(localScope, to: scope)
         }
         let eventIDString = eventID.sentryIdString
         return eventIDString == SentryId.empty.sentryIdString ? "" : eventIDString
@@ -243,12 +263,41 @@ class SentryObservabilityBridge: RefCounted {
             message: stringValue(values["message"]),
             level: intValue(values["level"]),
             category: stringValue(values["category"]),
+            type: stringValue(values["type"]),
             timestampMsec: timestampMsec,
             globalAttributes: globalAttributes,
             breadcrumbAttributes: dictionaryValue(values["attributes"])
         )
         SentrySDK.addBreadcrumb(breadcrumb)
         return true
+    }
+
+    @Callable
+    func applyScope(payload: VariantDictionary) -> Bool {
+        let candidate = foundryScopePayload(foundationDictionary(from: payload))
+        return Self.lifecycleCoordinator.replaceScope(owner: lifecycleOwner) { previousKeys in
+            var nextKeys: FoundryInstalledScopeKeys?
+            SentrySDK.configureScope { scope in
+                nextKeys = replaceFoundryScope(
+                    candidate,
+                    previousKeys: previousKeys,
+                    on: scope
+                )
+            }
+            return nextKeys
+        }
+    }
+
+    @Callable
+    func clearBreadcrumbs() -> Bool {
+        var cleared = false
+        let performed = Self.lifecycleCoordinator.perform(owner: lifecycleOwner) {
+            SentrySDK.configureScope { scope in
+                scope.clearBreadcrumbs()
+                cleared = true
+            }
+        }
+        return performed && cleared
     }
 
     @Callable
