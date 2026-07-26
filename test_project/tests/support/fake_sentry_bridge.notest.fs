@@ -10,7 +10,7 @@ var configure_results: Array[int] = []
 var flush_result: int = Error.OK
 var apply_scope_result: bool = true
 var apply_scope_results: Array[bool] = []
-var clear_breadcrumbs_result: bool = true
+var clear_breadcrumbs_result: Variant = true
 var clear_breadcrumbs_count: int = 0
 var configured_payload: Dictionary = {}
 var configured_payloads: Array[Dictionary] = []
@@ -22,6 +22,7 @@ var current_scope_payload: Dictionary = {
 var captured_payloads: Array[Dictionary] = []
 var captured_log_payloads: Array[Dictionary] = []
 var captured_breadcrumb_payloads: Array[Dictionary] = []
+var current_breadcrumb_payloads: Array[Dictionary] = []
 var captured_feedback_payloads: Array[Dictionary] = []
 var captured_metric_payloads: Array[Dictionary] = []
 var active_owner: String = ""
@@ -53,6 +54,7 @@ func configure(payload: Dictionary) -> int:
 					"tags": {},
 					"contexts": {},
 				}
+				current_breadcrumb_payloads = []
 			active_owner = owner
 			_active_configuration = configured_payload.duplicate(true)
 		elif owner == active_owner:
@@ -62,6 +64,7 @@ func configure(payload: Dictionary) -> int:
 				"tags": {},
 				"contexts": {},
 			}
+			current_breadcrumb_payloads = []
 	elif not active_owner.is_empty():
 		current_scope_payload = {
 			"tags": {},
@@ -96,6 +99,7 @@ func captureLog(payload: Dictionary) -> String:
 
 func captureBreadcrumb(payload: Dictionary) -> bool:
 	captured_breadcrumb_payloads.append(payload.duplicate(true))
+	current_breadcrumb_payloads.append(payload.duplicate(true))
 	return true
 
 
@@ -109,8 +113,10 @@ func applyScope(payload: Dictionary) -> bool:
 	return result
 
 
-func clearBreadcrumbs() -> bool:
+func clearBreadcrumbs() -> Variant:
 	clear_breadcrumbs_count += 1
+	if clear_breadcrumbs_result is bool and clear_breadcrumbs_result == true:
+		current_breadcrumb_payloads = []
 	return clear_breadcrumbs_result
 
 
@@ -141,4 +147,5 @@ func shutdown(owner: String) -> void:
 			"tags": {},
 			"contexts": {},
 		}
+		current_breadcrumb_payloads = []
 		shutdown_count += 1

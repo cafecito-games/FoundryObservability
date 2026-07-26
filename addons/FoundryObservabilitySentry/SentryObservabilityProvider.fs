@@ -74,6 +74,11 @@ func configure(config: ObservabilityConfig) -> int:
 		return Error.OK
 	if config.enabled and config.logs_enabled and (bridge == null or not bridge.has_method("captureLog")):
 		return Error.FAILED
+	if config.enabled \
+			and bridge != null \
+			and bridge.has_method("captureBreadcrumb") \
+			and not bridge.has_method("clearBreadcrumbs"):
+		return Error.FAILED
 
 	if bridge == null:
 		_enabled = false
@@ -121,7 +126,7 @@ func configure(config: ObservabilityConfig) -> int:
 	var candidate_config_payload: Dictionary = payload.duplicate(true)
 	var retained_scope_payload: Dictionary = _scope_payload(_scope, _user)
 	var retained_scope_was_enabled: bool = _enabled and not _shutdown
-	# Local candidate state commits only after native configure and empty-scope reset;
+	# Local candidate state commits only after configure, scope, and breadcrumb resets;
 	# otherwise the prior session must be fully restored or the provider fails closed.
 	var result: Variant = bridge.call(
 			"configure",
@@ -150,7 +155,17 @@ func configure(config: ObservabilityConfig) -> int:
 				null,
 			)
 		if not _apply_scope_payload(bridge, empty_scope_payload):
-			if not _rollback_after_scope_reset_failure(
+			if not _rollback_after_session_reset_failure(
+					bridge,
+					retained_scope_was_enabled,
+					retained_scope_payload,
+			):
+				_fail_closed(bridge)
+			return Error.FAILED
+	if config.enabled and bridge.has_method("clearBreadcrumbs"):
+		var clear_result: Variant = bridge.call("clearBreadcrumbs")
+		if not (clear_result is bool) or clear_result != true:
+			if not _rollback_after_session_reset_failure(
 					bridge,
 					retained_scope_was_enabled,
 					retained_scope_payload,
@@ -486,7 +501,7 @@ func _restore_retained_scope(
 	return _apply_scope_payload(bridge, retained_scope_payload)
 
 
-func _rollback_after_scope_reset_failure(
+func _rollback_after_session_reset_failure(
 		bridge: Object,
 		retained_scope_was_enabled: bool,
 		retained_scope_payload: Dictionary,

@@ -137,6 +137,15 @@ class MalformedScopeSentryBridge extends \
 		return clear_breadcrumbs_result
 
 
+class CaptureOnlyBreadcrumbSentryBridge extends \
+		"res://tests/support/breadcrumbless_sentry_bridge.notest.fs":
+	var captured_breadcrumb_payloads: Array[Dictionary] = []
+
+	func captureBreadcrumb(payload: Dictionary) -> bool:
+		captured_breadcrumb_payloads.append(payload.duplicate(true))
+		return true
+
+
 func test_runtime_context_collector_builds_stable_context_without_pii() -> void:
 	var probe := FakeRuntimeContextProbe.new()
 	var collector := SentryRuntimeContextCollector.new(probe)
@@ -1414,7 +1423,148 @@ func test_forwards_normalized_breadcrumbs_to_native_bridge() -> void:
 			"attributes": {"scene": "arena"},
 			"type": "navigation",
 		}])
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal(
+			bridge.captured_breadcrumb_payloads,
+		)
 	provider.shutdown()
+
+
+func test_enabled_configure_starts_with_an_explicitly_cleared_breadcrumb_trail() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.OK)
+
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
+	provider.shutdown()
+
+
+func test_identical_successful_configure_clears_only_the_live_breadcrumb_trail() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "retained call history",
+	))).to_be_true()
+	Expect.that(bridge.current_breadcrumb_payloads).to_have_size(1)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
+	Expect.that(bridge.captured_breadcrumb_payloads).to_have_size(1)
+	provider.shutdown()
+
+
+func test_changed_successful_configure_starts_a_fresh_breadcrumb_trail() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.OK)
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "old session",
+	))).to_be_true()
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "staging",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+	))).to_equal(Error.OK)
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
+	Expect.that(bridge.captured_breadcrumb_payloads).to_have_size(1)
+	provider.shutdown()
+
+
+func test_failed_configure_preserves_breadcrumb_trail_without_clearing() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.OK)
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "prior session",
+	))).to_be_true()
+	var retained_trail: Array[Dictionary] = bridge.current_breadcrumb_payloads.duplicate(true)
+	bridge.configure_result = Error.ERR_INVALID_PARAMETER
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "staging",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+	))).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal(retained_trail)
+	Expect.that(provider.is_available()).to_be_true()
+	provider.shutdown()
+
+
+func test_equivalent_reconfigure_clear_rejection_restores_scope_and_trail() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "prior session",
+	))).to_be_true()
+	var retained_trail: Array[Dictionary] = bridge.current_breadcrumb_payloads.duplicate(true)
+	bridge.clear_breadcrumbs_result = false
+
+	Expect.that(provider.configure(config)).to_equal(Error.FAILED)
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal(retained_trail)
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.set_tag("mode", "ranked")).to_be_true()
+	Expect.that(bridge.current_scope_payload["tags"]).to_equal({
+			"region": "iad",
+			"mode": "ranked",
+		})
+	provider.shutdown()
+
+
+func test_initial_malformed_clear_result_fails_closed() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	bridge.clear_breadcrumbs_result = "true"
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.FAILED)
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.active_configuration()).to_equal({})
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "unavailable",
+	))).to_equal("")
 
 
 func test_clear_breadcrumbs_returns_explicit_native_result_and_respects_lifecycle() -> void:
@@ -1427,14 +1577,15 @@ func test_clear_breadcrumbs_returns_explicit_native_result_and_respects_lifecycl
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 	))).to_equal(Error.OK)
-	Expect.that(provider.clear_breadcrumbs()).to_be_true()
 	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
+	Expect.that(provider.clear_breadcrumbs()).to_be_true()
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
 	bridge.clear_breadcrumbs_result = false
 	Expect.that(provider.clear_breadcrumbs()).to_be_false()
-	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(3)
 	provider.shutdown()
 	Expect.that(provider.clear_breadcrumbs()).to_be_false()
-	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(3)
 
 
 func test_non_boolean_native_scope_and_clear_results_are_rejected() -> void:
@@ -1445,6 +1596,7 @@ func test_non_boolean_native_scope_and_clear_results_are_rejected() -> void:
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
 	))).to_equal(Error.OK)
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
 	bridge.applied_scope_payloads.clear()
 
 	bridge.apply_scope_result = "true"
@@ -1458,10 +1610,10 @@ func test_non_boolean_native_scope_and_clear_results_are_rejected() -> void:
 
 	bridge.clear_breadcrumbs_result = "true"
 	Expect.that(provider.clear_breadcrumbs()).to_be_false()
-	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
 	bridge.clear_breadcrumbs_result = true
 	Expect.that(provider.clear_breadcrumbs()).to_be_true()
-	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
+	Expect.that(bridge.clear_breadcrumbs_count).to_equal(3)
 	provider.shutdown()
 
 
@@ -1480,6 +1632,23 @@ func test_missing_native_breadcrumb_capability_preserves_event_capture() -> void
 			p_message = "ordinary event remains supported",
 		))).to_equal("sentry:1")
 	provider.shutdown()
+
+
+func test_capture_only_breadcrumb_bridge_cannot_start_a_fresh_session() -> void:
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = CaptureOnlyBreadcrumbSentryBridge.new())
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+	))).to_equal(Error.FAILED)
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "unavailable",
+	))).to_equal("")
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "unavailable",
+	))).to_be_false()
 
 
 func test_captures_feedback_with_only_explicit_optional_fields() -> void:
