@@ -4,6 +4,9 @@ namespace foundry.observability
 extends EditorPlugin
 
 func _enter_tree() -> void:
+	_register_startup_settings()
+
+static func _register_startup_settings() -> void:
 	ObservabilityStartupSettings.register_project_settings()
 
 ## Registers the FoundryObservability autoload when the editor plugin is enabled.

@@ -29,6 +29,23 @@ func test_project_registers_observability_startup_settings() -> void:
 	Expect.that(ProjectSettings.get_setting(
 			ObservabilityStartupSettings.ENABLED)).to_be_true()
 
+func test_export_plugin_enter_tree_registers_observability_startup_settings() -> void:
+	var setting_name: String = ObservabilityStartupSettings.SKIP_EDITOR_PLAY
+	var was_present: bool = ProjectSettings.has_setting(setting_name)
+	var previous_value: Variant = ProjectSettings.get_setting(setting_name, null)
+	TestContext.current().add_teardown(
+		func() -> void:
+			_restore_project_setting(setting_name, was_present, previous_value),
+	)
+	ProjectSettings.clear(setting_name)
+	Expect.that(ProjectSettings.has_setting(setting_name)).to_be_false()
+
+	var plugin_script: Script = ResourceLoader.load(
+			"res://addons/FoundryObservability/export_plugin.fs") as Script
+	plugin_script.call(&"_register_startup_settings")
+	Expect.that(ProjectSettings.has_setting(setting_name)).to_be_true()
+	Expect.that(ProjectSettings.get_setting(setting_name)).to_be_false()
+
 func test_project_uses_foundrylib_adapter_from_core_addon() -> void:
 	var sink_source: String = FileAccess.get_file_as_string(
 			"res://addons/FoundryObservability/foundrylib/FoundryLibObservabilitySink.fs")
@@ -110,6 +127,8 @@ func test_project_contains_startup_status_and_settings_resources() -> void:
 			"res://addons/FoundryObservability/export_plugin.fs")
 	Expect.that(plugin_source).to_contain(
 			"ObservabilityStartupSettings.register_project_settings()")
+	Expect.that(plugin_source).to_contain(
+			"func _enter_tree() -> void:\n\t_register_startup_settings()")
 
 func test_project_exposes_provider_neutral_startup_api() -> void:
 	var service_source: String = FileAccess.get_file_as_string(
@@ -124,3 +143,13 @@ func test_project_exposes_provider_neutral_startup_api() -> void:
 		Expect.that(service_source).to_contain(method_signature)
 		Expect.that(api_source).to_contain(
 				"abstract " + method_signature.trim_suffix(":"))
+
+func _restore_project_setting(
+		setting_name: String,
+		was_present: bool,
+		previous_value: Variant,
+) -> void:
+	if was_present:
+		ProjectSettings.set_setting(setting_name, previous_value)
+	else:
+		ProjectSettings.clear(setting_name)
