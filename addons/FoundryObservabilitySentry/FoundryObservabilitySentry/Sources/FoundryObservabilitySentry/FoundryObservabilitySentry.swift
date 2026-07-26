@@ -47,6 +47,9 @@ private func foundationValue(from variant: Variant) -> FoundryFoundationValue? {
     if let value = String(variant) {
         return FoundryFoundationValue(value)
     }
+    if let value = PackedByteArray(variant) {
+        return FoundryFoundationValue(Data(value.asBytes()))
+    }
     if let dictionary = VariantDictionary(variant) {
         return FoundryFoundationValue(foundationDictionary(from: dictionary))
     }
@@ -118,6 +121,37 @@ private func dictionaryValue(_ value: Any?) -> [String: Any] {
     value as? [String: Any] ?? [:]
 }
 
+private func attachmentPayloads(_ value: Any?) -> [[String: Any]]? {
+    guard let values = value as? [Any] else {
+        return nil
+    }
+    var payloads: [[String: Any]] = []
+    payloads.reserveCapacity(values.count)
+    for value in values {
+        guard let payload = value as? [String: Any] else {
+            return nil
+        }
+        payloads.append(payload)
+    }
+    return payloads
+}
+
+private func foundryAttachments(from array: VariantArray) -> [Attachment]? {
+    var payloads: [[String: Any]] = []
+    payloads.reserveCapacity(Int(array.size()))
+    for index in 0..<Int(array.size()) {
+        guard
+            let variant = array[index],
+            let converted = foundationValue(from: variant)?.value,
+            let payload = converted as? [String: Any]
+        else {
+            return nil
+        }
+        payloads.append(payload)
+    }
+    return foundryAttachments(from: payloads)
+}
+
 @Foundry
 class SentryObservabilityBridge: RefCounted {
     private static let lifecycleCoordinator = SentryLifecycleCoordinator(
@@ -173,7 +207,14 @@ class SentryObservabilityBridge: RefCounted {
                 boolValue(values["application_hang_detection_enabled"]),
             applicationHangTimeoutMsec:
                 intValue(values["application_hang_timeout_msec"]),
-            maxBreadcrumbs: intValue(values["max_breadcrumbs"], default: 100)
+            maxBreadcrumbs: intValue(values["max_breadcrumbs"], default: 100),
+            maxAttachmentBytes: UInt(max(
+                0,
+                intValue(
+                    values["max_attachment_bytes"],
+                    default: 20 * 1024 * 1024
+                )
+            ))
         )
         let configured = Self.lifecycleCoordinator.configure(
             owner: candidateOwner,
@@ -202,6 +243,37 @@ class SentryObservabilityBridge: RefCounted {
         }
 
         let values = foundationDictionary(from: payload)
+        return capture(values: values, attachments: [])
+    }
+
+    @Callable
+    func captureWithAttachments(payload: VariantDictionary) -> String {
+        guard isAvailable(lifecycleOwner) else {
+            return ""
+        }
+
+        let values = foundationDictionary(from: payload)
+        guard values.keys.contains("attachments") else {
+            return capture(values: values, attachments: [])
+        }
+        guard
+            let payloads = attachmentPayloads(values["attachments"])
+        else {
+            return ""
+        }
+        if payloads.isEmpty {
+            return capture(values: values, attachments: [])
+        }
+        guard let attachments = foundryAttachments(from: payloads) else {
+            return ""
+        }
+        return capture(values: values, attachments: attachments)
+    }
+
+    private func capture(
+        values: [String: Any],
+        attachments: [Attachment]
+    ) -> String {
         let exception = foundryExceptionPayload(values["exception"])
         let event = makeSentryEvent(
             message: stringValue(values["message"]),
@@ -219,6 +291,7 @@ class SentryObservabilityBridge: RefCounted {
         let eventID = SentrySDK.capture(event: event) { scope in
             applySentryContexts(contexts, to: scope)
             applyFoundryScope(localScope, to: scope)
+            applyFoundryAttachments(attachments, to: scope)
         }
         let eventIDString = eventID.sentryIdString
         return eventIDString == SentryId.empty.sentryIdString ? "" : eventIDString
@@ -310,6 +383,17 @@ class SentryObservabilityBridge: RefCounted {
             }
         }
         return performed && cleared
+    }
+
+    @Callable
+    func replaceAttachments(payloads: VariantArray) -> Bool {
+        guard let attachments = foundryAttachments(from: payloads) else {
+            return false
+        }
+        return Self.lifecycleCoordinator.replaceAttachments(
+            owner: lifecycleOwner,
+            attachments: attachments
+        )
     }
 
     @Callable

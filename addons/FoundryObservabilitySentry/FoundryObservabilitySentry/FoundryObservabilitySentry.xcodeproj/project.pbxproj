@@ -21,10 +21,13 @@
 		9EEE948D15975A2A6019DE46 /* FoundryObservabilitySentry.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 3FA80C6555AB993A2A9CF202 /* FoundryObservabilitySentry.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A22480D4A312B1A15421ADAD /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 9A93A4115592B915C5223384 /* Sentry */; };
 		A2C5422D9AC35653FF347C1C /* SentryDiagnosticsConfiguratorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2272EE5CE9FEF1B1C79057E /* SentryDiagnosticsConfiguratorTests.swift */; };
+		A846D4D3B8FE20F0A997EC50 /* SentryAttachmentMapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D451B6BE0E66E8EAF8CEB64D /* SentryAttachmentMapperTests.swift */; };
+		B02091E20AA8A7CB2198ADF6 /* SentryAttachmentMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4EFE66AA858ED08384F7E96 /* SentryAttachmentMapper.swift */; };
 		B6B15E0B13E8BF3E3D476812 /* FoundrySwift in Frameworks */ = {isa = PBXBuildFile; productRef = 029BA2C3F3E777EDA7D1DA75 /* FoundrySwift */; };
 		C84644BD5C27B9E49609E1B6 /* FoundryObservabilitySentry.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3FA80C6555AB993A2A9CF202 /* FoundryObservabilitySentry.framework */; };
 		DA8AAF33B1FE94AC85B31A67 /* SentryLifecycleCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23C91F22650A075DE3D4DCBC /* SentryLifecycleCoordinator.swift */; };
 		DA9C72AD5C85D89D2BE2332A /* FoundrySwift in Frameworks */ = {isa = PBXBuildFile; productRef = C9D564F119926B061FC683D3 /* FoundrySwift */; };
+		DFE4B95F846849E9EE491BA8 /* SentryAttachmentMapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4EFE66AA858ED08384F7E96 /* SentryAttachmentMapper.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,9 +62,11 @@
 		63175D21D5DBFA0FDA5F16E1 /* SentryLifecycleCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryLifecycleCoordinatorTests.swift; sourceTree = "<group>"; };
 		9053F3FEAF20076754B1EAD1 /* FoundryObservabilitySentry.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = FoundryObservabilitySentry.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		92B1629924939D66D6B5EA80 /* SentryEventMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryEventMapper.swift; sourceTree = "<group>"; };
+		B4EFE66AA858ED08384F7E96 /* SentryAttachmentMapper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryAttachmentMapper.swift; sourceTree = "<group>"; };
 		C3507BE4DA193E7D6B9F4F12 /* FoundryObservabilitySentry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundryObservabilitySentry.swift; sourceTree = "<group>"; };
 		CBCF44EDC065C9AEE0C4E511 /* FoundryObservabilitySentryTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FoundryObservabilitySentryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D2272EE5CE9FEF1B1C79057E /* SentryDiagnosticsConfiguratorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryDiagnosticsConfiguratorTests.swift; sourceTree = "<group>"; };
+		D451B6BE0E66E8EAF8CEB64D /* SentryAttachmentMapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryAttachmentMapperTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -107,6 +112,7 @@
 		4DAFFAEE53F9366B10B91696 /* FoundryObservabilitySentryTests */ = {
 			isa = PBXGroup;
 			children = (
+				D451B6BE0E66E8EAF8CEB64D /* SentryAttachmentMapperTests.swift */,
 				D2272EE5CE9FEF1B1C79057E /* SentryDiagnosticsConfiguratorTests.swift */,
 				5C087DD9FDD36571D7FBB400 /* SentryEventMapperTests.swift */,
 				63175D21D5DBFA0FDA5F16E1 /* SentryLifecycleCoordinatorTests.swift */,
@@ -119,6 +125,7 @@
 			isa = PBXGroup;
 			children = (
 				C3507BE4DA193E7D6B9F4F12 /* FoundryObservabilitySentry.swift */,
+				B4EFE66AA858ED08384F7E96 /* SentryAttachmentMapper.swift */,
 				4777AECD0A3355F8A6DFE33F /* SentryDiagnosticsConfigurator.swift */,
 				92B1629924939D66D6B5EA80 /* SentryEventMapper.swift */,
 				23C91F22650A075DE3D4DCBC /* SentryLifecycleCoordinator.swift */,
@@ -242,6 +249,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A846D4D3B8FE20F0A997EC50 /* SentryAttachmentMapperTests.swift in Sources */,
 				A2C5422D9AC35653FF347C1C /* SentryDiagnosticsConfiguratorTests.swift in Sources */,
 				4CD0F2B10C120C383108FBB1 /* SentryEventMapperTests.swift in Sources */,
 				174C520FD292DCD4805A4B0E /* SentryLifecycleCoordinatorTests.swift in Sources */,
@@ -253,6 +261,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				98181861179175E589E2F3B1 /* FoundryObservabilitySentry.swift in Sources */,
+				DFE4B95F846849E9EE491BA8 /* SentryAttachmentMapper.swift in Sources */,
 				3B92EE70E440BDD5E7517685 /* SentryDiagnosticsConfigurator.swift in Sources */,
 				30A54BC0764DBD53A0A170AD /* SentryEventMapper.swift in Sources */,
 				DA8AAF33B1FE94AC85B31A67 /* SentryLifecycleCoordinator.swift in Sources */,
@@ -264,6 +273,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				0A99945D9ACF064DB78A5637 /* FoundryObservabilitySentry.swift in Sources */,
+				B02091E20AA8A7CB2198ADF6 /* SentryAttachmentMapper.swift in Sources */,
 				3E9C7B592BC6B1481BEA7C10 /* SentryDiagnosticsConfigurator.swift in Sources */,
 				64980AC375E2CB03632FB158 /* SentryEventMapper.swift in Sources */,
 				198B4142B9F1B8578E29E239 /* SentryLifecycleCoordinator.swift in Sources */,
