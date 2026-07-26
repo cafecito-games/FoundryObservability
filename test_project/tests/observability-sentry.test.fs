@@ -2323,6 +2323,70 @@ func test_attachment_preflight_failures_do_not_block_events_and_clear_on_success
 	Expect.that(provider.last_attachment_failures()).to_have_size(0)
 
 
+func test_attachment_management_preserves_latest_event_failure_history() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+	))).to_equal(Error.OK)
+	var missing_path: String = (
+			"user://sentry-management-missing-%s.log" % bridge.get_instance_id()
+		)
+	var absolute_path: String = ProjectSettings.globalize_path(missing_path)
+	if FileAccess.file_exists(absolute_path):
+		DirAccess.remove_absolute(absolute_path)
+	var missing_handle: String = provider.add_attachment(
+			ObservabilityAttachment.from_path(missing_path, "missing.log"),
+		)
+	Expect.that(missing_handle.is_empty()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "establish event failure",
+		))).to_equal("sentry:1")
+	_expect_missing_attachment_failure(provider, missing_handle)
+
+	var successful_handle: String = provider.add_attachment(
+			ObservabilityAttachment.from_bytes(
+				PackedByteArray([1]),
+				"successful.bin",
+			),
+		)
+	Expect.that(successful_handle.is_empty()).to_be_false()
+	_expect_missing_attachment_failure(provider, missing_handle)
+	Expect.that(provider.remove_attachment(successful_handle)).to_equal(Error.OK)
+	_expect_missing_attachment_failure(provider, missing_handle)
+	Expect.that(provider.clear_attachments()).to_be_true()
+	_expect_missing_attachment_failure(provider, missing_handle)
+
+	bridge.replace_attachments_results = [false]
+	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
+			PackedByteArray([2]),
+			"rejected-add.bin",
+		))).to_equal("")
+	_expect_missing_attachment_failure(provider, missing_handle)
+
+	var retained_handle: String = provider.add_attachment(
+			ObservabilityAttachment.from_bytes(
+				PackedByteArray([3]),
+				"retained.bin",
+			),
+		)
+	Expect.that(retained_handle.is_empty()).to_be_false()
+	_expect_missing_attachment_failure(provider, missing_handle)
+	bridge.replace_attachments_results = [false]
+	Expect.that(provider.remove_attachment(retained_handle)).to_equal(Error.FAILED)
+	_expect_missing_attachment_failure(provider, missing_handle)
+	bridge.replace_attachments_results = [false]
+	Expect.that(provider.clear_attachments()).to_be_false()
+	_expect_missing_attachment_failure(provider, missing_handle)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "next applicable event",
+		))).to_equal("sentry:2")
+	Expect.that(provider.last_attachment_failures()).to_have_size(0)
+
+
 func test_oversized_global_path_failure_survives_logs_until_applicable_capture() -> void:
 	var file: FileAccess = FileAccess.open(
 			"user://sentry-oversized-global.log",
@@ -2723,6 +2787,23 @@ func test_user_clear_preserves_configured_game_log_attachment() -> void:
 	Expect.that(bridge.current_attachment_payloads[0]["filename"]).to_equal(
 			"sentry-game.log",
 		)
+
+
+func _expect_missing_attachment_failure(
+		provider: SentryObservabilityProvider,
+		expected_handle: String,
+) -> void:
+	var failures: Array = provider.last_attachment_failures()
+	Expect.that(failures).to_have_size(1)
+	if failures.is_empty():
+		return
+	var failure: ObservabilityAttachmentFailure = failures[0]
+	Expect.that(failure.handle()).to_equal(expected_handle)
+	Expect.that(failure.filename()).to_equal("missing.log")
+	Expect.that(failure.reason()).to_equal(
+			ObservabilityAttachmentFailure.MISSING_FILE,
+		)
+	Expect.that(failure.error()).to_equal(Error.ERR_FILE_NOT_FOUND)
 
 
 func _service() -> FoundryObservability:

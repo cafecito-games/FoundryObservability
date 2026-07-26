@@ -223,6 +223,19 @@ provider_outline=$(sed -n '/^class_name MyProvider$/,/^~~~$/p' "$repo_root/docs/
 grep -qx 'func clear_breadcrumbs() -> bool:' <<<"$provider_outline" \
 	|| fail "custom provider example is missing clear_breadcrumbs"
 
+memory_provider_docs=$(
+	sed -n '/^### MemoryObservabilityProvider$/,/^## Diagnostic attachments$/p' \
+		"$repo_root/docs/API.md"
+)
+memory_provider_docs_flat=$(tr '\n\t' '  ' <<<"$memory_provider_docs" | tr -s ' ')
+for memory_attachment_contract in \
+	'func captured_attachments() -> Array[Array]' \
+	'`captured_attachments()` returns deep defensive snapshots aligned one-to-one with captured events.' \
+	'`clear()` clears captured events, scopes, and attachment history but retains the live session attachment set.'; do
+	rg -Fq "$memory_attachment_contract" <<<"$memory_provider_docs_flat" \
+		|| fail "Memory provider docs are missing attachment contract: $memory_attachment_contract"
+done
+
 attachment_docs=$(
 	sed -n '/^## Diagnostic attachments$/,/^## FoundryLib integration$/p' \
 		"$repo_root/docs/API.md"

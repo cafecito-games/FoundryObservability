@@ -1476,6 +1476,7 @@ Public methods:
 ~~~
 func events() -> Array[ObservabilityEvent]
 func captured_scopes() -> Array[Dictionary]
+func captured_attachments() -> Array[Array]
 func breadcrumbs() -> Array[ObservabilityBreadcrumb]
 func feedback() -> Array[ObservabilityFeedback]
 func metrics() -> Array[ObservabilityMetric]
@@ -1485,21 +1486,24 @@ func clear_feedback() -> void
 func clear_metrics() -> void
 ~~~
 
-events returns a copy of the captured event list. clear removes captured events
-and aligned effective-scope history without changing configuration.
+events returns a copy of the captured event list.
 `captured_scopes()` returns deep defensive snapshots of the effective tags,
-contexts, and user for each event. Successful event capture returns sequential
-IDs in the form memory:N. Breadcrumbs are stored in their own bounded FIFO list
-and return true when accepted. Feedback is stored separately and returns IDs in
-the form memory-feedback:N. Metrics are stored in another list and return true
-when accepted. Capture returns an empty ID or false while disabled or after
-shutdown.
+contexts, and user for each event. `captured_attachments()` returns deep
+defensive snapshots aligned one-to-one with captured events. `clear()` clears
+captured events, scopes, and attachment history but retains the live session
+attachment set. It does not change provider configuration.
+
+Successful event capture returns sequential IDs in the form memory:N.
+Breadcrumbs are stored in their own bounded FIFO list and return true when
+accepted. Feedback is stored separately and returns IDs in the form
+memory-feedback:N. Metrics are stored in another list and return true when
+accepted. Capture returns an empty ID or false while disabled or after shutdown.
 
 Successful configure/reconfigure, provider replacement, and shutdown clear the
 memory provider's live global scope, explicit user, and breadcrumb trail.
-Failed configure preserves them. Captured event and effective-scope history
-survives those lifecycle changes and remains available until `clear()`; feedback
-and metric histories use their own explicit clear methods.
+Failed configure preserves them. Captured event, effective-scope, and attachment
+history survives those lifecycle changes and remains available until `clear()`;
+feedback and metric histories use their own explicit clear methods.
 
 Example:
 

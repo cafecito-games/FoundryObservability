@@ -346,11 +346,9 @@ func add_attachment(attachment: ObservabilityAttachment) -> String:
 	candidate[handle] = attachment.duplicate()
 	var native_candidate: Array[Dictionary] = _native_payloads_for(candidate)
 	if not _replace_native_snapshot(bridge, native_candidate):
-		_set_provider_rejected_failure(handle, attachment)
 		return ""
 	_attachments = candidate
 	_native_attachment_payloads = native_candidate.duplicate(true)
-	_last_attachment_failures.clear()
 	return handle
 
 
@@ -364,15 +362,12 @@ func remove_attachment(handle: String) -> int:
 	if bridge == null or not bridge.has_method("replaceAttachments"):
 		return Error.FAILED
 	var candidate: Dictionary = _attachments.duplicate(true)
-	var attachment: ObservabilityAttachment = candidate[handle]
 	candidate.erase(handle)
 	var native_candidate: Array[Dictionary] = _native_payloads_for(candidate)
 	if not _replace_native_snapshot(bridge, native_candidate):
-		_set_provider_rejected_failure(handle, attachment)
 		return Error.FAILED
 	_attachments = candidate
 	_native_attachment_payloads = native_candidate.duplicate(true)
-	_last_attachment_failures.clear()
 	return Error.OK
 
 
@@ -385,21 +380,13 @@ func clear_attachments() -> bool:
 		return false
 	var native_candidate: Array[Dictionary] = _persistent_builtin_attachments.duplicate(true)
 	if not _replace_native_snapshot(bridge, native_candidate):
-		_last_attachment_failures.clear()
-		_append_attachment_failure(
-				"",
-				"",
-				ObservabilityAttachmentFailure.PROVIDER_REJECTED,
-				Error.FAILED,
-			)
 		return false
 	_attachments = {}
 	_native_attachment_payloads = native_candidate.duplicate(true)
-	_last_attachment_failures.clear()
 	return true
 
 
-## Returns defensive typed failures from the latest applicable attachment operation.
+## Returns defensive typed failures from the latest applicable event capture.
 func last_attachment_failures() -> Array:
 	var failures: Array = []
 	for failure: ObservabilityAttachmentFailure in _last_attachment_failures:
@@ -773,19 +760,6 @@ func _preflight_path_attachment(
 		"accepted": true,
 		"bytes": bytes,
 	}
-
-
-func _set_provider_rejected_failure(
-		handle: String,
-		attachment: ObservabilityAttachment,
-) -> void:
-	_last_attachment_failures.clear()
-	_append_attachment_failure(
-			handle,
-			attachment.effective_filename(),
-			ObservabilityAttachmentFailure.PROVIDER_REJECTED,
-			Error.FAILED,
-		)
 
 
 func _append_attachment_failure(
