@@ -7,6 +7,7 @@ var available: bool = true
 var availability_result: Variant = true
 var configure_result: Variant = Error.OK
 var configure_results: Array[Variant] = []
+var malformed_configure_mutates_session: bool = false
 var flush_result: int = Error.OK
 var apply_scope_result: bool = true
 var apply_scope_results: Array[bool] = []
@@ -51,7 +52,20 @@ func configure(payload: Dictionary) -> Variant:
 			not active_owner.is_empty()
 			and configured_payload != _active_configuration
 		)
-	if result is int and result == Error.OK:
+	if not (result is int) and malformed_configure_mutates_session:
+		var malformed_owner: String = str(payload.get("lifecycle_owner", ""))
+		if payload.get("enabled", false):
+			active_owner = malformed_owner
+			_active_configuration = configured_payload.duplicate(true)
+		elif malformed_owner == active_owner:
+			active_owner = ""
+			_active_configuration = {}
+		current_scope_payload = {
+			"tags": {},
+			"contexts": {},
+		}
+		current_breadcrumb_payloads = []
+	elif result is int and result == Error.OK:
 		var owner: String = str(payload.get("lifecycle_owner", ""))
 		if payload.get("enabled", false):
 			if active_owner.is_empty() or changed_configuration:

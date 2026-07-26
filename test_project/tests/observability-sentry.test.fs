@@ -951,7 +951,10 @@ func test_initial_scope_reset_failure_shuts_down_orphan_native_session() -> void
 
 func test_scope_reset_rollback_configure_failure_fails_closed_and_can_recover() -> void:
 	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
 	var initial_config := ObservabilityConfig.new(
 			p_environment = "production",
 			p_global_attributes = {},
@@ -964,10 +967,14 @@ func test_scope_reset_rollback_configure_failure_fails_closed_and_can_recover() 
 	Expect.that(provider.set_user(ObservabilityUser.new(
 			p_application_user_id = "player-1",
 	))).to_be_true()
+	var configure_count_before_failure: int = bridge.configured_payloads.size()
 	bridge.configure_results = [Error.OK, Error.FAILED]
 	bridge.apply_scope_results = [false]
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.FAILED)
+	Expect.that(bridge.configured_payloads.size()).to_equal(
+			configure_count_before_failure + 2,
+		)
 	Expect.that(bridge.configured_payloads.slice(-2)[0]["environment"]).to_equal(
 			"production",
 		)
@@ -1005,7 +1012,10 @@ func test_scope_reset_rollback_configure_failure_fails_closed_and_can_recover() 
 
 func test_scope_reset_retained_scope_reapply_failure_fails_closed() -> void:
 	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
 	var initial_config := ObservabilityConfig.new(
 			p_environment = "production",
 			p_global_attributes = {},
@@ -1014,10 +1024,14 @@ func test_scope_reset_retained_scope_reapply_failure_fails_closed() -> void:
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	var configure_count_before_failure: int = bridge.configured_payloads.size()
 	bridge.configure_results = [Error.OK, Error.OK]
 	bridge.apply_scope_results = [false, false]
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.FAILED)
+	Expect.that(bridge.configured_payloads.size()).to_equal(
+			configure_count_before_failure + 2,
+		)
 	Expect.that(bridge.configured_payloads.slice(-2)[0]["environment"]).to_equal(
 			"production",
 		)
@@ -1583,30 +1597,88 @@ func test_equivalent_failed_configure_preserves_breadcrumb_trail_and_scope() -> 
 	provider.shutdown()
 
 
-func test_changed_malformed_configure_result_fails_closed() -> void:
+func test_initial_mutating_malformed_configure_result_fails_closed() -> void:
 	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
+	bridge.configure_result = "activated"
+	bridge.malformed_configure_mutates_session = true
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
 			p_environment = "production",
 			p_global_attributes = {},
 			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
-	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
-			p_message = "lost during malformed restart",
-	))).to_be_true()
-	bridge.configure_result = "failed"
-
-	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "staging",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/2"},
 	))).to_equal(Error.FAILED)
+	Expect.that(bridge.configured_payloads.size()).to_equal(1)
+	Expect.that(bridge.shutdown_count).to_equal(1)
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.active_configuration()).to_equal({})
+	Expect.that(bridge.current_scope_payload).to_equal({
+			"tags": {},
+			"contexts": {},
+		})
 	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
 	Expect.that(provider.is_available()).to_be_false()
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "failed closed",
 	))).to_equal("")
+	Expect.that(provider.set_tag("mode", "ranked")).to_be_false()
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "failed closed",
+	))).to_be_false()
+
+
+func test_changed_mutating_malformed_configure_result_fails_closed_and_can_recover() -> void:
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
+	var initial_config := ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+		)
+	var replacement_config := ObservabilityConfig.new(
+			p_environment = "staging",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+		)
+
+	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
+	Expect.that(provider.set_tag("region", "iad")).to_be_true()
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "lost during malformed restart",
+	))).to_be_true()
+	bridge.configure_result = "failed"
+	bridge.malformed_configure_mutates_session = true
+
+	Expect.that(provider.configure(replacement_config)).to_equal(Error.FAILED)
+	Expect.that(bridge.configured_payloads.size()).to_equal(2)
+	Expect.that(bridge.shutdown_count).to_equal(1)
+	Expect.that(bridge.active_owner).to_equal("")
+	Expect.that(bridge.active_configuration()).to_equal({})
+	Expect.that(bridge.current_scope_payload).to_equal({
+			"tags": {},
+			"contexts": {},
+		})
+	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "failed closed",
+	))).to_equal("")
+
+	bridge.configure_result = Error.OK
+	bridge.malformed_configure_mutates_session = false
+	Expect.that(provider.configure(replacement_config)).to_equal(Error.OK)
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.set_tag("fresh", "scope")).to_be_true()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "recovered",
+	))).to_equal("sentry:1")
+	provider.shutdown()
 
 
 func test_equivalent_reconfigure_clear_rejection_restores_scope_and_trail() -> void:

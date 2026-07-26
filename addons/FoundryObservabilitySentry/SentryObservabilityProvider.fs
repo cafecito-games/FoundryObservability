@@ -148,13 +148,8 @@ func configure(config: ObservabilityConfig) -> int:
 			candidate_config_payload.duplicate(true),
 		)
 	if not (result is int):
-		if not can_preserve_prior_session_after_configuration_attempt \
-				or not _restore_retained_scope(
-				bridge,
-				retained_scope_was_enabled,
-				retained_scope_payload,
-		):
-			_fail_closed(bridge)
+		# A malformed result makes native mutation unknowable; rollback is untrustworthy.
+		_fail_closed(bridge)
 		return Error.FAILED
 	var result_code: int = result
 	if result_code != Error.OK:
