@@ -2,6 +2,10 @@
 
 ## [Unreleased] - 2026-07-24
 
+- Added provider-neutral filtering, ordered immutable replacement-or-drop
+  processors, two-pass redaction, deterministic per-signal sampling,
+  independent event/log/metric rate limits, recursion protection, and
+  payload-free processing diagnostics for issue #13.
 - Added provider-neutral diagnostic attachment lifecycle support for issue #12,
   with persistent path and byte attachments, Apple/Android Sentry delivery,
   independent game-log/screenshot/scene-tree opt-ins, per-attachment limits,

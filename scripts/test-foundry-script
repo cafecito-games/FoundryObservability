@@ -560,6 +560,17 @@ require_doc_text \
 	"$api_doc" \
 	'- ObservabilityStartupStatus: stable project-settings startup result constants; see the [startup status table](#skip-decisions-and-results).' \
 	"API public index must list ObservabilityStartupStatus"
+for processing_doc_contract in \
+	'func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?' \
+	'Each processor receives an immutable signal DTO and returns either an immutable replacement of the exact same signal type or `null` to drop it.' \
+	'normalize → pre-redact → processors → post-redact → validate → sample → signal limit → provider' \
+	'Diagnostics never retain payload objects, messages, attribute keys or values, context names, user fields, attachment paths or filenames, callable error strings, processor identities, or redaction patterns.' \
+	'Events, structured logs, and metrics have independent sampling accumulators and independent `ObservabilitySignalLimits` groups.'; do
+	require_doc_text \
+		"$api_doc" \
+		"$processing_doc_contract" \
+		"API documentation is missing processing contract: $processing_doc_contract"
+done
 if ! startup_resolver_section=$(
 	extract_heading_doc_section \
 		"$api_doc" \

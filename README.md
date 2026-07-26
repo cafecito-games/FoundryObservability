@@ -15,6 +15,9 @@ The first core slice is available now:
   and isolated event-local scope with native Apple/Android Sentry mapping.
 - Automatic engine error, warning, script-error, shader-error, fatal, and
   output-message capture with independent event, breadcrumb, and log policies.
+- Provider-neutral ordered event, structured-log, and metric processors,
+  configurable redaction, deterministic signal-local sampling, independent
+  rate limits, and payload-free processing diagnostics.
 - First-class structured logs with level filtering, optional rate limiting, and
   global/per-record scalar attributes.
 - Explicit player feedback capture with validation, optional identity, and
@@ -24,7 +27,8 @@ The first core slice is available now:
 - Provider-neutral structured exception frames and bounded source context for
   macOS, iOS, and Android Sentry delivery, while retaining formatted-stack
   fallback compatibility. Frame data is caller-supplied; the addon does not
-  automatically acquire engine locals or redact supplied source text or values.
+  automatically acquire engine locals or apply redaction unless a policy is
+  configured.
 - Provider-neutral controls for default-enabled native main-thread hang
   diagnostics on macOS and iOS and ANR diagnostics on Android when a supporting
   provider is configured; the included Sentry provider implements those
@@ -118,7 +122,15 @@ startup and emit typed events through the autoload:
 ```foundryscript
 import foundry.observability
 
-var config := ObservabilityConfig.new(
+var policy: ObservabilityRedactionPolicy = ObservabilityRedactionPolicy.new([
+	ObservabilityRedactionRule.sensitive_key("password"),
+	ObservabilityRedactionRule.replace_text(
+			PackedStringArray(["**"]),
+			"[0-9]{3}-[0-9]{2}-[0-9]{4}",
+			"[ssn]",
+		),
+])
+var config: ObservabilityConfig = ObservabilityConfig.new(
 		p_enabled = true,
 		p_environment = "production",
 		p_release = "1.0.0",
@@ -126,6 +138,20 @@ var config := ObservabilityConfig.new(
 		p_provider_options = {},
 		p_automatic_log_mask = ObservabilityCaptureMask.ALL_ERRORS,
 		p_max_breadcrumbs = 100,
+		p_automatic_message_filter_prefixes = PackedStringArray(
+				["FoundryObservability: "],
+			),
+		p_event_processors = [func(event: ObservabilityEvent) -> Variant:
+			if event.level() < ObservabilityLevel.WARNING:
+				return null
+			return event,
+		],
+		p_log_processors = [],
+		p_metric_processors = [],
+		p_event_limits = ObservabilitySignalLimits.new(5, 1000, 20, 10000),
+		p_log_limits = ObservabilitySignalLimits.new(100, 0, 1000, 10000),
+		p_metric_limits = ObservabilitySignalLimits.new(100, 0, 1000, 10000),
+		p_redaction_policy = policy,
 	)
 var provider: ObservabilityProvider = MemoryObservabilityProvider.new()
 FoundryObservability.configure(provider, config)
@@ -165,8 +191,23 @@ FoundryObservability.capture_distribution(
 FoundryObservability.capture_feedback(ObservabilityFeedback.new(
 		p_message = "The tutorial was confusing.",
 ))
+var diagnostic: ObservabilityProcessingDiagnostic? = (
+		FoundryObservability.last_processing_diagnostic()
+	)
+if diagnostic != null:
+	print("%s: %s" % [
+		diagnostic.processing_signal(),
+		diagnostic.outcome(),
+	])
 FoundryObservability.clear_breadcrumbs()
 ```
+
+The event processor above receives an already-redacted immutable event and may
+return that event, a replacement `ObservabilityEvent`, or `null` to drop it.
+Log and metric processors are configured separately. Redaction runs again after
+processors, and event, log, and metric sampling and limits never consume one
+another's capacity. Processing diagnostics contain only stable outcome
+metadata, never the captured payload.
 
 Persistent diagnostic attachments use provider-local handles:
 
