@@ -13,6 +13,23 @@ fail() {
 	exit 1
 }
 
+require_doc_text() {
+	local relative_path=$1
+	local expected=$2
+	local failure_message=$3
+	rg -Fq -- "$expected" "$repo_root/$relative_path" \
+		|| fail "$failure_message"
+}
+
+reject_doc_text() {
+	local relative_path=$1
+	local rejected=$2
+	local failure_message=$3
+	if rg -Fiq -- "$rejected" "$repo_root/$relative_path"; then
+		fail "$failure_message"
+	fi
+}
+
 resolve_foundry_bin() {
 	if [[ -n "${FOUNDRY_BIN:-}" ]]; then
 		[[ -x "$FOUNDRY_BIN" ]] || fail "FOUNDRY_BIN is not executable: $FOUNDRY_BIN"
@@ -114,15 +131,106 @@ for current_doc in README.md BUILD.md CONTRIBUTING.md CHANGELOG.md docs/API.md; 
 	fi
 done
 
-rg -Fq 'foundry_observability/startup/auto_init' "$repo_root/README.md" \
-	|| fail "README is missing automatic startup setup"
-rg -Fq 'startup_status()' "$repo_root/docs/API.md" \
-	|| fail "API documentation is missing startup status"
-rg -Fq 'before the main scene' "$repo_root/docs/API.md" \
-	|| fail "API documentation is missing startup ordering"
-rg -Fq 'project-settings initialization' \
-	"$repo_root/docs/NATIVE_CRASH_VALIDATION.md" \
-	|| fail "native crash validation is missing project-settings initialization"
+require_doc_text \
+	"README.md" \
+	"foundry_observability/startup/auto_init" \
+	"README is missing automatic startup setup"
+
+api_doc="docs/API.md"
+require_doc_text \
+	"$api_doc" \
+	"## Project-settings startup" \
+	"API documentation is missing the project-settings startup section"
+require_doc_text \
+	"$api_doc" \
+	'The top-level `provider_options` value must be a `Dictionary`.' \
+	"API documentation must require a top-level provider options Dictionary"
+while IFS=$'\t' read -r setting_name documented_default; do
+	require_doc_text \
+		"$api_doc" \
+		"| \`$setting_name\` | $documented_default |" \
+		"API documentation is missing startup setting/default: $setting_name"
+done <<'STARTUP_SETTINGS'
+foundry_observability/startup/auto_init	`true`
+foundry_observability/startup/enabled	`true`
+foundry_observability/startup/skip_editor_play	`false`
+foundry_observability/startup/skip_debug_exports	`false`
+foundry_observability/options/dsn	`""`
+foundry_observability/options/environment	`""`
+foundry_observability/options/release	`""`
+foundry_observability/options/dist	`""`
+foundry_observability/options/debug_diagnostics	`2` (`Auto`)
+foundry_observability/options/provider_options	`{}`
+STARTUP_SETTINGS
+for required_api_text in \
+	'Nested values may be null, booleans, integers, finite floats, strings, `StringName` values, arrays, or dictionaries.' \
+	'Dictionary keys must be strings or `StringName` values.' \
+	'eight nested containers' \
+	'at most 256 dictionary entries' \
+	'before the main scene' \
+	'before any autoload ordered after `FoundryObservability`' \
+	'Autoloads ordered earlier' \
+	'engine work before autoload construction' \
+	'During initial autoload construction, an intentional skip leaves the null provider active.' \
+	'A later `initialize_from_project_settings()` skip records the new status, message, and `Error.OK`' \
+	'preserves an already active provider and configuration.'
+do
+	require_doc_text \
+		"$api_doc" \
+		"$required_api_text" \
+		"API documentation is missing startup contract: $required_api_text"
+done
+while IFS=$'\t' read -r startup_status startup_error; do
+	require_doc_text \
+		"$api_doc" \
+		"| \`$startup_status\` | $startup_error |" \
+		"API documentation is missing startup status/error: $startup_status"
+done <<'STARTUP_STATUSES'
+not_started	`Error.OK`
+initialized	`Error.OK`
+disabled	`Error.OK`
+skipped_editor	`Error.OK`
+skipped_editor_play	`Error.OK`
+skipped_debug	`Error.OK`
+missing_dsn	`Error.ERR_UNCONFIGURED`
+provider_unavailable	`Error.ERR_UNAVAILABLE`
+configuration_failed	`Error.ERR_INVALID_PARAMETER` or the provider's error
+STARTUP_STATUSES
+require_doc_text \
+	"$api_doc" \
+	'missing DSN' \
+	"API documentation must describe a missing DSN"
+reject_doc_text \
+	"$api_doc" \
+	"invalid DSN" \
+	"API documentation must not claim DSN format validation"
+
+native_crash_doc="docs/NATIVE_CRASH_VALIDATION.md"
+for required_native_text in \
+	'### Automatic readiness' \
+	'### Manual readiness' \
+	'**Automatic Run A readiness:**' \
+	'**Manual Run A readiness:**' \
+	'**Automatic Run B readiness:**' \
+	'**Manual Run B readiness:**' \
+	'startup/auto_init=false' \
+	'FoundryObservability.startup_status()' \
+	'FoundryObservability.configure(' \
+	'FoundryObservability.is_available()' \
+	'func _run_guarded_automatic_crash_validation() -> void:' \
+	'if not _automatic_crash_validation_ready():' \
+	'func _run_guarded_manual_crash_validation() -> void:' \
+	'if not _configure_manual_crash_validation():' \
+	'return false' \
+	'Do not invoke any platform crash trigger when either readiness function returns false.' \
+	'Use the same DSN, release, environment, and distribution in Run A and Run B.' \
+	'native backend ownership'
+do
+	require_doc_text \
+		"$native_crash_doc" \
+		"$required_native_text" \
+		"native crash validation is missing recovery contract: $required_native_text"
+done
 
 rg -Fq '"foundry_engine"' "$sentry_addon/SentryRuntimeContextCollector.fs" \
 	|| fail "Sentry runtime context must use Foundry engine naming"

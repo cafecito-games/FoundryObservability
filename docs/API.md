@@ -115,12 +115,11 @@ The detected environment is the first matching runtime value:
 
 ### Provider-option validation
 
-`provider_options` accepts only data values: null, booleans, integers, finite
-floats, strings, `StringName` values, arrays, and dictionaries whose keys are
-strings or `StringName` values. Arrays and dictionaries may contain at most
-eight nested containers. Validation examines at most 256 dictionary entries
-and array elements across the complete value, rejects cycles and unsupported
-types, and stores a deep copy.
+The top-level `provider_options` value must be a `Dictionary`. Nested values may be null, booleans, integers, finite floats, strings, `StringName` values, arrays, or dictionaries.
+Dictionary keys must be strings or `StringName` values. Nested arrays and
+dictionaries may contain at most eight nested containers. Validation examines
+at most 256 dictionary entries and array elements across the complete value,
+rejects cycles and unsupported types, and stores a deep copy.
 
 The typed DSN and diagnostic settings are authoritative. After validation,
 startup overwrites any `provider_options["dsn"]` and
@@ -138,9 +137,12 @@ errors, or provider availability, in this order:
    `skipped_editor_play`.
 4. A debug export with `skip_debug_exports=true` produces `skipped_debug`.
 
-These intentional skips return `Error.OK`, leave the null provider active, and
-take precedence over invalid DSN or provider-option values. The startup result
-can be inspected through the provider-neutral public methods:
+During initial autoload construction, an intentional skip leaves the null provider active.
+These intentional skips return `Error.OK` and take precedence over a missing
+DSN or invalid provider-option values. A later `initialize_from_project_settings()` skip records the new status, message, and `Error.OK`
+in `last_error()`, but preserves an already active provider and configuration.
+The startup result can be inspected through the provider-neutral public
+methods:
 
 ```foundryscript
 func initialize_from_project_settings() -> int
@@ -167,11 +169,10 @@ attempt.
 | `configuration_failed` | `Error.ERR_INVALID_PARAMETER` or the provider's error | `Startup configuration is invalid.`, `Startup configuration contains invalid values.`, or `Startup provider configuration failed with Error N.` |
 
 Automatic startup begins synchronously in the `FoundryObservability` autoload
-constructor. It therefore completes before the main scene and before any
-autoload ordered after `FoundryObservability`; those later hooks may capture
-immediately. Autoloads ordered earlier, engine work before autoload
-construction, and native failures before successful provider configuration are
-outside this ordering guarantee.
+constructor. It therefore completes before the main scene and before any autoload ordered after `FoundryObservability`;
+those later hooks may capture immediately. Autoloads ordered earlier and engine work before autoload construction
+are outside this ordering guarantee, as are native failures before successful
+provider configuration.
 
 Repeated initialization reuses and reconfigures the startup provider instead
 of creating duplicate active providers. A failed reconfiguration updates the
