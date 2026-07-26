@@ -19,6 +19,8 @@ const DEBUG_OFF: int = 0
 const DEBUG_ON: int = 1
 const DEBUG_AUTO: int = 2
 const _MAX_PROVIDER_OPTION_DEPTH: int = 8
+## Bounds dictionary entries and array elements accepted from provider options.
+const _MAX_PROVIDER_OPTION_ITEMS: int = 256
 
 var _auto_init: bool = true
 var _enabled: bool = true
@@ -61,8 +63,17 @@ func _init(
 		_debug_mode = raw_debug_mode
 
 	var raw_options: Variant = values.get(PROVIDER_OPTIONS, defaults[PROVIDER_OPTIONS])
+	var provider_option_budget: Dictionary = {
+		"remaining": _MAX_PROVIDER_OPTION_ITEMS,
+	}
+	var active_provider_option_containers: Array = []
 	if not (raw_options is Dictionary) \
-			or not _is_valid_provider_option(raw_options, 0):
+			or not _is_valid_provider_option(
+					raw_options,
+					0,
+					provider_option_budget,
+					active_provider_option_containers,
+				):
 		_validation_error = Error.ERR_INVALID_PARAMETER
 	else:
 		@warning_ignore("unsafe_method_access")
@@ -92,8 +103,7 @@ func _init(
 		)
 	if release_template.is_empty():
 		release_template = "{app_name}@{app_version}"
-	_release = release_template.replace("{app_name}", app_name).replace(
-			"{app_version}", app_version)
+	_release = _expand_release_template(release_template, app_name, app_version)
 	_dist = str(values.get(DIST, defaults[DIST])).strip_edges()
 
 	_provider_options["dsn"] = _dsn
@@ -105,9 +115,9 @@ static func from_sources(
 		runtime: Dictionary = {},
 ) -> ObservabilityStartupSettings:
 	return ObservabilityStartupSettings.new(
-			values.duplicate(true),
-			environment_variables.duplicate(true),
-			runtime.duplicate(true),
+			values,
+			environment_variables,
+			runtime,
 		)
 
 
@@ -213,6 +223,26 @@ static func _first_nonempty(primary: String, fallback: String) -> String:
 	return fallback.strip_edges()
 
 
+static func _expand_release_template(
+		release_template: String,
+		app_name: String,
+		app_version: String,
+) -> String:
+	var expanded: String = ""
+	var index: int = 0
+	while index < release_template.length():
+		if release_template.substr(index, 10) == "{app_name}":
+			expanded += app_name
+			index += 10
+		elif release_template.substr(index, 13) == "{app_version}":
+			expanded += app_version
+			index += 13
+		else:
+			expanded += release_template.substr(index, 1)
+			index += 1
+	return expanded
+
+
 static func _detected_environment(runtime: Dictionary) -> String:
 	if runtime.get("dedicated_server", false) == true:
 		return "dedicated_server"
@@ -225,7 +255,12 @@ static func _detected_environment(runtime: Dictionary) -> String:
 	return "export_release"
 
 
-static func _is_valid_provider_option(value: Variant, depth: int) -> bool:
+static func _is_valid_provider_option(
+		value: Variant,
+		depth: int,
+		budget: Dictionary,
+		active_containers: Array,
+) -> bool:
 	match typeof(value):
 		TYPE_NIL, TYPE_BOOL, TYPE_INT, TYPE_STRING, TYPE_STRING_NAME:
 			return true
@@ -233,22 +268,51 @@ static func _is_valid_provider_option(value: Variant, depth: int) -> bool:
 			@warning_ignore("unsafe_call_argument")
 			return is_finite(value)
 		TYPE_ARRAY:
-			if depth > _MAX_PROVIDER_OPTION_DEPTH:
+			if depth > _MAX_PROVIDER_OPTION_DEPTH \
+					or not _enter_active_provider_option_container(
+							value, active_containers):
 				return false
 			@warning_ignore("unsafe_call_argument")
-			return _is_valid_provider_option_array(value, depth)
+			var valid_array: bool = _is_valid_provider_option_array(
+					value,
+					depth,
+					budget,
+					active_containers,
+				)
+			active_containers.pop_back()
+			return valid_array
 		TYPE_DICTIONARY:
-			if depth > _MAX_PROVIDER_OPTION_DEPTH:
+			if depth > _MAX_PROVIDER_OPTION_DEPTH \
+					or not _enter_active_provider_option_container(
+							value, active_containers):
 				return false
 			@warning_ignore("unsafe_call_argument")
-			return _is_valid_provider_option_dictionary(value, depth)
+			var valid_dictionary: bool = _is_valid_provider_option_dictionary(
+					value,
+					depth,
+					budget,
+					active_containers,
+				)
+			active_containers.pop_back()
+			return valid_dictionary
 		_:
 			return false
 
 
-static func _is_valid_provider_option_array(values: Array, depth: int) -> bool:
+static func _is_valid_provider_option_array(
+		values: Array,
+		depth: int,
+		budget: Dictionary,
+		active_containers: Array,
+) -> bool:
 	for element: Variant in values:
-		if not _is_valid_provider_option(element, depth + 1):
+		if not _consume_provider_option_item(budget) \
+				or not _is_valid_provider_option(
+						element,
+						depth + 1,
+						budget,
+						active_containers,
+					):
 			return false
 	return true
 
@@ -256,10 +320,37 @@ static func _is_valid_provider_option_array(values: Array, depth: int) -> bool:
 static func _is_valid_provider_option_dictionary(
 		values: Dictionary,
 		depth: int,
+		budget: Dictionary,
+		active_containers: Array,
 ) -> bool:
 	for key: Variant in values:
-		if not (key is String) and not (key is StringName):
+		if not _consume_provider_option_item(budget) \
+				or (not (key is String) and not (key is StringName)):
 			return false
-		if not _is_valid_provider_option(values[key], depth + 1):
+		if not _is_valid_provider_option(
+				values[key],
+				depth + 1,
+				budget,
+				active_containers,
+			):
 			return false
+	return true
+
+
+static func _consume_provider_option_item(budget: Dictionary) -> bool:
+	var remaining: int = budget["remaining"]
+	if remaining <= 0:
+		return false
+	budget["remaining"] = remaining - 1
+	return true
+
+
+static func _enter_active_provider_option_container(
+		container: Variant,
+		active_containers: Array,
+) -> bool:
+	for active_container: Variant in active_containers:
+		if is_same(container, active_container):
+			return false
+	active_containers.append(container)
 	return true

@@ -1950,6 +1950,24 @@ func test_startup_settings_resolve_project_environment_and_default_precedence() 
 	Expect.that(default_config.environment).to_equal("export_release")
 
 
+func test_startup_settings_expands_release_tokens_in_a_single_pass() -> void:
+	var settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.RELEASE:
+						"{app_name}|{app_version}",
+			},
+			{},
+			{
+				"app_name": "Oakhaven-{app_version}",
+				"app_version": "1.2.3-{app_name}",
+			},
+		)
+
+	Expect.that(settings.observability_config().release).to_equal(
+			"Oakhaven-{app_version}|1.2.3-{app_name}",
+		)
+
+
 func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
 	var dedicated := ObservabilityStartupSettings.from_sources(
 			{},
@@ -2125,19 +2143,153 @@ func test_startup_settings_provider_option_depth_counts_containers() -> void:
 		)
 
 
+func test_startup_settings_provider_options_reject_cycles_cleanly() -> void:
+	var self_cycle: Dictionary = {}
+	self_cycle["self"] = self_cycle
+	var self_cycle_settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: self_cycle,
+			},
+		)
+	Expect.that(self_cycle_settings.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+	var cyclic_array: Array = []
+	var cyclic_dictionary: Dictionary = {"array": cyclic_array}
+	cyclic_array.append(cyclic_dictionary)
+	var mutual_cycle_settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						cyclic_dictionary,
+			},
+		)
+	Expect.that(mutual_cycle_settings.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+
+func test_startup_settings_provider_options_enforce_item_budget() -> void:
+	var at_limit := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						_wide_provider_options(256),
+			},
+		)
+	Expect.that(at_limit.validation_error()).to_equal(Error.OK)
+
+	var over_limit := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						_wide_provider_options(257),
+			},
+		)
+	Expect.that(over_limit.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+	var shared: Dictionary = {"finite": 0.5, "label": &"shared"}
+	var repeated := {"left": shared, "right": shared}
+	var repeated_settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: repeated,
+			},
+		)
+	shared["finite"] = 0.25
+	Expect.that(repeated_settings.validation_error()).to_equal(Error.OK)
+	Expect.that(
+			repeated_settings.observability_config().provider_options(),
+		).to_equal({
+			"left": {"finite": 0.5, "label": &"shared"},
+			"right": {"finite": 0.5, "label": &"shared"},
+			"dsn": "",
+			"debug": false,
+		})
+
+
+func test_startup_settings_provider_options_validate_data_shapes() -> void:
+	var nested_array: Array = [
+		null,
+		true,
+		7,
+		0.5,
+		"text",
+		&"name",
+		[{"nested": "value"}],
+	]
+	var valid := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						{"values": nested_array},
+			},
+		)
+	nested_array[6][0]["nested"] = "mutated"
+	Expect.that(valid.validation_error()).to_equal(Error.OK)
+	Expect.that(
+			valid.observability_config().provider_options().get("values"),
+		).to_equal([
+			null,
+			true,
+			7,
+			0.5,
+			"text",
+			&"name",
+			[{"nested": "value"}],
+		])
+
+	var nonfinite := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS:
+						{"nan": NAN, "infinity": INF},
+			},
+		)
+	Expect.that(nonfinite.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+	var invalid_key: Dictionary = {}
+	invalid_key[7] = "not a provider option key"
+	var invalid_key_settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: invalid_key,
+			},
+		)
+	Expect.that(invalid_key_settings.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+
 func test_startup_settings_register_project_defaults_idempotently() -> void:
+	ProjectSettings.set_setting(ObservabilityStartupSettings.AUTO_INIT, false)
+	ProjectSettings.set_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS,
+			ObservabilityStartupSettings.DEBUG_OFF,
+		)
 	ObservabilityStartupSettings.register_project_settings()
 	ObservabilityStartupSettings.register_project_settings()
 	var defaults: Dictionary = ObservabilityStartupSettings.project_setting_defaults()
 
 	for setting_name: String in defaults:
 		Expect.that(ProjectSettings.has_setting(setting_name)).to_be_true()
+		var property_info: Dictionary = _project_setting_property(setting_name)
+		var usage: int = property_info.get("usage", 0)
+		Expect.that(
+				usage & PROPERTY_USAGE_EDITOR_BASIC_SETTING,
+			).to_equal(PROPERTY_USAGE_EDITOR_BASIC_SETTING)
+		Expect.that(
+				usage & PROPERTY_USAGE_RESTART_IF_CHANGED,
+			).to_equal(0)
 	Expect.that(ProjectSettings.get_setting(
-			ObservabilityStartupSettings.AUTO_INIT)).to_be_true()
+			ObservabilityStartupSettings.AUTO_INIT)).to_be_false()
 	Expect.that(ProjectSettings.get_setting(
 			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)).to_equal(
-					ObservabilityStartupSettings.DEBUG_AUTO,
+					ObservabilityStartupSettings.DEBUG_OFF,
 				)
+	var debug_info: Dictionary = _project_setting_property(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)
+	Expect.that(debug_info.get("type")).to_equal(TYPE_INT)
+	Expect.that(debug_info.get("hint")).to_equal(PROPERTY_HINT_ENUM)
+	Expect.that(debug_info.get("hint_string")).to_equal("Off,On,Auto")
 
 
 func _service() -> FoundryObservability:
@@ -2165,6 +2317,20 @@ func _provider_options_with_container_depth(depth: int) -> Dictionary:
 		cursor = nested
 	cursor["value"] = "leaf"
 	return options
+
+
+func _wide_provider_options(item_count: int) -> Dictionary:
+	var options: Dictionary = {}
+	for index: int in range(item_count):
+		options["item_%d" % index] = index
+	return options
+
+
+func _project_setting_property(setting_name: String) -> Dictionary:
+	for property_info: Dictionary in ProjectSettings.get_property_list():
+		if property_info.get("name") == setting_name:
+			return property_info
+	return {}
 
 
 func _keep_combat_metric(metric: ObservabilityMetric) -> bool:
