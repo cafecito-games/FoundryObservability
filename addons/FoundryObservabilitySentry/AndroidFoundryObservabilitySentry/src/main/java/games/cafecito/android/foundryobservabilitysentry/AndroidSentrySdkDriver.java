@@ -1,6 +1,7 @@
 package games.cafecito.android.foundryobservabilitysentry;
 
 import io.sentry.IScope;
+import io.sentry.ScopeType;
 import io.sentry.Sentry;
 import io.sentry.android.core.SentryAndroid;
 import io.sentry.android.core.SentryAndroidOptions;
@@ -103,7 +104,7 @@ final class AndroidSentrySdkDriver implements SentryLifecycleDriver {
       Set<String> previousTagKeys,
       Set<String> previousContextKeys) {
     boolean[] applied = {false};
-    Sentry.configureScope(scope -> {
+    Sentry.configureScope(ScopeType.COMBINED, scope -> {
       if (hasUnownedCollision(
               candidate.tags.keySet(),
               previousTagKeys,

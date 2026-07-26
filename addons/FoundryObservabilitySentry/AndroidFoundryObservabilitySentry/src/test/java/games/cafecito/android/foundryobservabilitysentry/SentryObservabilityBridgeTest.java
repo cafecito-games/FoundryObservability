@@ -9,6 +9,7 @@ import games.cafecito.foundry.Dictionary;
 import games.cafecito.foundry.Foundry;
 import io.sentry.Breadcrumb;
 import io.sentry.IScope;
+import io.sentry.ScopeType;
 import io.sentry.Sentry;
 import io.sentry.android.core.SentryAndroidOptions;
 import io.sentry.protocol.SentryId;
@@ -34,6 +35,12 @@ public class SentryObservabilityBridgeTest {
 
   @After
   public void closeSentry() {
+    if (Sentry.isEnabled()) {
+      for (ScopeType scopeType :
+          List.of(ScopeType.GLOBAL, ScopeType.ISOLATION, ScopeType.CURRENT)) {
+        Sentry.configureScope(scopeType, IScope::clear);
+      }
+    }
     Sentry.close();
   }
 
@@ -489,6 +496,124 @@ public class SentryObservabilityBridgeTest {
   }
 
   @Test
+  public void applyScopeRejectsGlobalAndCurrentLayerCollisionsAndWritesOnlyDefaultLayer() {
+    SentryObservabilityBridge bridge = configuredBridge();
+    Dictionary initial = new Dictionary();
+    initial.put("tags", Map.of("owned-layer-tag-0", "owned"));
+    initial.put("contexts", Map.of("owned-layer-context-0", Map.of("value", 0)));
+    initial.put("user", Map.of("id", "layer-player-0"));
+    assertTrue(bridge.applyScope(initial));
+
+    List<ScopeType> scopeTypes = List.of(
+        ScopeType.GLOBAL,
+        ScopeType.GLOBAL,
+        ScopeType.CURRENT,
+        ScopeType.CURRENT);
+    List<String> collisionKeys = List.of(
+        "global-native-tag",
+        "foundry_engine",
+        "current-native-tag",
+        "device");
+    List<Boolean> tagCollisions = List.of(true, false, true, false);
+    int index = 0;
+    for (int caseIndex = 0; caseIndex < scopeTypes.size(); caseIndex++) {
+      ScopeType scopeType = scopeTypes.get(caseIndex);
+      String collisionKey = collisionKeys.get(caseIndex);
+      boolean tagCollision = tagCollisions.get(caseIndex);
+      Object nativeValue = tagCollision
+          ? "native-" + scopeType.name()
+          : Map.of("owner", "native-" + scopeType.name());
+      Sentry.configureScope(scopeType, scope -> {
+        if (tagCollision) {
+          scope.setTag(collisionKey, (String) nativeValue);
+        } else {
+          scope.setContexts(collisionKey, nativeValue);
+        }
+      });
+
+      Dictionary rejected = new Dictionary();
+      rejected.put(
+          "tags",
+          tagCollision
+              ? Map.of(collisionKey, "foundry", "rejected-layer-tag", "blocked")
+              : Map.of("rejected-layer-tag", "blocked"));
+      rejected.put(
+          "contexts",
+          tagCollision
+              ? Map.of("rejected-layer-context", Map.of("value", "blocked"))
+              : Map.of(
+                  collisionKey,
+                  Map.of("owner", "foundry"),
+                  "rejected-layer-context",
+                  Map.of("value", "blocked")));
+      rejected.put("user", Map.of("id", "layer-player-rejected"));
+
+      assertFalse(bridge.applyScope(rejected));
+      IScope defaultScope = currentScope();
+      assertEquals("owned", defaultScope.getTags().get("owned-layer-tag-" + index));
+      assertEquals(
+          index,
+          ((Map<?, ?>) defaultScope.getContexts().get("owned-layer-context-" + index))
+              .get("value"));
+      assertEquals("layer-player-" + index, defaultScope.getUser().getId());
+      assertFalse(defaultScope.getTags().containsKey("rejected-layer-tag"));
+      assertFalse(defaultScope.getContexts().containsKey("rejected-layer-context"));
+      if (tagCollision) {
+        assertEquals(nativeValue, scope(scopeType).getTags().get(collisionKey));
+      } else {
+        assertEquals(nativeValue, scope(scopeType).getContexts().get(collisionKey));
+      }
+
+      int nextIndex = index + 1;
+      Dictionary safe = new Dictionary();
+      safe.put("tags", Map.of("owned-layer-tag-" + nextIndex, "owned"));
+      safe.put(
+          "contexts",
+          Map.of("owned-layer-context-" + nextIndex, Map.of("value", nextIndex)));
+      safe.put("user", Map.of("id", "layer-player-" + nextIndex));
+      assertTrue(bridge.applyScope(safe));
+      if (tagCollision) {
+        assertEquals(nativeValue, scope(scopeType).getTags().get(collisionKey));
+      } else {
+        assertEquals(nativeValue, scope(scopeType).getContexts().get(collisionKey));
+      }
+      index = nextIndex;
+    }
+
+    int finalIndex = index;
+    Sentry.configureScope(
+        ScopeType.GLOBAL,
+        scope -> scope.setTag("owned-layer-tag-" + finalIndex, "global-native"));
+    Sentry.configureScope(
+        ScopeType.GLOBAL,
+        scope -> scope.setContexts(
+            "owned-layer-context-" + finalIndex,
+            Map.of("owner", "global-native")));
+    assertEquals(
+        ScopeType.CURRENT,
+        scope(ScopeType.GLOBAL).getOptions().getDefaultScopeType());
+    assertEquals(
+        Map.of("owner", "global-native"),
+        scope(ScopeType.GLOBAL)
+            .getContexts()
+            .get("owned-layer-context-" + finalIndex));
+
+    assertTrue(bridge.applyScope(new Dictionary()));
+    assertEquals(
+        "global-native",
+        scope(ScopeType.GLOBAL).getTags().get("owned-layer-tag-" + finalIndex));
+    assertEquals(
+        Map.of("owner", "global-native"),
+        scope(ScopeType.GLOBAL)
+            .getContexts()
+            .get("owned-layer-context-" + finalIndex));
+    assertFalse(currentScope().getTags().containsKey("owned-layer-tag-" + finalIndex));
+    assertFalse(
+        currentScope().getContexts().containsKey("owned-layer-context-" + finalIndex));
+    assertEquals(null, currentScope().getUser());
+  }
+
+  @Test
   public void clearBreadcrumbsClearsCurrentScopeAndBothMethodsHonorOwnerAvailability() {
     SentryObservabilityBridge unavailable = newBridge();
     assertFalse(unavailable.applyScope(new Dictionary()));
@@ -668,6 +793,12 @@ public class SentryObservabilityBridgeTest {
   private static IScope currentScope() {
     AtomicReference<IScope> result = new AtomicReference<>();
     Sentry.configureScope(result::set);
+    return result.get();
+  }
+
+  private static IScope scope(ScopeType scopeType) {
+    AtomicReference<IScope> result = new AtomicReference<>();
+    Sentry.configureScope(scopeType, result::set);
     return result.get();
   }
 
