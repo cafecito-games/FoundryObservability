@@ -10,6 +10,7 @@ var _sample_rate: float = 1.0
 var _limits: ObservabilitySignalLimits
 var _legacy_limit_per_second: int = 0
 var _sample_accumulator: float = 0.0
+var _sample_compensation: float = 0.0
 var _has_current_frame: bool = false
 var _current_frame: int = 0
 var _current_frame_count: int = 0
@@ -36,7 +37,10 @@ func _init(
 
 ## Returns a stable payload-free admission outcome.
 func admit(identity: String, now_msec: int, frame_index: int) -> Dictionary:
-	_sample_accumulator += _sample_rate
+	var compensated_rate: float = _sample_rate - _sample_compensation
+	var sampled_total: float = _sample_accumulator + compensated_rate
+	_sample_compensation = (sampled_total - _sample_accumulator) - compensated_rate
+	_sample_accumulator = sampled_total
 	if _sample_accumulator < 1.0:
 		return _dropped(&"sampled", &"")
 	_sample_accumulator -= 1.0
@@ -51,13 +55,15 @@ func admit(identity: String, now_msec: int, frame_index: int) -> Dictionary:
 		effective_now_msec = maxi(effective_now_msec, _last_now_msec)
 	var candidate_timepoints: Array[int] = _prune_window(
 			effective_now_msec, _accepted_timepoints)
-	var digest: String = identity.sha256_text()
 	var has_repeated_identity: bool = false
-	if _limits.repeated_window_msec() > 0 and _identity_records.has(digest):
-		var prior: Dictionary = _identity_records[digest]
-		var prior_time_msec: int = prior["time_msec"]
-		var age_msec: int = effective_now_msec - prior_time_msec
-		has_repeated_identity = age_msec < _limits.repeated_window_msec()
+	var digest: String = ""
+	if _limits.repeated_window_msec() > 0:
+		digest = identity.sha256_text()
+		if _identity_records.has(digest):
+			var prior: Dictionary = _identity_records[digest]
+			var prior_time_msec: int = prior["time_msec"]
+			var age_msec: int = effective_now_msec - prior_time_msec
+			has_repeated_identity = age_msec < _limits.repeated_window_msec()
 
 	var candidate_legacy_second: int = floori(float(effective_now_msec) / 1000.0)
 	var candidate_legacy_count: int = 1
@@ -80,12 +86,13 @@ func admit(identity: String, now_msec: int, frame_index: int) -> Dictionary:
 	if _limits.window_count() > 0 and _limits.window_msec() > 0:
 		candidate_timepoints.append(effective_now_msec)
 		_accepted_timepoints = candidate_timepoints
-	_identity_sequence += 1
-	_identity_records[digest] = {
-		"time_msec": effective_now_msec,
-		"sequence": _identity_sequence,
-	}
-	_evict_oldest_identity()
+	if _limits.repeated_window_msec() > 0:
+		_identity_sequence += 1
+		_identity_records[digest] = {
+			"time_msec": effective_now_msec,
+			"sequence": _identity_sequence,
+		}
+		_evict_oldest_identity()
 	_has_legacy_second = true
 	_legacy_second = candidate_legacy_second
 	_legacy_second_count = candidate_legacy_count
@@ -97,6 +104,7 @@ func admit(identity: String, now_msec: int, frame_index: int) -> Dictionary:
 ## Clears sample, time, identity, frame, and legacy state.
 func reset() -> void:
 	_sample_accumulator = 0.0
+	_sample_compensation = 0.0
 	_has_current_frame = false
 	_current_frame = 0
 	_current_frame_count = 0

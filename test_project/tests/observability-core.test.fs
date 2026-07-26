@@ -1400,6 +1400,30 @@ func test_signal_limiter_samples_before_consuming_frame_capacity() -> void:
 	})
 
 
+func test_signal_limiter_stably_samples_decimal_rates() -> void:
+	var tenth := ObservabilitySignalLimiter.new(0.1)
+	for index: int in range(9):
+		Expect.that(tenth.admit("tenth-%s" % index, index, index)["accepted"]).to_be_false()
+	Expect.that(tenth.admit("tenth-9", 9, 9)["accepted"]).to_be_true()
+
+	var fixed_run := ObservabilitySignalLimiter.new(0.1)
+	var accepted: int = 0
+	for index: int in range(1000):
+		if fixed_run.admit("fixed-%s" % index, index, index)["accepted"]:
+			accepted += 1
+	Expect.that(accepted).to_equal(100)
+
+
+func test_signal_limiter_skips_identity_state_when_repetition_is_disabled() -> void:
+	var limiter := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(0, 0, 0, 0))
+	for index: int in range(1025):
+		Expect.that(limiter.admit("untracked-%s" % index, index, index)["accepted"]).to_be_true()
+
+	Expect.that(limiter._identity_records).to_equal({})
+	Expect.that(limiter._identity_sequence).to_equal(0)
+
+
 func test_signal_limiter_combines_limits_at_expiry_boundaries() -> void:
 	var limiter := ObservabilitySignalLimiter.new(
 			1.0, ObservabilitySignalLimits.new(2, 100, 2, 1000))
@@ -1434,6 +1458,7 @@ func test_signal_limiter_bounds_hashed_identities_and_resets_every_mode() -> voi
 	Expect.that(resettable.admit("reset", 0, 1)["reason"]).to_equal(&"sampled")
 	Expect.that(resettable.admit("reset", 0, 1)["accepted"]).to_be_true()
 	resettable.reset()
+	Expect.that(resettable._sample_compensation).to_equal(0.0)
 	Expect.that(resettable.admit("reset", 0, 1)["reason"]).to_equal(&"sampled")
 	Expect.that(resettable.admit("reset", 0, 1)["accepted"]).to_be_true()
 
