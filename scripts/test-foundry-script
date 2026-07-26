@@ -198,13 +198,36 @@ for scope_api in \
 	rg -q "abstract func ${scope_api}\\(" "$addon/FoundryObservabilityApi.fs" \
 		|| fail "public contract is missing ${scope_api}"
 done
-rg -q 'p_scope: ObservabilityScope\? = null,' "$addon/ObservabilityEvent.fs" \
-	|| fail "ObservabilityEvent is missing its optional local scope"
-for scoped_capture in capture_message capture_exception capture_log; do
-	rg -Uq "abstract func ${scoped_capture}\\([^)]*scope: ObservabilityScope\\? = null," \
-		"$addon/FoundryObservabilityApi.fs" \
-		|| fail "public contract is missing local scope on ${scoped_capture}"
-done
+event_init_contract=$(
+	sed -n '/^func _init($/,/^) -> void:$/p' "$addon/ObservabilityEvent.fs"
+)
+event_scope_suffix=$'\t\tp_engine_ticks_msec: int = -1,\n\t\tp_scope: ObservabilityScope? = null,\n) -> void:'
+grep -Fq "$event_scope_suffix" <<<"$event_init_contract" \
+	|| fail "ObservabilityEvent p_scope must follow legacy terminal p_engine_ticks_msec"
+
+capture_message_contract=$(
+	sed -n '/^abstract func capture_message($/,/^) -> String$/p' \
+		"$addon/FoundryObservabilityApi.fs"
+)
+capture_message_scope_suffix=$'\t\tattributes: Dictionary = {},\n\t\tscope: ObservabilityScope? = null,\n) -> String'
+grep -Fq "$capture_message_scope_suffix" <<<"$capture_message_contract" \
+	|| fail "capture_message scope must follow legacy terminal attributes"
+
+capture_exception_contract=$(
+	sed -n '/^abstract func capture_exception($/,/^) -> String$/p' \
+		"$addon/FoundryObservabilityApi.fs"
+)
+capture_exception_scope_suffix=$'\t\tattributes: Dictionary = {},\n\t\tscope: ObservabilityScope? = null,\n) -> String'
+grep -Fq "$capture_exception_scope_suffix" <<<"$capture_exception_contract" \
+	|| fail "capture_exception scope must follow legacy terminal attributes"
+
+capture_log_contract=$(
+	sed -n '/^abstract func capture_log($/,/^) -> String$/p' \
+		"$addon/FoundryObservabilityApi.fs"
+)
+capture_log_scope_suffix=$'\t\tengine_ticks_msec: int = -1,\n\t\tscope: ObservabilityScope? = null,\n) -> String'
+grep -Fq "$capture_log_scope_suffix" <<<"$capture_log_contract" \
+	|| fail "capture_log scope must follow legacy terminal engine_ticks_msec"
 rg -q '^var max_breadcrumbs: int = 100$' "$addon/ObservabilityConfig.fs" \
 	|| fail "ObservabilityConfig is missing the default breadcrumb bound"
 rg -q 'abstract func clear_breadcrumbs\(\) -> bool' \

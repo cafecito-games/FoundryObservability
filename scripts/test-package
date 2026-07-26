@@ -180,17 +180,42 @@ rg -q 'Automatic runtime context' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing automatic runtime context"
 rg -q 'send_default_pii' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing runtime context privacy behavior"
-for scope_type in ObservabilityUser ObservabilityScope; do
-	rg -q "^## ${scope_type}$" "$repo_root/docs/API.md" \
-		|| fail "API docs are missing $scope_type"
-done
+api_docs="$repo_root/docs/API.md"
+observability_user_section=$(
+	sed -n '/^## ObservabilityUser$/,/^## ObservabilityScope$/p' "$api_docs"
+)
+observability_scope_section=$(
+	sed -n '/^## ObservabilityScope$/,/^## ObservabilityCaptureMask$/p' "$api_docs"
+)
+[[ -n "$observability_user_section" ]] \
+	|| fail "API docs are missing the ObservabilityUser section"
+[[ -n "$observability_scope_section" ]] \
+	|| fail "API docs are missing the ObservabilityScope section"
 rg -q 'max_breadcrumbs' "$repo_root/docs/API.md" \
 	|| fail "API docs are missing max_breadcrumbs"
-for scope_method in \
-	application_user_id display_name contact_email is_valid \
-	tags contexts set_tag remove_tag clear_tags \
-	set_context remove_context clear_contexts is_empty duplicate \
-	set_user remove_user clear_breadcrumbs; do
+for user_signature in \
+	'func application_user_id() -> String' \
+	'func display_name() -> String' \
+	'func contact_email() -> String' \
+	'func is_valid() -> bool'; do
+	grep -Fqx "$user_signature" <<<"$observability_user_section" \
+		|| fail "ObservabilityUser docs are missing exact signature: $user_signature"
+done
+for scope_signature in \
+	'func tags() -> Dictionary' \
+	'func contexts() -> Dictionary' \
+	'func set_tag(key: String, value: String) -> bool' \
+	'func remove_tag(key: String) -> bool' \
+	'func clear_tags() -> void' \
+	'func set_context(name: String, value: Dictionary) -> bool' \
+	'func remove_context(name: String) -> bool' \
+	'func clear_contexts() -> void' \
+	'func is_empty() -> bool' \
+	'func duplicate() -> ObservabilityScope'; do
+	grep -Fqx "$scope_signature" <<<"$observability_scope_section" \
+		|| fail "ObservabilityScope docs are missing exact signature: $scope_signature"
+done
+for scope_method in set_user remove_user clear_breadcrumbs; do
 	rg -q "func ${scope_method}\\(" "$repo_root/docs/API.md" \
 		|| fail "API docs are missing $scope_method"
 done

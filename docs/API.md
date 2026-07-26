@@ -1025,30 +1025,35 @@ Behavior:
 1. A null provider returns Error.FAILED and remains inactive.
 2. A null config becomes a disabled ObservabilityConfig.
 3. The candidate provider is configured before replacing the active provider.
-4. A failed candidate configuration leaves the existing provider, config,
-   global scope, explicit user, and breadcrumb trail active and stores the
-   returned error.
+4. A failed memory-provider configuration leaves the existing provider,
+   config, global scope, explicit user, and breadcrumb trail active and stores
+   the returned error. Sentry failure recovery is narrower and may fail closed,
+   as described below.
 5. Successfully configuring the already-active provider updates its config
-   without shutting it down and starts a fresh provider-owned global scope and
-   user.
+   without shutting it down and starts a fresh provider-owned global scope,
+   user, and breadcrumb trail.
 6. Successfully configuring a different provider shuts down the old provider
-   once, activates the candidate with a fresh provider-owned global scope and
-   user, and clears last_error().
+   once, activates the candidate with a fresh provider-owned global scope,
+   user, and breadcrumb trail, and clears last_error().
 7. Successful enabled configuration installs or updates automatic capture when
    automatic_capture_enabled is true. Failed configuration does not disturb
    the current logger.
 
 The method returns the provider configure result.
 
-The session contract calls for a fresh breadcrumb trail after successful
-configure/reconfigure. The built-in memory provider implements that behavior.
-Sentry clears its Foundry-owned tags, contexts, and user on every successful
-configure. A changed native Sentry configuration restarts the SDK with a fresh
-breadcrumb trail; an equivalent owner handoff keeps the native SDK running and
-currently retains that trail. Use `clear_breadcrumbs()` when an explicit fresh
-trail is required. Failed memory or recoverable Sentry configuration preserves
-the prior live state; unrecoverable Sentry rollback fails closed as described
-under its lifecycle.
+Every successful enabled configure or reconfigure begins with an empty
+provider-owned global scope, explicit user, and breadcrumb trail. The memory
+provider resets all three directly. Sentry resets its Foundry-owned scope and
+user, then clears breadcrumbs through the native adapter before committing the
+session. This also applies to a deeply equivalent configuration that keeps the
+native SDK running.
+
+A failed memory-provider configure preserves its prior live state. Sentry may
+roll back only when an adapter operation returns the exact boolean `false`, the
+candidate is deeply equivalent to the prior session, and recovery can prove
+that session's scope and breadcrumb trail remain intact. A materially changed
+configuration, malformed adapter result, or otherwise unprovable recovery
+fails closed. A later valid configure can establish a fresh session.
 
 When the enabled provider is `SentryObservabilityProvider`, a missing native
 bridge or a bridge without lifecycle contract version 1 returns
@@ -1624,21 +1629,26 @@ with the same deployment identity.
 Sentry is process-global, while providers are ordinary FoundryScript objects.
 The bridge therefore uses an owner-safe lifecycle:
 
-- Equivalent configuration transfers ownership without restarting the SDK.
+- Equivalent configuration transfers ownership without restarting the SDK,
+  but a successful configure still clears Foundry-owned scope, user, and
+  breadcrumbs for the new session.
 - Changed configuration performs a bounded 2-second shutdown before starting
   the replacement.
-- If replacement startup fails, the prior owner, configuration, and live scope
-  are restored.
+- A failed adapter operation restores the prior session only for an exact
+  boolean `false` result, a deeply equivalent candidate, and provably intact
+  prior state. Materially changed, malformed, or otherwise unprovable failures
+  fail closed.
 - Flush and shutdown calls from a stale owner do nothing, so an obsolete
   provider cannot stop a newer session. These idempotent no-ops return
   `Error.OK`; availability remains the observable ownership signal.
 
 The FoundryScript Sentry provider commits candidate configuration only after
-native startup and the required empty-scope reset both succeed. Recovery
-restores the last committed native configuration and the complete retained
-tags, contexts, and user. If either recovery step fails, the provider shuts down
-the owner and fails closed: availability, capture, scope mutation, and
-breadcrumb operations remain disabled until a later successful configure.
+native startup, the required empty-scope reset, and adapter breadcrumb clearing
+all succeed. An exact `false` breadcrumb-clear result permits rollback only for
+a deeply equivalent prior session. If rollback is not allowed or any recovery
+step fails, the provider shuts down the owner and fails closed: availability,
+capture, scope mutation, and breadcrumb operations remain disabled until a
+later successful configure.
 
 Enabled configuration returns `Error.ERR_UNAVAILABLE` if the native bridge is
 missing or too old. After `Error.OK`, use
@@ -1674,8 +1684,10 @@ Configuration collects a stable snapshot and installs it on the native Sentry
 scope before capture begins. This makes the snapshot available to native crash
 handling. Ordinary event capture copies that snapshot and refreshes current
 free memory, usable memory, free user-storage space, and primary orientation
-for that event only. A failed reconfiguration retains the last successful
-snapshot; successful disable and shutdown clear it.
+for that event only. A recoverable deeply equivalent failed reconfiguration
+retains the last successful snapshot. A materially changed or unprovable
+failure may fail closed until a later valid configure collects a fresh
+snapshot. Successful disable and shutdown clear it.
 
 Runtime mode uses deterministic precedence: headless or dedicated-server
 execution is `headless`, otherwise editor execution is `editor`, otherwise a
@@ -1748,10 +1760,11 @@ The native structured-log APIs do not accept an occurrence timestamp, so log
 timestamps are retained in the reserved metadata instead of being assigned to a
 native log timestamp field.
 
-Native Sentry Logs also cannot faithfully apply the event-local scope used by
-ordinary events. Android therefore explicitly rejects a structured log with a
-nonempty local scope. Apple currently submits the log but does not apply its
-local scope; callers must not treat that as successful scoped delivery. Global
+Native Sentry Logs cannot faithfully apply the event-local scope used by
+ordinary events. Apple and Android therefore reject a structured log with
+semantically nonempty event-local scope before invoking the native logger. The
+capture returns an empty provider ID and records an active-provider failure.
+Missing or semantically empty event-local scope remains accepted. Global
 Sentry scope remains independent of this event-local limitation.
 
 The Sentry SDK owns batching and delivery queues; `FoundryObservability.flush()`
@@ -1821,8 +1834,12 @@ events, structured logs, and feedback continue using their available paths.
 
 ## Custom provider outline
 
-A provider implements all methods in ObservabilityProvider and may also
-implement optional capabilities to translate metrics and breadcrumbs:
+A provider implements every method in ObservabilityProvider and may implement
+optional capability traits. ObservabilityScopeProvider is optional and
+all-or-nothing: implement its complete trait or omit it. The `MyProvider`
+example intentionally omits that trait and is therefore scopeless. It does
+implement metrics and breadcrumbs; the breadcrumb capability includes both
+capture and clear operations:
 
 ~~~
 namespace my_game.telemetry

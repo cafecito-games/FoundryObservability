@@ -137,7 +137,6 @@ FoundryObservability.set_context("match", {
 FoundryObservability.set_user(ObservabilityUser.new(
 		p_application_user_id = "player-7",
 		p_display_name = "Mina",
-		p_contact_email = "mina@example.com",
 ))
 FoundryObservability.capture_message("game started")
 var local_scope := ObservabilityScope.new()
@@ -168,6 +167,9 @@ FoundryObservability.capture_feedback(ObservabilityFeedback.new(
 ))
 FoundryObservability.clear_breadcrumbs()
 ```
+
+See the [identity privacy guidance](docs/API.md#observabilityuser) before
+supplying optional identifying or contact fields.
 
 Successful enabled configuration automatically installs the engine logger.
 By default, errors, script errors, and shader errors become events; every
