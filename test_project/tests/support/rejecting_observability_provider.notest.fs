@@ -45,6 +45,10 @@ func capture_breadcrumb(_breadcrumb: ObservabilityBreadcrumb) -> bool:
 	return breadcrumb_capture_result
 
 
+func clear_breadcrumbs() -> bool:
+	return is_available()
+
+
 func capture_feedback(_feedback: ObservabilityFeedback) -> String:
 	return ""
 

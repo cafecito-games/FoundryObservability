@@ -183,6 +183,21 @@ func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
 	return result
 
 
+## Clears native breadcrumbs through the optional bridge operation.
+func clear_breadcrumbs() -> bool:
+	if not _enabled or _shutdown:
+		return false
+
+	var bridge: Object? = _resolve_bridge()
+	if bridge == null or not is_available() or not bridge.has_method("clearBreadcrumbs"):
+		return false
+
+	var result: Variant = bridge.call("clearBreadcrumbs")
+	if not (result is bool):
+		return false
+	return result
+
+
 ## Translates explicit feedback to the native dedicated feedback API.
 func capture_feedback(feedback: ObservabilityFeedback) -> String:
 	if feedback == null or not _enabled or _shutdown:
