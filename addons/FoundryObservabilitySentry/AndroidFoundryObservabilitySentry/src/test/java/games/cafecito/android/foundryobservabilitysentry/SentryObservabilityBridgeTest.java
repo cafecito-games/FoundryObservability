@@ -496,7 +496,7 @@ public class SentryObservabilityBridgeTest {
   }
 
   @Test
-  public void applyScopeRejectsGlobalAndCurrentLayerCollisionsAndWritesOnlyDefaultLayer() {
+  public void applyScopeRejectsCollisionsAcrossAllLayersAndWritesOnlyDefaultLayer() {
     SentryObservabilityBridge bridge = configuredBridge();
     Dictionary initial = new Dictionary();
     initial.put("tags", Map.of("owned-layer-tag-0", "owned"));
@@ -504,45 +504,41 @@ public class SentryObservabilityBridgeTest {
     initial.put("user", Map.of("id", "layer-player-0"));
     assertTrue(bridge.applyScope(initial));
 
-    List<ScopeType> scopeTypes = List.of(
-        ScopeType.GLOBAL,
-        ScopeType.GLOBAL,
-        ScopeType.CURRENT,
-        ScopeType.CURRENT);
-    List<String> collisionKeys = List.of(
-        "global-native-tag",
-        "foundry_engine",
-        "current-native-tag",
-        "device");
-    List<Boolean> tagCollisions = List.of(true, false, true, false);
+    List<LayerCollisionCase> collisions = List.of(
+        LayerCollisionCase.tag(ScopeType.ISOLATION, "isolation-native-tag"),
+        LayerCollisionCase.context(ScopeType.ISOLATION, "runtime"),
+        LayerCollisionCase.tag(ScopeType.GLOBAL, "global-native-tag"),
+        LayerCollisionCase.context(ScopeType.GLOBAL, "foundry_engine"),
+        LayerCollisionCase.tag(ScopeType.CURRENT, "current-native-tag"),
+        LayerCollisionCase.context(ScopeType.CURRENT, "device"));
     int index = 0;
-    for (int caseIndex = 0; caseIndex < scopeTypes.size(); caseIndex++) {
-      ScopeType scopeType = scopeTypes.get(caseIndex);
-      String collisionKey = collisionKeys.get(caseIndex);
-      boolean tagCollision = tagCollisions.get(caseIndex);
-      Object nativeValue = tagCollision
-          ? "native-" + scopeType.name()
-          : Map.of("owner", "native-" + scopeType.name());
-      Sentry.configureScope(scopeType, scope -> {
-        if (tagCollision) {
-          scope.setTag(collisionKey, (String) nativeValue);
+    for (LayerCollisionCase collision : collisions) {
+      Object nativeValue =
+          collision.tag
+              ? "native-" + collision.scopeType.name() + "-" + collision.key
+              : Map.of(
+                  "owner",
+                  "native-" + collision.scopeType.name() + "-" + collision.key);
+      Sentry.configureScope(collision.scopeType, scope -> {
+        if (collision.tag) {
+          scope.setTag(collision.key, (String) nativeValue);
         } else {
-          scope.setContexts(collisionKey, nativeValue);
+          scope.setContexts(collision.key, nativeValue);
         }
       });
 
       Dictionary rejected = new Dictionary();
       rejected.put(
           "tags",
-          tagCollision
-              ? Map.of(collisionKey, "foundry", "rejected-layer-tag", "blocked")
+          collision.tag
+              ? Map.of(collision.key, "foundry", "rejected-layer-tag", "blocked")
               : Map.of("rejected-layer-tag", "blocked"));
       rejected.put(
           "contexts",
-          tagCollision
+          collision.tag
               ? Map.of("rejected-layer-context", Map.of("value", "blocked"))
               : Map.of(
-                  collisionKey,
+                  collision.key,
                   Map.of("owner", "foundry"),
                   "rejected-layer-context",
                   Map.of("value", "blocked")));
@@ -558,10 +554,10 @@ public class SentryObservabilityBridgeTest {
       assertEquals("layer-player-" + index, defaultScope.getUser().getId());
       assertFalse(defaultScope.getTags().containsKey("rejected-layer-tag"));
       assertFalse(defaultScope.getContexts().containsKey("rejected-layer-context"));
-      if (tagCollision) {
-        assertEquals(nativeValue, scope(scopeType).getTags().get(collisionKey));
+      if (collision.tag) {
+        assertEquals(nativeValue, scope(collision.scopeType).getTags().get(collision.key));
       } else {
-        assertEquals(nativeValue, scope(scopeType).getContexts().get(collisionKey));
+        assertEquals(nativeValue, scope(collision.scopeType).getContexts().get(collision.key));
       }
 
       int nextIndex = index + 1;
@@ -572,10 +568,20 @@ public class SentryObservabilityBridgeTest {
           Map.of("owned-layer-context-" + nextIndex, Map.of("value", nextIndex)));
       safe.put("user", Map.of("id", "layer-player-" + nextIndex));
       assertTrue(bridge.applyScope(safe));
-      if (tagCollision) {
-        assertEquals(nativeValue, scope(scopeType).getTags().get(collisionKey));
+
+      IScope replaced = currentScope();
+      assertFalse(replaced.getTags().containsKey("owned-layer-tag-" + index));
+      assertFalse(replaced.getContexts().containsKey("owned-layer-context-" + index));
+      assertEquals("owned", replaced.getTags().get("owned-layer-tag-" + nextIndex));
+      assertEquals(
+          nextIndex,
+          ((Map<?, ?>) replaced.getContexts().get("owned-layer-context-" + nextIndex))
+              .get("value"));
+      assertEquals("layer-player-" + nextIndex, replaced.getUser().getId());
+      if (collision.tag) {
+        assertEquals(nativeValue, scope(collision.scopeType).getTags().get(collision.key));
       } else {
-        assertEquals(nativeValue, scope(scopeType).getContexts().get(collisionKey));
+        assertEquals(nativeValue, scope(collision.scopeType).getContexts().get(collision.key));
       }
       index = nextIndex;
     }
@@ -800,6 +806,26 @@ public class SentryObservabilityBridgeTest {
     AtomicReference<IScope> result = new AtomicReference<>();
     Sentry.configureScope(scopeType, result::set);
     return result.get();
+  }
+
+  private static final class LayerCollisionCase {
+    final ScopeType scopeType;
+    final String key;
+    final boolean tag;
+
+    private LayerCollisionCase(ScopeType scopeType, String key, boolean tag) {
+      this.scopeType = scopeType;
+      this.key = key;
+      this.tag = tag;
+    }
+
+    static LayerCollisionCase tag(ScopeType scopeType, String key) {
+      return new LayerCollisionCase(scopeType, key, true);
+    }
+
+    static LayerCollisionCase context(ScopeType scopeType, String key) {
+      return new LayerCollisionCase(scopeType, key, false);
+    }
   }
 
   private static SentryObservabilityBridge newBridge() {
