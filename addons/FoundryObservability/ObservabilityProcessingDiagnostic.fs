@@ -60,6 +60,7 @@ func sequence() -> int:
 	return _sequence
 
 
+## Returns the diagnostic signal; `signal` is a reserved FoundryScript keyword.
 func processing_signal() -> StringName:
 	return _signal
 

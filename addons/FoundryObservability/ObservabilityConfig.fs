@@ -75,8 +75,8 @@ var _event_processors: Array[Callable] = []
 var _log_processors: Array[Callable] = []
 var _metric_processors: Array[Callable] = []
 var _event_limits: ObservabilitySignalLimits
-var _log_limits: ObservabilitySignalLimits?
-var _metric_limits: ObservabilitySignalLimits?
+var _log_limits: ObservabilitySignalLimits
+var _metric_limits: ObservabilitySignalLimits
 var _redaction_policy: ObservabilityRedactionPolicy
 
 
@@ -170,8 +170,10 @@ func _init(
 			automatic_event_throttle_count,
 			automatic_event_throttle_window_msec,
 	) if p_event_limits == null else p_event_limits.duplicate()
-	_log_limits = null if p_log_limits == null else p_log_limits.duplicate()
-	_metric_limits = null if p_metric_limits == null else p_metric_limits.duplicate()
+	_log_limits = ObservabilitySignalLimits.new() \
+			if p_log_limits == null else p_log_limits.duplicate()
+	_metric_limits = ObservabilitySignalLimits.new() \
+			if p_metric_limits == null else p_metric_limits.duplicate()
 	_redaction_policy = ObservabilityRedactionPolicy.new() \
 			if p_redaction_policy == null else p_redaction_policy.duplicate()
 
@@ -211,14 +213,14 @@ func event_limits() -> ObservabilitySignalLimits:
 	return _event_limits.duplicate()
 
 
-## Returns copied log limits, or null when log limits are disabled.
-func log_limits() -> ObservabilitySignalLimits?:
-	return null if _log_limits == null else _log_limits.duplicate()
+## Returns copied log limits, with all limits disabled by default.
+func log_limits() -> ObservabilitySignalLimits:
+	return _log_limits.duplicate()
 
 
-## Returns copied metric limits, or null when metric limits are disabled.
-func metric_limits() -> ObservabilitySignalLimits?:
-	return null if _metric_limits == null else _metric_limits.duplicate()
+## Returns copied metric limits, with all limits disabled by default.
+func metric_limits() -> ObservabilitySignalLimits:
+	return _metric_limits.duplicate()
 
 
 ## Returns a copy of the ordered redaction policy.

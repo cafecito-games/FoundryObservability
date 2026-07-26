@@ -201,6 +201,9 @@ for field in _type _name _value _unit _attributes; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityMetric.fs" \
 		|| fail "ObservabilityMetric field must be immutable: ${field}"
 done
+rg -q '^func processing_signal\(\) -> StringName:$' \
+	"$addon/ObservabilityProcessingDiagnostic.fs" \
+	|| fail "ObservabilityProcessingDiagnostic must expose processing_signal()"
 for field in _handle _filename _reason _error; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityAttachmentFailure.fs" \
 		|| fail "ObservabilityAttachmentFailure field must be immutable: ${field}"

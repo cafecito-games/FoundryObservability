@@ -1450,7 +1450,8 @@ func test_processing_diagnostic_preserves_payload_free_fields() -> void:
 	var copied: ObservabilityProcessingDiagnostic = diagnostic.duplicate()
 
 	Expect.that(diagnostic.sequence()).to_equal(7)
-	Expect.that(diagnostic.processing_signal()).to_equal(ObservabilityProcessingDiagnostic.EVENT)
+	Expect.that(diagnostic.processing_signal()).to_equal(
+			ObservabilityProcessingDiagnostic.EVENT)
 	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingDiagnostic.DROPPED)
 	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingDiagnostic.RATE_LIMITED)
 	Expect.that(diagnostic.processor_index()).to_equal(3)
@@ -1464,6 +1465,8 @@ func test_processing_diagnostic_preserves_payload_free_fields() -> void:
 func test_processing_config_defaults_and_defensively_copies_inputs() -> void:
 	var processors: Array[Callable] = [Callable()]
 	var limits := ObservabilitySignalLimits.new(8, 9, 10, 11)
+	var log_limits := ObservabilitySignalLimits.new(12, 13, 14, 15)
+	var metric_limits := ObservabilitySignalLimits.new(16, 17, 18, 19)
 	var policy := ObservabilityRedactionPolicy.new([
 			ObservabilityRedactionRule.sensitive_key("authorization"),
 	])
@@ -1477,6 +1480,8 @@ func test_processing_config_defaults_and_defensively_copies_inputs() -> void:
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = limits,
+			p_log_limits = log_limits,
+			p_metric_limits = metric_limits,
 			p_redaction_policy = policy,
 	)
 	processors.clear()
@@ -1493,8 +1498,10 @@ func test_processing_config_defaults_and_defensively_copies_inputs() -> void:
 	Expect.that(config.log_processors()).to_have_size(0)
 	Expect.that(config.metric_processors()).to_have_size(0)
 	Expect.that(config.event_limits().per_frame()).to_equal(8)
-	Expect.that(config.log_limits()).to_be_null()
-	Expect.that(config.metric_limits()).to_be_null()
+	Expect.that(config.log_limits()).to_not_equal(log_limits)
+	Expect.that(config.log_limits().per_frame()).to_equal(12)
+	Expect.that(config.metric_limits()).to_not_equal(metric_limits)
+	Expect.that(config.metric_limits().window_msec()).to_equal(19)
 	Expect.that(config.redaction_policy().rules()).to_have_size(1)
 
 
@@ -1519,8 +1526,16 @@ func test_processing_config_default_and_legacy_event_limits() -> void:
 	Expect.that(defaults.event_limits().repeated_window_msec()).to_equal(1000)
 	Expect.that(defaults.event_limits().window_count()).to_equal(20)
 	Expect.that(defaults.event_limits().window_msec()).to_equal(10000)
-	Expect.that(defaults.log_limits()).to_be_null()
-	Expect.that(defaults.metric_limits()).to_be_null()
+	Expect.that(defaults.log_limits()).to_not_equal(defaults.log_limits())
+	Expect.that(defaults.metric_limits()).to_not_equal(defaults.metric_limits())
+	Expect.that(defaults.log_limits().per_frame()).to_equal(0)
+	Expect.that(defaults.log_limits().repeated_window_msec()).to_equal(0)
+	Expect.that(defaults.log_limits().window_count()).to_equal(0)
+	Expect.that(defaults.log_limits().window_msec()).to_equal(0)
+	Expect.that(defaults.metric_limits().per_frame()).to_equal(0)
+	Expect.that(defaults.metric_limits().repeated_window_msec()).to_equal(0)
+	Expect.that(defaults.metric_limits().window_count()).to_equal(0)
+	Expect.that(defaults.metric_limits().window_msec()).to_equal(0)
 	Expect.that(defaults.redaction_policy().rules()).to_have_size(0)
 	Expect.that(legacy.event_limits().per_frame()).to_equal(0)
 	Expect.that(legacy.event_limits().repeated_window_msec()).to_equal(2000)
