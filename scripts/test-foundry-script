@@ -138,6 +138,16 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 	|| fail "Sentry runtime context probe is missing"
 [[ -f "$sentry_addon/SentryRuntimeContextCollector.fs" ]] \
 	|| fail "Sentry runtime context collector is missing"
+[[ -f "$sentry_addon/SentryAttachmentRuntimeProbe.fs" ]] \
+	|| fail "Sentry attachment runtime probe is missing"
+[[ -f "$sentry_addon/SentryBuiltInAttachmentCollector.fs" ]] \
+	|| fail "Sentry built-in attachment collector is missing"
+rg -q '^class_name SentryAttachmentRuntimeProbe$' \
+	"$sentry_addon/SentryAttachmentRuntimeProbe.fs" \
+	|| fail "Sentry attachment runtime probe declaration is missing"
+rg -q '^class_name SentryBuiltInAttachmentCollector$' \
+	"$sentry_addon/SentryBuiltInAttachmentCollector.fs" \
+	|| fail "Sentry built-in attachment collector declaration is missing"
 for field in _kind _level _message _source _timestamp_msec _attributes _exception _engine_ticks_msec _scope; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityEvent.fs" \
 		|| fail "ObservabilityEvent field must be immutable: ${field}"
