@@ -2207,6 +2207,23 @@ func test_startup_settings_provider_options_enforce_item_budget() -> void:
 		})
 
 
+func test_startup_settings_provider_options_charge_repeated_shared_subgraphs() -> void:
+	var shared: Dictionary = _wide_provider_options(64)
+	var repeated: Dictionary = {}
+	for index: int in range(4):
+		repeated["shared_%d" % index] = shared
+
+	var settings := ObservabilityStartupSettings.from_sources(
+			{
+				ObservabilityStartupSettings.PROVIDER_OPTIONS: repeated,
+			},
+		)
+
+	Expect.that(settings.validation_error()).to_equal(
+			Error.ERR_INVALID_PARAMETER,
+		)
+
+
 func test_startup_settings_provider_options_validate_data_shapes() -> void:
 	var nested_array: Array = [
 		null,
@@ -2260,6 +2277,15 @@ func test_startup_settings_provider_options_validate_data_shapes() -> void:
 
 
 func test_startup_settings_register_project_defaults_idempotently() -> void:
+	var had_auto_init: bool = ProjectSettings.has_setting(
+			ObservabilityStartupSettings.AUTO_INIT)
+	var previous_auto_init: Variant = ProjectSettings.get_setting(
+			ObservabilityStartupSettings.AUTO_INIT, null)
+	var had_debug_diagnostics: bool = ProjectSettings.has_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)
+	var previous_debug_diagnostics: Variant = ProjectSettings.get_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS, null)
+
 	ProjectSettings.set_setting(ObservabilityStartupSettings.AUTO_INIT, false)
 	ProjectSettings.set_setting(
 			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS,
@@ -2290,6 +2316,33 @@ func test_startup_settings_register_project_defaults_idempotently() -> void:
 	Expect.that(debug_info.get("type")).to_equal(TYPE_INT)
 	Expect.that(debug_info.get("hint")).to_equal(PROPERTY_HINT_ENUM)
 	Expect.that(debug_info.get("hint_string")).to_equal("Off,On,Auto")
+
+	_restore_project_setting(
+			ObservabilityStartupSettings.AUTO_INIT,
+			had_auto_init,
+			previous_auto_init,
+		)
+	_restore_project_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS,
+			had_debug_diagnostics,
+			previous_debug_diagnostics,
+		)
+	Expect.that(ProjectSettings.has_setting(
+			ObservabilityStartupSettings.AUTO_INIT)).to_equal(had_auto_init)
+	if had_auto_init:
+		Expect.that(ProjectSettings.get_setting(
+				ObservabilityStartupSettings.AUTO_INIT)).to_equal(
+						previous_auto_init,
+					)
+	Expect.that(ProjectSettings.has_setting(
+			ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)).to_equal(
+					had_debug_diagnostics,
+				)
+	if had_debug_diagnostics:
+		Expect.that(ProjectSettings.get_setting(
+				ObservabilityStartupSettings.DEBUG_DIAGNOSTICS)).to_equal(
+						previous_debug_diagnostics,
+					)
 
 
 func _service() -> FoundryObservability:
@@ -2331,6 +2384,17 @@ func _project_setting_property(setting_name: String) -> Dictionary:
 		if property_info.get("name") == setting_name:
 			return property_info
 	return {}
+
+
+func _restore_project_setting(
+		setting_name: String,
+		was_present: bool,
+		previous_value: Variant,
+) -> void:
+	if was_present:
+		ProjectSettings.set_setting(setting_name, previous_value)
+	else:
+		ProjectSettings.clear(setting_name)
 
 
 func _keep_combat_metric(metric: ObservabilityMetric) -> bool:
