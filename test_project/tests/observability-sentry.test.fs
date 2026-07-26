@@ -380,6 +380,121 @@ func test_provider_forwards_stable_and_capture_time_runtime_context() -> void:
 	provider.shutdown()
 
 
+func test_provider_redacts_stable_and_volatile_runtime_contexts_across_sessions() -> void:
+	var bridge := FakeSentryBridge.new()
+	var probe := FakeRuntimeContextProbe.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = probe,
+		)
+	var original_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["contexts", "foundry_app", "name"]),
+				"Oakhaven",
+				"safe-app",
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["contexts", "display", "primary_orientation"]),
+				"secret",
+				"safe",
+			),
+	])
+	var original_config := ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = original_policy,
+		)
+	Expect.that(provider.configure(original_config)).to_equal(Error.OK)
+	Expect.that(
+			bridge.configured_payload["stable_contexts"]["foundry_app"]["name"],
+		).to_equal("safe-app")
+
+	probe.volatile_orientation = "secret-old"
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "original session",
+		))).to_equal("sentry:1")
+	Expect.that(
+			bridge.captured_payloads[0]["contexts"]["display"]["primary_orientation"],
+		).to_equal("safe-old")
+
+	probe.volatile_orientation = "landscape"
+	bridge.configure_result = Error.FAILED
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "production",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["contexts", "foundry_app", "name"]),
+						"Oakhaven",
+						"safe-app",
+					),
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(
+								["contexts", "display", "primary_orientation"]),
+						"secret",
+						"candidate",
+					),
+			]),
+	))).to_equal(Error.FAILED)
+	probe.volatile_orientation = "secret-old"
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "restored session",
+		))).to_equal("sentry:2")
+	if bridge.captured_payloads.size() > 1:
+		Expect.that(
+				bridge.captured_payloads[1]["contexts"]["display"]["primary_orientation"],
+			).to_equal("safe-old")
+
+	probe.app_name = "Replacement"
+	bridge.configure_result = Error.OK
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_environment = "staging",
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/2"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(
+								["contexts", "display", "primary_orientation"]),
+						"secret",
+						"replacement",
+					),
+			]),
+	))).to_equal(Error.OK)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "replacement session",
+		))).to_equal("sentry:3")
+	Expect.that(
+			bridge.captured_payloads[2]["contexts"]["display"]["primary_orientation"],
+		).to_equal("replacement-old")
+
+	provider.shutdown()
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/3"},
+	))).to_equal(Error.OK)
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "fresh unredacted session",
+		))).to_equal("sentry:4")
+	Expect.that(
+			bridge.captured_payloads[3]["contexts"]["display"]["primary_orientation"],
+		).to_equal("secret-old")
+	provider.shutdown()
+
+
 func test_provider_failed_reconfigure_preserves_last_stable_runtime_context() -> void:
 	var bridge := ScopeOnlySentryBridge.new()
 	var probe := FakeRuntimeContextProbe.new()
@@ -2244,6 +2359,114 @@ func test_attachment_candidates_replace_native_snapshot_atomically() -> void:
 		))).to_equal("sentry:2")
 	Expect.that(bridge.captured_native_attachment_payloads[1]).to_equal(retained_payload)
 	Expect.that(provider.remove_attachment(second_handle)).to_equal(Error.OK)
+
+
+func test_provider_redacts_persistent_and_capture_local_builtin_attachment_metadata() -> void:
+	var path: String = "user://secret-game.log"
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	file.store_string("game output")
+	file.close()
+	var probe := FakeAttachmentRuntimeProbe.new()
+	probe.game_log = path
+	var root := Node.new()
+	root.name = "Root"
+	probe.tree = FakeAttachmentSceneTree.new(root)
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_game_log = true,
+			p_attach_screenshot = true,
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["attachments", "filename"]),
+						"secret-game",
+						"safe-game",
+					),
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["attachments", "filename"]),
+						"screenshot",
+						"safe-screen",
+					),
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["attachments", "content_type"]),
+						"text/plain",
+						"text/safe",
+					),
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["attachments", "content_type"]),
+						"image/png",
+						"image/safe",
+					),
+			]),
+	))).to_equal(Error.OK)
+	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
+	Expect.that(bridge.current_attachment_payloads[0]["filename"]).to_equal(
+			"safe-game.log",
+		)
+	Expect.that(bridge.current_attachment_payloads[0]["content_type"]).to_equal(
+			"text/safe",
+		)
+	Expect.that(probe.game_log).to_equal(path)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "redacted built-ins",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads[0]["attachments"]).to_have_size(1)
+	Expect.that(bridge.captured_payloads[0]["attachments"][0]["filename"]).to_equal(
+			"safe-screen.png",
+		)
+	Expect.that(
+			bridge.captured_payloads[0]["attachments"][0]["content_type"],
+		).to_equal("image/safe")
+	root.free()
+	provider.shutdown()
+
+
+func test_invalid_redacted_builtin_attachment_is_omitted_without_dropping_event() -> void:
+	var probe := FakeAttachmentRuntimeProbe.new()
+	var root := Node.new()
+	root.name = "Root"
+	probe.tree = FakeAttachmentSceneTree.new(root)
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(bridge, null, probe)
+	Expect.that(provider.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_attach_screenshot = true,
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["attachments", "filename"]),
+						7,
+					),
+			]),
+	))).to_equal(Error.OK)
+
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "partial redaction failure",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads[0].has("attachments")).to_be_false()
+	var failures: Array = provider.last_attachment_failures()
+	Expect.that(failures).to_have_size(1)
+	if not failures.is_empty():
+		var failure: ObservabilityAttachmentFailure = failures[0]
+		Expect.that(failure.handle()).to_equal("built-in:screenshot")
+		Expect.that(failure.filename()).to_equal("screenshot.png")
+		Expect.that(failure.reason()).to_equal(
+				ObservabilityAttachmentFailure.REDACTED,
+			)
+		Expect.that(failure.error()).to_equal(Error.ERR_INVALID_DATA)
+	root.free()
+	provider.shutdown()
 
 
 func test_attachment_bridge_methods_are_optional_until_feature_or_api_is_used() -> void:

@@ -118,6 +118,26 @@ func process_metric(metric: ObservabilityMetric) -> Dictionary:
 	return _process_metric_signal(metric)
 
 
+## Rebuilds provider-owned contexts through the committed redactor.
+func redact_contexts(contexts: Dictionary) -> Dictionary:
+	return _redact_state_value(&"contexts", contexts)
+
+
+## Rebuilds a provider-owned user through the committed redactor.
+func redact_user(user: ObservabilityUser) -> Dictionary:
+	return _redact_state_value(&"user", user)
+
+
+## Rebuilds a provider-owned breadcrumb through the committed redactor.
+func redact_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> Dictionary:
+	return _redact_state_value(&"breadcrumb", breadcrumb)
+
+
+## Rebuilds a provider-owned attachment through the committed redactor.
+func redact_attachment(attachment: ObservabilityAttachment) -> Dictionary:
+	return _redact_state_value(&"attachment", attachment)
+
+
 ## Records a provider outcome only for a matching current pending processing result.
 func record_provider_result(
 		p_signal: StringName,
@@ -305,6 +325,45 @@ func _process_metric_signal(metric: ObservabilityMetric) -> Dictionary:
 	return _finish_success(snapshot, p_signal, current)
 
 
+func _redact_state_value(kind: StringName, value: Variant) -> Dictionary:
+	var p_signal: StringName = ObservabilityProcessingDiagnostic.STATE
+	var snapshot: Dictionary = _reserve(p_signal, _owner_id())
+	if snapshot.is_empty():
+		return {"valid": false}
+	@warning_ignore("unsafe_cast")
+	var redactor: ObservabilityRedactor = snapshot["redactor"] as ObservabilityRedactor
+	var redacted: Dictionary = {}
+	match kind:
+		&"contexts":
+			if not (value is Dictionary):
+				return _finish_state_invalid(snapshot)
+			@warning_ignore("unsafe_call_argument")
+			redacted = redactor.redact_contexts(value)
+		&"user":
+			if not (value is ObservabilityUser):
+				return _finish_state_invalid(snapshot)
+			@warning_ignore("unsafe_call_argument")
+			redacted = redactor.redact_user(value)
+		&"breadcrumb":
+			if not (value is ObservabilityBreadcrumb):
+				return _finish_state_invalid(snapshot)
+			@warning_ignore("unsafe_call_argument")
+			redacted = redactor.redact_breadcrumb(value)
+		&"attachment":
+			if not (value is ObservabilityAttachment):
+				return _finish_state_invalid(snapshot)
+			@warning_ignore("unsafe_call_argument")
+			redacted = redactor.redact_attachment(value)
+		_:
+			return _finish_state_invalid(snapshot)
+	if not redacted.get("valid", false):
+		_finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
+		return {"valid": false}
+	if not redacted.has("value"):
+		return _finish_state_invalid(snapshot)
+	return _finish_state_success(snapshot, redacted["value"])
+
+
 func _reserve(p_signal: StringName, owner_id: int) -> Dictionary:
 	_state_mutex.lock()
 	if _active_operations.has(owner_id):
@@ -343,6 +402,31 @@ func _reserve(p_signal: StringName, owner_id: int) -> Dictionary:
 	}
 	_state_mutex.unlock()
 	return snapshot
+
+
+func _finish_state_success(snapshot: Dictionary, value: Variant) -> Dictionary:
+	_state_mutex.lock()
+	var released: bool = _release_locked(snapshot)
+	var current: bool = (
+			released
+			and _int_value(snapshot, "generation", -1) == _config_generation
+		)
+	_state_mutex.unlock()
+	if not current:
+		return {"valid": false}
+	return {
+		"valid": true,
+		"value": value,
+	}
+
+
+func _finish_state_invalid(snapshot: Dictionary) -> Dictionary:
+	_finish_redaction_failure(
+			snapshot,
+			ObservabilityProcessingDiagnostic.STATE,
+			-1,
+		)
+	return {"valid": false}
 
 
 func _release_locked(snapshot: Dictionary) -> bool:

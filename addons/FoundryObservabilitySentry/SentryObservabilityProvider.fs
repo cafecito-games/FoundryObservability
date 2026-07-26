@@ -14,6 +14,7 @@ const DEFAULT_MAX_ATTACHMENT_BYTES: int = 20 * 1024 * 1024
 var _bridge: Object? = null
 var _context_collector: SentryRuntimeContextCollector
 var _attachment_collector: SentryBuiltInAttachmentCollector
+var _redactor: ObservabilityRedactor = ObservabilityRedactor.new()
 var _stable_contexts: Dictionary = {}
 var _scope: ObservabilityScope = ObservabilityScope.new()
 var _user: ObservabilityUser? = null
@@ -81,6 +82,11 @@ func configure(config: ObservabilityConfig) -> int:
 	var dsn: String = str(options.get("dsn", ""))
 	if config.enabled and dsn.is_empty():
 		return Error.FAILED
+	var candidate_redactor: ObservabilityRedactor = ObservabilityRedactor.new(
+			config.redaction_policy(),
+		)
+	if not candidate_redactor.is_valid():
+		return Error.ERR_INVALID_DATA
 
 	var bridge: Object? = _resolve_bridge()
 	if config.enabled and bridge == null:
@@ -89,6 +95,7 @@ func configure(config: ObservabilityConfig) -> int:
 		if config.enabled or _enabled:
 			return Error.ERR_UNAVAILABLE
 		_enabled = false
+		_redactor = ObservabilityRedactor.new()
 		_stable_contexts = {}
 		_scope = ObservabilityScope.new()
 		_user = null
@@ -117,6 +124,7 @@ func configure(config: ObservabilityConfig) -> int:
 
 	if bridge == null:
 		_enabled = false
+		_redactor = ObservabilityRedactor.new()
 		_stable_contexts = {}
 		_scope = ObservabilityScope.new()
 		_user = null
@@ -135,6 +143,14 @@ func configure(config: ObservabilityConfig) -> int:
 				config.environment,
 				send_default_pii,
 			)
+		var stable_result: Dictionary = candidate_redactor.redact_contexts(
+				candidate_stable_contexts,
+			)
+		if not stable_result.get("valid", false) \
+				or not (stable_result.get("value") is Dictionary):
+			return Error.ERR_INVALID_DATA
+		@warning_ignore("unsafe_cast")
+		candidate_stable_contexts = stable_result["value"] as Dictionary
 	var payload: Dictionary = {
 			"enabled": config.enabled,
 			"dsn": dsn,
@@ -178,7 +194,16 @@ func configure(config: ObservabilityConfig) -> int:
 			if attachment.get("persistent", false) == true:
 				var persistent: Dictionary = attachment.duplicate(true)
 				persistent.erase("persistent")
-				candidate_persistent_builtins.append(persistent)
+				var redacted_attachment: Dictionary = (
+						candidate_redactor.redact_attachment_payload(persistent)
+					)
+				if not redacted_attachment.get("valid", false) \
+						or not (redacted_attachment.get("value") is Dictionary):
+					continue
+				@warning_ignore("unsafe_cast")
+				candidate_persistent_builtins.append(
+						redacted_attachment["value"] as Dictionary,
+					)
 	var candidate_matches_committed_config: bool = (
 			_has_last_config_payload
 			and _config_payloads_are_equivalent(candidate_config_payload)
@@ -257,6 +282,7 @@ func configure(config: ObservabilityConfig) -> int:
 				_fail_closed(bridge)
 			return Error.FAILED
 	_enabled = config.enabled
+	_redactor = candidate_redactor
 	_stable_contexts = candidate_stable_contexts
 	_scope = ObservabilityScope.new()
 	_user = null
@@ -295,8 +321,14 @@ func capture(event: ObservabilityEvent) -> String:
 			"attributes": event.attributes(),
 		}
 	var contexts: Dictionary = _context_collector.contexts_for_capture(_stable_contexts)
-	if not contexts.is_empty():
-		payload["contexts"] = contexts
+	var contexts_result: Dictionary = _redactor.redact_contexts(contexts)
+	if not contexts_result.get("valid", false) \
+			or not (contexts_result.get("value") is Dictionary):
+		return ""
+	@warning_ignore("unsafe_cast")
+	var redacted_contexts: Dictionary = contexts_result["value"] as Dictionary
+	if not redacted_contexts.is_empty():
+		payload["contexts"] = redacted_contexts
 	if event_scope != null and not event_scope.is_empty():
 		payload["scope"] = _scope_payload(event_scope, null)
 	var exception: ObservabilityException? = event.exception()
@@ -581,6 +613,7 @@ func shutdown() -> void:
 		return
 	_shutdown = true
 	_enabled = false
+	_redactor = ObservabilityRedactor.new()
 	_stable_contexts = {}
 	_scope = ObservabilityScope.new()
 	_user = null
@@ -700,10 +733,21 @@ func _capture_local_attachments(event: ObservabilityEvent) -> Array:
 	for failure: ObservabilityAttachmentFailure in built_ins["failures"]:
 		_last_attachment_failures.append(failure.duplicate())
 	for payload: Dictionary in built_ins["attachments"]:
+		var candidate_payload: Dictionary = payload.duplicate(true)
+		candidate_payload.erase("persistent")
+		var redacted_payload: Dictionary = _redactor.redact_attachment_payload(
+				candidate_payload,
+			)
+		if not redacted_payload.get("valid", false) \
+				or not (redacted_payload.get("value") is Dictionary):
+			_last_attachment_failures.append(
+					_redacted_attachment_failure(payload),
+				)
+			continue
 		if payload.get("persistent", false) == true:
 			continue
-		var capture_payload: Dictionary = payload.duplicate(true)
-		capture_payload.erase("persistent")
+		@warning_ignore("unsafe_cast")
+		var capture_payload: Dictionary = redacted_payload["value"] as Dictionary
 		local.append(capture_payload)
 	return local
 
@@ -774,6 +818,25 @@ func _append_attachment_failure(
 			reason,
 			error,
 		))
+
+
+func _redacted_attachment_failure(
+		payload: Dictionary,
+) -> ObservabilityAttachmentFailure:
+	var filename: String = str(payload.get("filename", ""))
+	var handle: String = "built-in:attachment"
+	if payload.get("persistent", false) == true:
+		handle = "built-in:game-log"
+	elif filename == "screenshot.png":
+		handle = "built-in:screenshot"
+	elif filename == "view-hierarchy.json":
+		handle = "built-in:scene-tree"
+	return ObservabilityAttachmentFailure.new(
+			handle,
+			filename,
+			ObservabilityAttachmentFailure.REDACTED,
+			Error.ERR_INVALID_DATA,
+		)
 
 
 func _attachment_config_from(config: ObservabilityConfig) -> ObservabilityConfig:
@@ -879,6 +942,7 @@ func _config_payloads_are_equivalent(candidate_config_payload: Dictionary) -> bo
 func _fail_closed(bridge: Object) -> void:
 	bridge.call("shutdown", _owner)
 	_enabled = false
+	_redactor = ObservabilityRedactor.new()
 	_stable_contexts = {}
 	_scope = ObservabilityScope.new()
 	_user = null

@@ -3140,9 +3140,155 @@ func test_memory_provider_captures_and_clears_breadcrumbs() -> void:
 	var breadcrumb := ObservabilityBreadcrumb.new(p_message = "trail")
 
 	Expect.that(service.capture_breadcrumb(breadcrumb)).to_be_true()
-	Expect.that(provider.breadcrumbs()).to_equal([breadcrumb])
+	Expect.that(provider.breadcrumbs()).to_have_size(1)
+	Expect.that(provider.breadcrumbs()[0].message()).to_equal("trail")
+	Expect.that(provider.breadcrumbs()[0]).not_().to_equal(breadcrumb)
 	provider.clear_breadcrumbs()
 	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	service.shutdown()
+
+
+func test_service_redacts_rebuilt_provider_owned_state_without_retaining_inputs() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["contexts", "**", "token"]),
+				"secret",
+				"safe",
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["user", "contact_email"]),
+				"secret@example.com",
+				"safe@example.invalid",
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["breadcrumbs", "message"]),
+				"secret",
+				"safe",
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["attachments", "filename"]),
+				"secret",
+				"safe",
+			),
+	])
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = policy,
+	))).to_equal(Error.OK)
+
+	var context_source: Dictionary = {
+		"token": "secret",
+		"nested": {"token": "secret"},
+	}
+	var manual_breadcrumb := ObservabilityBreadcrumb.new(p_message = "secret manual")
+	var automatic_breadcrumb := ObservabilityBreadcrumb.new(
+			p_message = "secret automatic",
+		)
+	var attachment := ObservabilityAttachment.from_bytes(
+			PackedByteArray([1, 2, 3]),
+			"secret.log",
+			"text/plain",
+		)
+	Expect.that(service.set_context("account", context_source)).to_be_true()
+	Expect.that(service.set_user(ObservabilityUser.new(
+			"player-7",
+			"Mina",
+			"secret@example.com",
+		))).to_be_true()
+	Expect.that(service.capture_breadcrumb(manual_breadcrumb)).to_be_true()
+	Expect.that(service._capture_automatic_breadcrumb(automatic_breadcrumb)).to_be_true()
+	Expect.that(service.add_attachment(attachment).is_empty()).to_be_false()
+
+	context_source["token"] = "mutated"
+	context_source["nested"]["token"] = "mutated"
+	Expect.that(service.capture_message("state snapshot")).to_equal("memory:1")
+	Expect.that(provider.captured_scopes()[0]["contexts"]["account"]).to_equal({
+		"token": "safe",
+		"nested": {"token": "safe"},
+	})
+	Expect.that(provider.captured_scopes()[0]["user"]["contact_email"]).to_equal(
+			"safe@example.invalid",
+		)
+	Expect.that(provider.breadcrumbs()[0].message()).to_equal("safe manual")
+	Expect.that(provider.breadcrumbs()[1].message()).to_equal("safe automatic")
+	Expect.that(provider.breadcrumbs()[0]).not_().to_equal(manual_breadcrumb)
+	Expect.that(provider.breadcrumbs()[1]).not_().to_equal(automatic_breadcrumb)
+	Expect.that(provider.captured_attachments()[0][0]["filename"]).to_equal("safe.log")
+	Expect.that(manual_breadcrumb.message()).to_equal("secret manual")
+	Expect.that(automatic_breadcrumb.message()).to_equal("secret automatic")
+	Expect.that(attachment.filename()).to_equal("secret.log")
+	service.shutdown()
+
+
+func test_service_state_redaction_failures_skip_provider_mutations_and_report_state() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["contexts", "account"]),
+						7,
+					),
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["user", "contact_email"]),
+						7,
+					),
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["breadcrumbs", "level"]),
+						"invalid",
+					),
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["attachments", "filename"]),
+						7,
+					),
+			]),
+	))).to_equal(Error.OK)
+
+	Expect.that(service.set_context("account", {"token": "secret"})).to_be_false()
+	_expect_state_redaction_failure(service)
+	Expect.that(service.set_user(ObservabilityUser.new(
+			"player-7",
+			"Mina",
+			"secret@example.com",
+		))).to_be_false()
+	_expect_state_redaction_failure(service)
+	Expect.that(service.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "secret",
+		))).to_be_false()
+	_expect_state_redaction_failure(service)
+	Expect.that(service._capture_automatic_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "automatic secret",
+		))).to_be_false()
+	_expect_state_redaction_failure(service)
+	Expect.that(service.add_attachment(ObservabilityAttachment.from_bytes(
+			PackedByteArray([1]),
+			"secret.log",
+		)).is_empty()).to_be_true()
+	_expect_state_redaction_failure(service)
+
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	Expect.that(service.capture_message("provider state unchanged")).to_equal("memory:1")
+	Expect.that(provider.captured_scopes()[0]).to_equal({
+		"tags": {},
+		"contexts": {},
+		"user": null,
+	})
+	Expect.that(provider.captured_attachments()[0]).to_have_size(0)
 	service.shutdown()
 
 
@@ -3488,7 +3634,9 @@ func test_memory_breadcrumb_bound_zero_and_service_clear_results() -> void:
 	Expect.that(service.capture_breadcrumb(one)).to_be_true()
 	Expect.that(service.capture_breadcrumb(two)).to_be_true()
 	Expect.that(service.capture_breadcrumb(three)).to_be_true()
-	Expect.that(provider.breadcrumbs()).to_equal([two, three])
+	Expect.that(provider.breadcrumbs()).to_have_size(2)
+	Expect.that(provider.breadcrumbs()[0].message()).to_equal("two")
+	Expect.that(provider.breadcrumbs()[1].message()).to_equal("three")
 	Expect.that(service.clear_breadcrumbs()).to_be_true()
 	Expect.that(service.last_error()).to_equal(Error.OK)
 	Expect.that(provider.breadcrumbs()).to_have_size(0)
@@ -7115,6 +7263,26 @@ func _service_processing_frame() -> int:
 func _shutdown_processing_service(service: FoundryObservability) -> void:
 	service.shutdown()
 	service.free()
+
+
+func _expect_state_redaction_failure(service: FoundryObservability) -> void:
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
+	var diagnostic: ObservabilityProcessingDiagnostic? = (
+			service.last_processing_diagnostic()
+		)
+	Expect.that(diagnostic).to_not_be_null()
+	if diagnostic == null:
+		return
+	Expect.that(diagnostic.processing_signal()).to_equal(
+			ObservabilityProcessingDiagnostic.STATE,
+		)
+	Expect.that(diagnostic.outcome()).to_equal(
+			ObservabilityProcessingDiagnostic.DROPPED,
+		)
+	Expect.that(diagnostic.reason()).to_equal(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+		)
+	Expect.that(diagnostic.error()).to_equal(Error.ERR_INVALID_DATA)
 
 
 func _service() -> FoundryObservability:

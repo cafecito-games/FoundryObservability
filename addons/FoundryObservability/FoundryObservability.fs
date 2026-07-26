@@ -374,6 +374,26 @@ func _record_processing_rejection(
 	_pipeline_mutex.unlock()
 
 
+func _record_state_processing_rejection(state: Dictionary) -> void:
+	if not state.get("valid", false):
+		return
+	@warning_ignore("unsafe_cast")
+	var pipeline: ObservabilityProcessingPipeline = (
+			state["pipeline"] as ObservabilityProcessingPipeline
+		)
+	@warning_ignore("unsafe_cast")
+	var provider: ObservabilityProvider = state["provider"] as ObservabilityProvider
+	var generation_value: Variant = state.get("generation")
+	if not (generation_value is int):
+		return
+	var generation: int = generation_value
+	_record_processing_rejection(
+			pipeline,
+			provider,
+			generation,
+		)
+
+
 ## Adds one persistent diagnostic attachment through an optional provider capability.
 func add_attachment(attachment: ObservabilityAttachment) -> String:
 	var state: Dictionary = _capture_state()
@@ -382,6 +402,19 @@ func add_attachment(attachment: ObservabilityAttachment) -> String:
 	if attachment == null or not attachment.is_valid():
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return ""
+	@warning_ignore("unsafe_cast")
+	var pipeline: ObservabilityProcessingPipeline = (
+			state["pipeline"] as ObservabilityProcessingPipeline
+		)
+	var redaction: Dictionary = pipeline.redact_attachment(attachment)
+	if not redaction.get("valid", false) \
+			or not (redaction.get("value") is ObservabilityAttachment):
+		_record_state_processing_rejection(state)
+		return ""
+	@warning_ignore("unsafe_cast")
+	var redacted_attachment: ObservabilityAttachment = (
+			redaction["value"] as ObservabilityAttachment
+		)
 	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
 	if provider == null:
 		return ""
@@ -392,7 +425,7 @@ func add_attachment(attachment: ObservabilityAttachment) -> String:
 
 	var result: Variant = attachments_provider.call(
 			"add_attachment",
-			attachment,
+			redacted_attachment,
 	)
 	if not (result is String):
 		_finish_provider_call(Error.FAILED)
@@ -651,7 +684,29 @@ func set_context(context_name: String, value: Dictionary) -> bool:
 	if not validation.set_context(context_name, value):
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return false
-	return _call_scope_operation(&"set_context", [context_name, value])
+	var state: Dictionary = _capture_state()
+	if not state.get("valid", false) or not _state_config(state).enabled:
+		return false
+	@warning_ignore("unsafe_cast")
+	var pipeline: ObservabilityProcessingPipeline = (
+			state["pipeline"] as ObservabilityProcessingPipeline
+		)
+	var redaction: Dictionary = pipeline.redact_contexts({context_name: value})
+	if not redaction.get("valid", false) \
+			or not (redaction.get("value") is Dictionary):
+		_record_state_processing_rejection(state)
+		return false
+	@warning_ignore("unsafe_cast")
+	var contexts: Dictionary = redaction["value"] as Dictionary
+	var redacted_context: Dictionary = {}
+	if contexts.has(context_name) and contexts[context_name] is Dictionary:
+		@warning_ignore("unsafe_cast")
+		redacted_context = contexts[context_name] as Dictionary
+	return _call_scope_operation_in_state(
+			state,
+			&"set_context",
+			[context_name, redacted_context],
+		)
 
 
 ## Removes a provider-owned global structured context.
@@ -673,7 +728,25 @@ func set_user(user: ObservabilityUser) -> bool:
 	if user == null or not user.is_valid():
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return false
-	return _call_scope_operation(&"set_user", [user])
+	var state: Dictionary = _capture_state()
+	if not state.get("valid", false) or not _state_config(state).enabled:
+		return false
+	@warning_ignore("unsafe_cast")
+	var pipeline: ObservabilityProcessingPipeline = (
+			state["pipeline"] as ObservabilityProcessingPipeline
+		)
+	var redaction: Dictionary = pipeline.redact_user(user)
+	if not redaction.get("valid", false) \
+			or not (redaction.get("value") is ObservabilityUser):
+		_record_state_processing_rejection(state)
+		return false
+	@warning_ignore("unsafe_cast")
+	var redacted_user: ObservabilityUser = redaction["value"] as ObservabilityUser
+	return _call_scope_operation_in_state(
+			state,
+			&"set_user",
+			[redacted_user],
+		)
 
 
 ## Removes the explicit provider-owned application user.
@@ -685,6 +758,14 @@ func _call_scope_operation(method_name: StringName, arguments: Array) -> bool:
 	var state: Dictionary = _capture_state()
 	if not state.get("valid", false) or not _state_config(state).enabled:
 		return false
+	return _call_scope_operation_in_state(state, method_name, arguments)
+
+
+func _call_scope_operation_in_state(
+		state: Dictionary,
+		method_name: StringName,
+		arguments: Array,
+) -> bool:
 	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
 	if provider == null:
 		return false
@@ -753,6 +834,19 @@ func _capture_breadcrumb(
 	var state: Dictionary = _capture_state()
 	if not state.get("valid", false) or not _state_config(state).enabled:
 		return false
+	@warning_ignore("unsafe_cast")
+	var pipeline: ObservabilityProcessingPipeline = (
+			state["pipeline"] as ObservabilityProcessingPipeline
+		)
+	var redaction: Dictionary = pipeline.redact_breadcrumb(breadcrumb)
+	if not redaction.get("valid", false) \
+			or not (redaction.get("value") is ObservabilityBreadcrumb):
+		_record_state_processing_rejection(state)
+		return false
+	@warning_ignore("unsafe_cast")
+	var redacted_breadcrumb: ObservabilityBreadcrumb = (
+			redaction["value"] as ObservabilityBreadcrumb
+		)
 	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
 	if provider == null:
 		return false
@@ -763,7 +857,10 @@ func _capture_breadcrumb(
 			_end_provider_call()
 		return false
 
-	var capture_result: Variant = provider.call("capture_breadcrumb", breadcrumb)
+	var capture_result: Variant = provider.call(
+			"capture_breadcrumb",
+			redacted_breadcrumb,
+		)
 	if not (capture_result is bool) or not capture_result:
 		_finish_provider_call(Error.FAILED)
 		return false

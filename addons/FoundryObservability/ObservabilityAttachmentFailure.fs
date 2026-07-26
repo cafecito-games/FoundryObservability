@@ -9,6 +9,7 @@ const UNREADABLE_FILE: StringName = &"unreadable_file"
 const OVERSIZED: StringName = &"oversized"
 const PLATFORM_UNAVAILABLE: StringName = &"platform_unavailable"
 const PROVIDER_REJECTED: StringName = &"provider_rejected"
+const REDACTED: StringName = &"redacted"
 
 final var _handle: String
 final var _filename: String
