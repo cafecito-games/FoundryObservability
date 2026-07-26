@@ -1572,7 +1572,10 @@ func test_changed_failed_configure_fails_closed_and_can_recover() -> void:
 
 func test_equivalent_failed_configure_preserves_breadcrumb_trail_and_scope() -> void:
 	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+		)
 	var config := ObservabilityConfig.new(
 			p_environment = "production",
 			p_global_attributes = {"build": {"number": 42}},
@@ -1588,9 +1591,13 @@ func test_equivalent_failed_configure_preserves_breadcrumb_trail_and_scope() -> 
 			p_message = "prior session",
 	))).to_be_true()
 	var retained_trail: Array[Dictionary] = bridge.current_breadcrumb_payloads.duplicate(true)
+	var configure_count_before_failure: int = bridge.configured_payloads.size()
 	bridge.configure_result = Error.ERR_INVALID_PARAMETER
 
 	Expect.that(provider.configure(config)).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(bridge.configured_payloads.size()).to_equal(
+			configure_count_before_failure + 1,
+		)
 	Expect.that(bridge.current_breadcrumb_payloads).to_equal(retained_trail)
 	Expect.that(bridge.current_scope_payload["tags"]).to_equal({"region": "iad"})
 	Expect.that(provider.is_available()).to_be_true()
