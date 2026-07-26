@@ -18,6 +18,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Test;
@@ -152,6 +153,42 @@ public class SentryObservabilityBridgeTest {
     log.put("attributes", java.util.Map.of("logger_name", "combat"));
 
     assertFalse(bridge.captureLog(log).isEmpty());
+    bridge.shutdown(OWNER);
+  }
+
+  @Test
+  public void scopedStructuredLogIsRejectedBeforeNativeLoggingAndDoesNotLeakToNextLog() {
+    SentryObservabilityBridge bridge = newBridge();
+
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("logs_enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("lifecycle_owner", OWNER);
+    assertEquals(0, bridge.configure(configuration));
+    AtomicInteger nativeLogCalls = new AtomicInteger();
+    Sentry.getCurrentScopes().getOptions().getLogs().setBeforeSend(event -> {
+      nativeLogCalls.incrementAndGet();
+      return event;
+    });
+
+    Dictionary log = new Dictionary();
+    log.put("kind", "log");
+    log.put("level", 40);
+    log.put("message", "warning");
+    log.put("source", "foundry.logging");
+    log.put(
+        "scope",
+        Map.of(
+            "tags", Map.of("region", "iad"),
+            "contexts", Map.of("match", Map.of("teams", List.of("red", "blue")))));
+
+    assertEquals("", bridge.captureLog(log));
+    assertEquals(0, nativeLogCalls.get());
+
+    log.remove("scope");
+    assertFalse(bridge.captureLog(log).isEmpty());
+    assertEquals(1, nativeLogCalls.get());
     bridge.shutdown(OWNER);
   }
 
@@ -452,6 +489,54 @@ public class SentryObservabilityBridgeTest {
     assertFalse(currentScope().getTags().containsKey("region"));
     assertFalse(currentScope().getContexts().containsKey("match"));
     bridge.shutdown(replacementOwner);
+  }
+
+  @Test
+  public void identicalConfigurationTransfersGlobalScopeOwnershipAcrossBridgeInstances() {
+    SentryObservabilityBridge first = newBridge();
+    SentryObservabilityBridge second = newBridge();
+    Dictionary configuration = new Dictionary();
+    configuration.put("enabled", true);
+    configuration.put("dsn", "https://public@example.com/1");
+    configuration.put("lifecycle_owner", "first-owner");
+    assertEquals(0, first.configure(configuration));
+    configureCurrentScope(scope -> {
+      scope.setTag("native", "preserved");
+      scope.setContexts("device", Map.of("model", "test-device"));
+    });
+
+    Dictionary installed = new Dictionary();
+    installed.put("tags", Map.of("region", "iad"));
+    installed.put("contexts", Map.of("match", Map.of("id", 7)));
+    installed.put("user", Map.of("id", "player-7"));
+    assertTrue(first.applyScope(installed));
+
+    configuration.put("lifecycle_owner", "second-owner");
+    assertEquals(0, second.configure(configuration));
+    assertTrue(second.applyScope(new Dictionary()));
+
+    IScope cleared = currentScope();
+    assertFalse(cleared.getTags().containsKey("region"));
+    assertFalse(cleared.getContexts().containsKey("match"));
+    assertEquals(null, cleared.getUser());
+    assertEquals("preserved", cleared.getTags().get("native"));
+    assertEquals("test-device", ((Map<?, ?>) cleared.getContexts().get("device")).get("model"));
+
+    Dictionary stale = new Dictionary();
+    stale.put("tags", Map.of("stale", "blocked"));
+    assertFalse(first.applyScope(stale));
+    configureCurrentScope(scope -> scope.addBreadcrumb(new Breadcrumb("preserved")));
+    assertFalse(first.clearBreadcrumbs());
+    assertEquals(1, currentScope().getBreadcrumbs().size());
+
+    Dictionary replacement = new Dictionary();
+    replacement.put("tags", Map.of("region", "fra"));
+    assertTrue(second.applyScope(replacement));
+    assertEquals("fra", currentScope().getTags().get("region"));
+    assertFalse(currentScope().getTags().containsKey("stale"));
+    assertTrue(second.clearBreadcrumbs());
+    assertTrue(currentScope().getBreadcrumbs().isEmpty());
+    second.shutdown("second-owner");
   }
 
   private static SentryObservabilityBridge configuredBridge() {
