@@ -19,6 +19,11 @@ var _lifecycle_nested_result: Dictionary = {}
 var _overlap_nested_result: Dictionary = {}
 var _overlap_recursive_result: Dictionary = {}
 var _overlap_stage: int = 0
+var _service_event_processor_calls: int = 0
+var _service_processing_clock_msec: int = 0
+var _service_processing_frame_index: int = 0
+var _service_processing_clock_calls: int = 0
+var _service_processing_frame_calls: int = 0
 
 class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/ObservabilityStackFrame.fs":
 	var public_variables_calls: int = 0
@@ -2877,7 +2882,7 @@ func test_metrics_reject_non_boolean_filter_results() -> void:
 		))).to_equal(Error.OK)
 
 	Expect.that(service.capture_counter("combat.hit")).to_be_false()
-	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
 	Expect.that(provider.metrics()).to_have_size(0)
 	service.shutdown()
 
@@ -3542,7 +3547,7 @@ func test_automatic_logger_filters_and_routes_messages_without_events() -> void:
 
 
 func test_automatic_logger_suppresses_duplicate_errors_deterministically() -> void:
-	var service: FoundryObservability = _service()
+	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
@@ -3553,8 +3558,10 @@ func test_automatic_logger_suppresses_duplicate_errors_deterministically() -> vo
 			p_automatic_repeated_error_window_msec = 1000,
 			p_automatic_events_per_frame = 0,
 			p_automatic_event_throttle_count = 0,
-		)
+	)
 	var capture_time := AutomaticCaptureTime.new(1000, 1)
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, capture_time.now, capture_time.frame)
@@ -3562,21 +3569,23 @@ func test_automatic_logger_suppresses_duplicate_errors_deterministically() -> vo
 	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
 	capture_time.now_msec = 1500
+	_service_processing_clock_msec = capture_time.now_msec
 	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
 	Expect.that(provider.events()).to_have_size(2)
 	Expect.that(provider.breadcrumbs()).to_have_size(1)
 
 	capture_time.now_msec = 2000
+	_service_processing_clock_msec = capture_time.now_msec
 	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
 	Expect.that(provider.events()).to_have_size(4)
 	Expect.that(provider.breadcrumbs()).to_have_size(2)
-	service.shutdown()
+	_shutdown_processing_service(service)
 
 
 func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> void:
-	var service: FoundryObservability = _service()
+	var service := _processing_service()
 	var provider := RejectingObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
@@ -3590,6 +3599,8 @@ func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> 
 			p_automatic_event_throttle_count = 1,
 			p_automatic_event_throttle_window_msec = 1000,
 		)
+	_service_processing_clock_msec = 1000
+	_service_processing_frame_index = 1
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, func() -> int: return 1000, func() -> int: return 1)
@@ -3599,9 +3610,9 @@ func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> 
 	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
 
-	Expect.that(provider.capture_count).to_equal(4)
+	Expect.that(provider.capture_count).to_equal(3)
 	Expect.that(provider.breadcrumb_count).to_equal(2)
-	service.shutdown()
+	_shutdown_processing_service(service)
 
 
 func test_successful_automatic_breadcrumb_does_not_clear_event_failure() -> void:
@@ -3656,7 +3667,7 @@ func test_rejected_automatic_breadcrumb_reports_failure_after_accepted_event() -
 
 
 func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
-	var service: FoundryObservability = _service()
+	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
@@ -3668,8 +3679,10 @@ func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
 			p_automatic_events_per_frame = 1,
 			p_automatic_event_throttle_count = 2,
 			p_automatic_event_throttle_window_msec = 1000,
-		)
+	)
 	var capture_time := AutomaticCaptureTime.new(1000, 1)
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, capture_time.now, capture_time.frame)
@@ -3680,12 +3693,16 @@ func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
 			Logger.ERROR_TYPE_ERROR, [])
 	capture_time.frame_index = 2
 	capture_time.now_msec = 1002
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
 	logger._log_error("tick", "res://loop.fs", 9, "c", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
 	logger._log_error("tick", "res://loop.fs", 9, "d", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
 	capture_time.frame_index = 3
 	capture_time.now_msec = 1003
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
 	logger._log_error("tick", "res://loop.fs", 9, "e", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
 
@@ -3699,15 +3716,17 @@ func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
 
 	capture_time.frame_index = 4
 	capture_time.now_msec = 2001
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
 	logger._log_error("tick", "res://loop.fs", 9, "f", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
 	Expect.that(provider.breadcrumbs()).to_have_size(6)
 	Expect.that(provider.events()).to_have_size(9)
-	service.shutdown()
+	_shutdown_processing_service(service)
 
 
 func test_automatic_logger_bounds_identity_state_and_resets_limits() -> void:
-	var service: FoundryObservability = _service()
+	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
@@ -3718,6 +3737,8 @@ func test_automatic_logger_bounds_identity_state_and_resets_limits() -> void:
 			p_automatic_events_per_frame = 0,
 			p_automatic_event_throttle_count = 0,
 		)
+	_service_processing_clock_msec = 1000
+	_service_processing_frame_index = 1
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, func() -> int: return 1000, func() -> int: return 1)
@@ -3728,12 +3749,12 @@ func test_automatic_logger_bounds_identity_state_and_resets_limits() -> void:
 
 	logger._log_error("tick", "res://loop.fs", 0, "0", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(102)
+	Expect.that(provider.events()).to_have_size(101)
 	logger.reset()
 	logger._log_error("tick", "res://loop.fs", 0, "0", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(103)
-	service.shutdown()
+	Expect.that(provider.events()).to_have_size(101)
+	_shutdown_processing_service(service)
 
 
 func test_automatic_capture_reservation_is_atomic() -> void:
@@ -3963,25 +3984,79 @@ func test_structured_logs_honor_disabled_and_minimum_level_configuration() -> vo
 
 
 func test_structured_logs_apply_deterministic_per_second_rate_limit() -> void:
-	var service: FoundryObservability = _service()
+	var service := _processing_service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	_service_processing_frame_index = 1
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {},
 			p_log_rate_limit_per_second = 1,
 		))).to_equal(Error.OK)
+	_service_processing_clock_msec = 1000
 	Expect.that(service.capture_log(
 			"first", ObservabilityLevel.INFO, &"game", -1, {}, 1000,
 		)).to_equal("memory:1")
+	_service_processing_clock_msec = 1500
 	Expect.that(service.capture_log(
 			"dropped", ObservabilityLevel.INFO, &"game", -1, {}, 1500,
 		)).to_equal("")
+	_service_processing_clock_msec = 2000
 	Expect.that(service.capture_log(
 			"next window", ObservabilityLevel.INFO, &"game", -1, {}, 2000,
 		)).to_equal("memory:2")
 	Expect.that(provider.events()).to_have_size(2)
+	_shutdown_processing_service(service)
+
+
+func test_service_processes_replacement_event_before_memory_provider_delivery() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	_service_event_processor_calls = 0
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_service_replace_event")],
+	))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("original")).to_equal("memory:1")
+	Expect.that(_service_event_processor_calls).to_equal(1)
+	Expect.that(provider.events()[0].message()).to_equal("processed")
+	var diagnostic: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
+	Expect.that(diagnostic.processing_signal()).to_equal(ObservabilityProcessingDiagnostic.EVENT)
+	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingDiagnostic.ACCEPTED)
+	Expect.that(service.last_error()).to_equal(Error.OK)
 	service.shutdown()
+
+
+func test_service_constructor_preserves_positional_arguments_and_uses_processing_seams() -> void:
+	var service := _processing_service()
+	var provider := MemoryObservabilityProvider.new()
+	_service_processing_clock_msec = 0
+	_service_processing_frame_index = 1
+	_service_processing_clock_calls = 0
+	_service_processing_frame_calls = 0
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1, 0, 0, 0),
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("first")).to_equal("memory:1")
+	Expect.that(service.capture_message("limited")).to_equal("")
+	Expect.that(service.last_processing_diagnostic().limit_kind()).to_equal(
+			ObservabilityProcessingDiagnostic.PER_FRAME)
+	_service_processing_frame_index = 2
+	Expect.that(service.capture_message("next frame")).to_equal("memory:2")
+	Expect.that(_service_processing_clock_calls).to_be_greater_than(0)
+	Expect.that(_service_processing_frame_calls).to_be_greater_than(0)
+	_shutdown_processing_service(service)
 
 
 func test_disabled_structured_logs_do_not_consume_rate_limit() -> void:
@@ -6284,6 +6359,41 @@ func _processing_event_with_message(event: ObservabilityEvent, message: String) 
 	return ObservabilityEvent.new(
 			event.kind(), event.level(), message, event.source(), event.timestamp_msec(),
 			event.attributes(), event.exception(), event.engine_ticks_msec(), event.scope())
+
+
+func _service_replace_event(event: ObservabilityEvent) -> ObservabilityEvent:
+	_service_event_processor_calls += 1
+	return _processing_event_with_message(event, "processed")
+
+
+func _processing_service() -> FoundryObservability:
+	var service_script: Script = ResourceLoader.load(
+			"res://addons/FoundryObservability/FoundryObservability.fs",
+		) as Script
+	@warning_ignore("unsafe_method_access")
+	var candidate: Variant = service_script.new(
+			ObservabilityStartupSettings.new(),
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs",
+			Callable(self, "_service_processing_clock"),
+			Callable(self, "_service_processing_frame"),
+	)
+	@warning_ignore("unsafe_cast")
+	return candidate as FoundryObservability
+
+
+func _service_processing_clock() -> int:
+	_service_processing_clock_calls += 1
+	return _service_processing_clock_msec
+
+
+func _service_processing_frame() -> int:
+	_service_processing_frame_calls += 1
+	return _service_processing_frame_index
+
+
+func _shutdown_processing_service(service: FoundryObservability) -> void:
+	service.shutdown()
+	service.free()
 
 
 func _service() -> FoundryObservability:

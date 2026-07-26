@@ -16,9 +16,9 @@ var _provider: ObservabilityProvider
 var _config: ObservabilityConfig
 var _last_error: int = Error.OK
 var _shutdown: bool = false
-var _log_window_second: int = -1
-var _log_window_count: int = 0
-var _metric_sample_accumulator: float = 0.0
+var _processing_clock: Callable
+var _processing_frame: Callable
+var _pipeline: ObservabilityProcessingPipeline
 var _pipeline_mutex: Mutex = Mutex.new()
 var _provider_call_count: int = 0
 var _automatic_logger: AutomaticObservabilityLogger
@@ -36,16 +36,28 @@ const MAX_METRIC_ATTRIBUTE_KEY_LENGTH: int = 200
 func _init(
 	startup_settings: ObservabilityStartupSettings? = null,
 	startup_provider_path: String = _SENTRY_PROVIDER_PATH,
+	processing_clock: Callable = Callable(),
+	processing_frame: Callable = Callable(),
 ) -> void:
 	_provider = NullObservabilityProvider.new()
 	_config = ObservabilityConfig.new(p_enabled = false)
+	_processing_clock = processing_clock
+	_processing_frame = processing_frame
+	_pipeline = _new_disabled_pipeline()
 	_startup_provider_path = startup_provider_path
-	_reset_log_rate_limit()
-	_reset_metric_sampling()
 	if startup_settings == null:
 		initialize_from_project_settings()
 	else:
 		_initialize_startup(startup_settings)
+
+
+func _new_disabled_pipeline() -> ObservabilityProcessingPipeline:
+	var pipeline: ObservabilityProcessingPipeline = ObservabilityProcessingPipeline.new(
+			_processing_clock,
+			_processing_frame,
+	)
+	pipeline.configure(ObservabilityConfig.new(p_enabled = false))
+	return pipeline
 
 
 ## Rereads project settings and runs the supported startup path.
@@ -183,11 +195,14 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	var candidate_config: ObservabilityConfig = config
 	if candidate_config == null:
 		candidate_config = ObservabilityConfig.new(p_enabled = false)
-	if not is_finite(candidate_config.metric_sample_rate) \
-			or candidate_config.metric_sample_rate < 0.0 \
-			or candidate_config.metric_sample_rate > 1.0:
-		_last_error = Error.ERR_INVALID_PARAMETER
-		return Error.ERR_INVALID_PARAMETER
+	var candidate_pipeline: ObservabilityProcessingPipeline = ObservabilityProcessingPipeline.new(
+			_processing_clock,
+			_processing_frame,
+	)
+	var pipeline_result: int = candidate_pipeline.configure(candidate_config)
+	if pipeline_result != Error.OK:
+		_last_error = pipeline_result
+		return pipeline_result
 
 	_begin_provider_call()
 	var result: int = provider.configure(candidate_config)
@@ -198,10 +213,9 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 
 	if provider == _provider:
 		_config = candidate_config
+		_pipeline = candidate_pipeline
 		_last_error = Error.OK
 		_shutdown = false
-		_reset_log_rate_limit()
-		_reset_metric_sampling()
 		_refresh_automatic_logger()
 		return Error.OK
 
@@ -213,10 +227,9 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 
 	_provider = provider
 	_config = candidate_config
+	_pipeline = candidate_pipeline
 	_last_error = Error.OK
 	_shutdown = false
-	_reset_log_rate_limit()
-	_reset_metric_sampling()
 	_refresh_automatic_logger()
 	return Error.OK
 
@@ -249,6 +262,17 @@ func provider_name() -> StringName:
 ## Returns the most recent provider, capture, configuration, or flush error.
 func last_error() -> int:
 	return _last_error
+
+
+## Returns an isolated diagnostic from the latest processing attempt.
+func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?:
+	return _pipeline.last_diagnostic() if _pipeline != null else null
+
+
+func _record_processing_rejection() -> void:
+	var diagnostic: ObservabilityProcessingDiagnostic? = last_processing_diagnostic()
+	if diagnostic != null:
+		_last_error = diagnostic.error()
 
 
 ## Adds one persistent diagnostic attachment through an optional provider capability.
@@ -369,12 +393,21 @@ func capture_event(event: ObservabilityEvent) -> String:
 	if normalized.kind() == &"log":
 		if not _config.logs_enabled or normalized.level() < _config.log_minimum_level:
 			return ""
-		var rate_limit_ticks_msec: int = normalized.engine_ticks_msec()
-		if rate_limit_ticks_msec < 0:
-			rate_limit_ticks_msec = capture_engine_ticks_msec
-		if not _accept_log(rate_limit_ticks_msec):
-			return ""
-	return _capture_event(normalized)
+	var processable: ObservabilityEvent = _normalized_exception_event(normalized)
+	var result: Dictionary = _pipeline.process_event(processable)
+	if not result.get("accepted", false):
+		_record_processing_rejection()
+		return ""
+	@warning_ignore("unsafe_cast")
+	var processed: ObservabilityEvent = result["value"] as ObservabilityEvent
+	var event_id: String = _capture_event(processed)
+	var accepted: bool = not event_id.is_empty()
+	var effective_error: int = Error.OK if accepted else _last_error
+	_pipeline.record_provider_result(StringName(str(result["signal"])), accepted, effective_error,
+			result["operation_token"])
+	if accepted:
+		_last_error = Error.OK
+	return event_id
 
 
 ## Creates a game-sourced message event using the current wall-clock and engine times.
@@ -594,29 +627,25 @@ func capture_metric(metric: ObservabilityMetric) -> bool:
 		return false
 	if not is_enabled() or not _config.metrics_enabled or _provider == null:
 		return false
-
-	if _config.metric_filter.is_valid():
-		var filter_result: Variant = _config.metric_filter.call(normalized)
-		if not (filter_result is bool):
-			_last_error = Error.ERR_INVALID_PARAMETER
-			return false
-		if not filter_result:
-			return false
-
-	if not _accept_metric_sample():
-		return false
 	if not _provider.has_method("capture_metric"):
 		_last_error = Error.ERR_UNAVAILABLE
 		return false
+	var result: Dictionary = _pipeline.process_metric(normalized)
+	if not result.get("accepted", false):
+		_record_processing_rejection()
+		return false
+	@warning_ignore("unsafe_cast")
+	var processed: ObservabilityMetric = result["value"] as ObservabilityMetric
 
 	_begin_provider_call()
-	var capture_result: Variant = _provider.call("capture_metric", normalized)
+	var capture_result: Variant = _provider.call("capture_metric", processed)
 	_end_provider_call()
-	if not (capture_result is bool) or not capture_result:
-		_last_error = Error.FAILED
-		return false
-	_last_error = Error.OK
-	return true
+	var accepted: bool = capture_result is bool and capture_result
+	var effective_error: int = Error.OK if accepted else Error.FAILED
+	_pipeline.record_provider_result(StringName(str(result["signal"])), accepted, effective_error,
+			result["operation_token"])
+	_last_error = effective_error
+	return accepted
 
 
 ## Creates and captures a counter metric.
@@ -782,18 +811,6 @@ func _has_whitespace(value: String) -> bool:
 	return false
 
 
-func _accept_metric_sample() -> bool:
-	_metric_sample_accumulator += _config.metric_sample_rate
-	if _metric_sample_accumulator < 1.0:
-		return false
-	_metric_sample_accumulator -= 1.0
-	return true
-
-
-func _reset_metric_sampling() -> void:
-	_metric_sample_accumulator = 0.0
-
-
 func _capture_event(event: ObservabilityEvent) -> String:
 	if not is_enabled() or _provider == null:
 		return ""
@@ -805,7 +822,7 @@ func _capture_event(event: ObservabilityEvent) -> String:
 		return ""
 
 	_begin_provider_call()
-	var event_id: String = _provider.capture(_normalized_exception_event(event))
+	var event_id: String = _provider.capture(event)
 	_end_provider_call()
 	if event_id.is_empty():
 		_last_error = Error.FAILED
@@ -942,24 +959,6 @@ func _has_control_character(value: String) -> bool:
 	return false
 
 
-func _accept_log(engine_ticks_msec: int) -> bool:
-	var window_second: int = floori(float(engine_ticks_msec) / 1000.0)
-	if window_second != _log_window_second:
-		_log_window_second = window_second
-		_log_window_count = 0
-	if _config.log_rate_limit_per_second <= 0:
-		return true
-	if _log_window_count >= _config.log_rate_limit_per_second:
-		return false
-	_log_window_count += 1
-	return true
-
-
-func _reset_log_rate_limit() -> void:
-	_log_window_second = -1
-	_log_window_count = 0
-
-
 func _begin_provider_call() -> void:
 	_pipeline_mutex.lock()
 	_provider_call_count += 1
@@ -1035,9 +1034,8 @@ func shutdown() -> void:
 		_end_provider_call()
 	_provider = NullObservabilityProvider.new()
 	_config = ObservabilityConfig.new(p_enabled = false)
+	_pipeline = _new_disabled_pipeline()
 	_last_error = Error.OK
-	_reset_log_rate_limit()
-	_reset_metric_sampling()
 
 
 ## Shuts down the service when its autoload leaves the scene tree.

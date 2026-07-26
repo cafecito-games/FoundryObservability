@@ -1387,6 +1387,23 @@ func test_service_preserves_legacy_exception_bridge_payload_without_frames() -> 
 	service.shutdown()
 
 
+func test_service_delivers_processor_replacement_event_to_sentry_bridge() -> void:
+	var service: FoundryObservability = _service()
+	var bridge := FakeSentryBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example/1"},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_replace_service_sentry_event")],
+	))).to_equal(Error.OK)
+	Expect.that(service.capture_message("original event")).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads).to_have_size(1)
+	Expect.that(bridge.captured_payloads[0]["message"]).to_equal("processed sentry event")
+	service.shutdown()
+
+
 func test_direct_provider_skips_null_exception_frames() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
@@ -2809,3 +2826,10 @@ func _expect_missing_attachment_failure(
 func _service() -> FoundryObservability:
 	var tree: SceneTree = Engine.get_main_loop() as SceneTree
 	return tree.root.get_node("FoundryObservability") as FoundryObservability
+
+
+func _replace_service_sentry_event(event: ObservabilityEvent) -> ObservabilityEvent:
+	return ObservabilityEvent.new(
+			event.kind(), event.level(), "processed sentry event", event.source(),
+			event.timestamp_msec(), event.attributes(), event.exception(),
+			event.engine_ticks_msec(), event.scope())
