@@ -2,6 +2,7 @@ namespace foundry.observability.tests
 
 import foundry.testlib
 import foundry.observability
+import foundry.observability.runtime
 import foundry.observability.sentry.tests
 
 class_name ObservabilityCoreTests
@@ -281,6 +282,33 @@ class MalformedAttachmentsProvider extends "res://tests/support/attachmentless_o
 
 	func last_attachment_failures() -> Variant:
 		return failures_result
+
+
+func test_fake_observability_runtime_exposes_deterministic_sources() -> void:
+	var runtime := FakeObservabilityRuntime.new(
+			101,
+			202,
+			303,
+			404,
+			505,
+		)
+
+	Expect.that(runtime.monotonic_time_msec()).to_equal(101)
+	Expect.that(runtime.unix_time_msec()).to_equal(202)
+	Expect.that(runtime.process_frame()).to_equal(303)
+	Expect.that(runtime.caller_id()).to_equal(404)
+	Expect.that(runtime.main_thread_id()).to_equal(505)
+	Expect.that(runtime is ObservabilityRuntime).to_be_true()
+
+
+func test_system_observability_runtime_has_sane_units() -> void:
+	var runtime: ObservabilityRuntime = SystemObservabilityRuntime.new()
+
+	Expect.that(runtime.monotonic_time_msec()).to_be_greater_than(-1)
+	Expect.that(runtime.unix_time_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(runtime.process_frame()).to_be_greater_than(-1)
+	Expect.that(runtime.caller_id()).to_be_greater_than(-1)
+	Expect.that(runtime.main_thread_id()).to_be_greater_than(-1)
 
 
 func test_levels_are_ordered_and_named() -> void:
