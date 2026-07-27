@@ -1,49 +1,28 @@
 namespace foundry.observability
 
+import foundry.observability.processing
+
 ## Immutable payload-free result emitted while processing an observability signal.
-class_name ObservabilityProcessingDiagnostic
-extends RefCounted
-
-const EVENT: StringName = &"event"
-const LOG: StringName = &"log"
-const METRIC: StringName = &"metric"
-const STATE: StringName = &"state"
-
-const ACCEPTED: StringName = &"accepted"
-const DROPPED: StringName = &"dropped"
-
-const PROCESSOR: StringName = &"processor"
-const SAMPLED: StringName = &"sampled"
-const RATE_LIMITED: StringName = &"rate_limited"
-const RECURSIVE: StringName = &"recursive"
-const INVALID_PROCESSOR_RESULT: StringName = &"invalid_processor_result"
-const REDACTION_FAILED: StringName = &"redaction_failed"
-const INVALID_PAYLOAD: StringName = &"invalid_payload"
-const PROVIDER_REJECTED: StringName = &"provider_rejected"
-
-const PER_FRAME: StringName = &"per_frame"
-const REPEATED: StringName = &"repeated"
-const WINDOW: StringName = &"window"
-const LEGACY_LOG_WINDOW: StringName = &"legacy_log_window"
+final class_name ObservabilityProcessingDiagnostic extends RefCounted
 
 final var _sequence: int
-final var _signal: StringName
-final var _outcome: StringName
-final var _reason: StringName
+final var _signal: ObservabilitySignal
+final var _outcome: ObservabilityProcessingOutcome
+final var _reason: ObservabilityProcessingReason
 final var _processor_index: int
-final var _rule_index: int
-final var _limit_kind: StringName
+final var _redaction_rule_index: int
+final var _limit_kind: ObservabilityLimitKind
 final var _error: int
 
 
 func _init(
 		p_sequence: int = 0,
-		p_signal: StringName = EVENT,
-		p_outcome: StringName = ACCEPTED,
-		p_reason: StringName = &"",
+		p_signal: ObservabilitySignal = ObservabilitySignal.EVENT,
+		p_outcome: ObservabilityProcessingOutcome = ObservabilityProcessingOutcome.ACCEPTED,
+		p_reason: ObservabilityProcessingReason = ObservabilityProcessingReason.NONE,
 		p_processor_index: int = -1,
-		p_rule_index: int = -1,
-		p_limit_kind: StringName = &"",
+		p_redaction_rule_index: int = -1,
+		p_limit_kind: ObservabilityLimitKind = ObservabilityLimitKind.NONE,
 		p_error: int = Error.OK,
 ) -> void:
 	_sequence = p_sequence
@@ -51,7 +30,7 @@ func _init(
 	_outcome = p_outcome
 	_reason = p_reason
 	_processor_index = p_processor_index
-	_rule_index = p_rule_index
+	_redaction_rule_index = p_redaction_rule_index
 	_limit_kind = p_limit_kind
 	_error = p_error
 
@@ -60,16 +39,16 @@ func sequence() -> int:
 	return _sequence
 
 
-## Returns the diagnostic signal; `signal` is a reserved FoundryScript keyword.
-func processing_signal() -> StringName:
+## Returns the diagnostic signal; `signal` is a reserved Foundry Script keyword.
+func processing_signal() -> ObservabilitySignal:
 	return _signal
 
 
-func outcome() -> StringName:
+func outcome() -> ObservabilityProcessingOutcome:
 	return _outcome
 
 
-func reason() -> StringName:
+func reason() -> ObservabilityProcessingReason:
 	return _reason
 
 
@@ -77,11 +56,11 @@ func processor_index() -> int:
 	return _processor_index
 
 
-func rule_index() -> int:
-	return _rule_index
+func redaction_rule_index() -> int:
+	return _redaction_rule_index
 
 
-func limit_kind() -> StringName:
+func limit_kind() -> ObservabilityLimitKind:
 	return _limit_kind
 
 
@@ -96,7 +75,7 @@ func duplicate() -> ObservabilityProcessingDiagnostic:
 			_outcome,
 			_reason,
 			_processor_index,
-			_rule_index,
+			_redaction_rule_index,
 			_limit_kind,
 			_error,
-	)
+		)

@@ -1,6 +1,6 @@
-namespace foundry.observability
+namespace foundry.observability.processing
 
-import foundry.observability.processing
+import foundry.observability
 
 ## Bounded deterministic admission control for one observability signal.
 class_name ObservabilitySignalLimiter

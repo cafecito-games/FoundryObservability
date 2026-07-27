@@ -13,12 +13,32 @@ uses Test
 var _processing_order: Array[String] = []
 var _processing_filter_values: Array[String] = []
 var _recursive_pipeline: ObservabilityProcessingPipeline
-var _recursive_state_result: Dictionary = {}
+var _recursive_state_result: ObservabilityProcessingResult[Dictionary] = (
+		ObservabilityProcessingResult[Dictionary].dropped(
+				ObservabilitySignal.STATE,
+				ObservabilityProcessingReason.STALE_GENERATION,
+			)
+	)
 var _lifecycle_pipeline: ObservabilityProcessingPipeline
 var _processing_runtime: FakeObservabilityRuntime
-var _lifecycle_nested_result: Dictionary = {}
-var _overlap_nested_result: Dictionary = {}
-var _overlap_recursive_result: Dictionary = {}
+var _lifecycle_nested_result: ObservabilityProcessingResult[ObservabilityEvent] = (
+		ObservabilityProcessingResult[ObservabilityEvent].dropped(
+				ObservabilitySignal.EVENT,
+				ObservabilityProcessingReason.STALE_GENERATION,
+			)
+	)
+var _overlap_nested_result: ObservabilityProcessingResult[ObservabilityEvent] = (
+		ObservabilityProcessingResult[ObservabilityEvent].dropped(
+				ObservabilitySignal.EVENT,
+				ObservabilityProcessingReason.STALE_GENERATION,
+			)
+	)
+var _overlap_recursive_result: ObservabilityProcessingResult[ObservabilityEvent] = (
+		ObservabilityProcessingResult[ObservabilityEvent].dropped(
+				ObservabilitySignal.EVENT,
+				ObservabilityProcessingReason.STALE_GENERATION,
+			)
+	)
 var _overlap_stage: int = 0
 var _service_event_processor_calls: int = 0
 var _service_processing_runtime: FakeObservabilityRuntime
@@ -29,12 +49,12 @@ var _service_lifecycle_configure_result: int = Error.OK
 var _state_reentry_service: FoundryObservability
 var _state_reentry_result: bool = true
 var _state_reentry_error: int = Error.OK
-var _state_reentry_signal: StringName = &""
-var _state_reentry_reason: StringName = &""
+var _state_reentry_signal: ObservabilitySignal = ObservabilitySignal.STATE
+var _state_reentry_reason: ObservabilityProcessingReason = ObservabilityProcessingReason.NONE
 var _state_reentry_diagnostic_error: int = Error.OK
 var _automatic_nested_service: FoundryObservability
 var _automatic_nested_capture_result: String = ""
-var _automatic_nested_reason: StringName = &""
+var _automatic_nested_reason: ObservabilityProcessingReason = ObservabilityProcessingReason.NONE
 var _processor_exception_snapshot: Dictionary = {}
 
 class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/ObservabilityStackFrame.fs":
@@ -1905,6 +1925,52 @@ func test_processing_result_preserves_every_factory_field_and_specialization() -
 	Expect.that(metric.name()).to_equal("frame.time")
 
 
+func test_processing_lease_snapshots_typed_processors_and_dependencies() -> void:
+	var processor: Callable[[ObservabilityEvent], ObservabilityEvent?] = (
+			func(event: ObservabilityEvent) -> ObservabilityEvent?: return event
+		)
+	var source_processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]] = [
+		processor,
+	]
+	var runtime: FakeObservabilityRuntime = _test_runtime()
+	var redactor: ObservabilityRedactor = ObservabilityRedactor.new()
+	var limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new()
+	var limiter_mutex: Mutex = Mutex.new()
+	var lease: ObservabilityProcessingLease[ObservabilityEvent] = (
+			ObservabilityProcessingLease[ObservabilityEvent].new(
+					4,
+					7,
+					9,
+					ObservabilitySignal.EVENT,
+					source_processors,
+					redactor,
+					limiter,
+					limiter_mutex,
+					runtime,
+				)
+		)
+
+	source_processors.clear()
+	var first_snapshot: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]] = (
+			lease.processors()
+		)
+	Expect.that(first_snapshot).to_have_size(1)
+	Expect.that(first_snapshot[0].is_valid()).to_be_true()
+	var source_event: ObservabilityEvent = ObservabilityEvent.new(p_message = "retained")
+	Expect.that(first_snapshot[0].call(source_event)).to_equal(source_event)
+	first_snapshot.clear()
+
+	Expect.that(lease.processors()).to_have_size(1)
+	Expect.that(lease.generation()).to_equal(4)
+	Expect.that(lease.operation_token()).to_equal(7)
+	Expect.that(lease.owner_id()).to_equal(9)
+	Expect.that(lease.processing_signal()).to_equal(ObservabilitySignal.EVENT)
+	Expect.that(is_same(lease.runtime(), runtime)).to_be_true()
+	Expect.that(is_same(lease.redactor(), redactor)).to_be_true()
+	Expect.that(is_same(lease.limiter(), limiter)).to_be_true()
+	Expect.that(is_same(lease.limiter_mutex(), limiter_mutex)).to_be_true()
+
+
 func test_processing_result_validates_closed_enum_members() -> void:
 	var event := ObservabilityEvent.new(p_kind = &"message", p_message = "valid")
 	for processing_signal: ObservabilitySignal in [
@@ -3297,24 +3363,23 @@ func test_redactor_fails_closed_on_adversarial_rule_paths() -> void:
 func test_processing_diagnostic_preserves_payload_free_fields() -> void:
 	var diagnostic := ObservabilityProcessingDiagnostic.new(
 			7,
-			ObservabilityProcessingDiagnostic.EVENT,
-			ObservabilityProcessingDiagnostic.DROPPED,
-			ObservabilityProcessingDiagnostic.RATE_LIMITED,
+			ObservabilitySignal.EVENT,
+			ObservabilityProcessingOutcome.DROPPED,
+			ObservabilityProcessingReason.RATE_LIMITED,
 			3,
 			2,
-			ObservabilityProcessingDiagnostic.WINDOW,
+			ObservabilityLimitKind.WINDOW,
 			Error.ERR_BUSY,
 	)
 	var copied: ObservabilityProcessingDiagnostic = diagnostic.duplicate()
 
 	Expect.that(diagnostic.sequence()).to_equal(7)
-	Expect.that(diagnostic.processing_signal()).to_equal(
-			ObservabilityProcessingDiagnostic.EVENT)
-	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingDiagnostic.DROPPED)
-	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingDiagnostic.RATE_LIMITED)
+	Expect.that(diagnostic.processing_signal()).to_equal(ObservabilitySignal.EVENT)
+	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingOutcome.DROPPED)
+	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingReason.RATE_LIMITED)
 	Expect.that(diagnostic.processor_index()).to_equal(3)
-	Expect.that(diagnostic.rule_index()).to_equal(2)
-	Expect.that(diagnostic.limit_kind()).to_equal(ObservabilityProcessingDiagnostic.WINDOW)
+	Expect.that(diagnostic.redaction_rule_index()).to_equal(2)
+	Expect.that(diagnostic.limit_kind()).to_equal(ObservabilityLimitKind.WINDOW)
 	Expect.that(diagnostic.error()).to_equal(Error.ERR_BUSY)
 	Expect.that(copied).to_not_equal(diagnostic)
 	Expect.that(copied.sequence()).to_equal(7)
@@ -3334,6 +3399,7 @@ func test_focused_configuration_defaults_match_current_behavior() -> void:
 	Expect.that(processing.event_sample_rate()).to_equal(1.0)
 	Expect.that(processing.log_sample_rate()).to_equal(1.0)
 	Expect.that(processing.metric_sample_rate()).to_equal(1.0)
+	Expect.that(processing.has_metric_filter()).to_be_false()
 	Expect.that(processing.metric_filter()).to_equal(null)
 	Expect.that(processing.event_processors()).to_have_size(0)
 	Expect.that(processing.log_processors()).to_have_size(0)
@@ -3455,6 +3521,7 @@ func test_processing_configuration_uses_exact_callable_types_and_copies_arrays()
 	metric_processors.clear()
 	Expect.that(processing.event_processors()).to_have_size(1)
 	Expect.that(processing.metric_processors()).to_have_size(1)
+	Expect.that(processing.has_metric_filter()).to_be_true()
 	Expect.that(processing.metric_filter()).to_not_equal(null)
 
 
@@ -3937,26 +4004,6 @@ func test_metrics_support_sampling_boundaries_and_memory_clearing() -> void:
 	service.shutdown()
 
 
-func test_metrics_reject_non_boolean_filter_results() -> void:
-	var service: FoundryObservability = _service()
-	var provider := MemoryObservabilityProvider.new()
-	Expect.that(service.configure(provider, ObservabilityConfig.new(
-				p_global_attributes = {},
-				p_provider_options = {},
-				p_processing = ObservabilityProcessingConfig.new(
-					p_metric_filter = Callable(self, "_invalid_metric_filter") as Callable[[ObservabilityMetric], bool],
-					p_event_processors = [],
-					p_log_processors = [],
-					p_metric_processors = [],
-				),
-			))).to_equal(Error.OK)
-
-	Expect.that(service.capture_counter("combat.hit")).to_be_false()
-	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
-	Expect.that(provider.metrics()).to_have_size(0)
-	service.shutdown()
-
-
 func test_metrics_isolate_provider_rejection_and_shutdown() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
@@ -4295,8 +4342,8 @@ func test_service_rejects_recursive_state_mutation_with_operation_local_error() 
 	_state_reentry_service = _processing_service()
 	_state_reentry_result = true
 	_state_reentry_error = Error.OK
-	_state_reentry_signal = &""
-	_state_reentry_reason = &""
+	_state_reentry_signal = ObservabilitySignal.STATE
+	_state_reentry_reason = ObservabilityProcessingReason.NONE
 	_state_reentry_diagnostic_error = Error.OK
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(_state_reentry_service.configure(provider, ObservabilityConfig.new(
@@ -4322,10 +4369,10 @@ func test_service_rejects_recursive_state_mutation_with_operation_local_error() 
 	Expect.that(_state_reentry_service.last_error()).to_equal(Error.ERR_BUSY)
 	Expect.that(provider.captured_scopes()[0]["contexts"]).to_equal({})
 	Expect.that(_state_reentry_signal).to_equal(
-			ObservabilityProcessingDiagnostic.STATE,
+			ObservabilitySignal.STATE,
 		)
 	Expect.that(_state_reentry_reason).to_equal(
-			ObservabilityProcessingDiagnostic.RECURSIVE,
+			ObservabilityProcessingReason.RECURSIVE,
 		)
 	Expect.that(_state_reentry_diagnostic_error).to_equal(Error.ERR_BUSY)
 	_shutdown_processing_service(_state_reentry_service)
@@ -5132,7 +5179,7 @@ func test_automatic_processor_recursion_drops_nested_message_without_payload_del
 	var provider := MemoryObservabilityProvider.new()
 	_automatic_nested_service = service
 	_automatic_nested_capture_result = "not called"
-	_automatic_nested_reason = &""
+	_automatic_nested_reason = ObservabilityProcessingReason.NONE
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
 		p_provider_options = {},
@@ -5165,7 +5212,7 @@ func test_automatic_processor_recursion_drops_nested_message_without_payload_del
 
 	Expect.that(_automatic_nested_capture_result).to_equal("")
 	Expect.that(_automatic_nested_reason).to_equal(
-			ObservabilityProcessingDiagnostic.RECURSIVE,
+			ObservabilityProcessingReason.RECURSIVE,
 		)
 	Expect.that(provider.events()).to_have_size(1)
 	Expect.that(provider.events()[0].message()).to_equal("outer")
@@ -5474,8 +5521,8 @@ func test_service_processes_replacement_event_before_memory_provider_delivery() 
 	Expect.that(_service_event_processor_calls).to_equal(1)
 	Expect.that(provider.events()[0].message()).to_equal("processed")
 	var diagnostic: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
-	Expect.that(diagnostic.processing_signal()).to_equal(ObservabilityProcessingDiagnostic.EVENT)
-	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingDiagnostic.ACCEPTED)
+	Expect.that(diagnostic.processing_signal()).to_equal(ObservabilitySignal.EVENT)
+	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingOutcome.ACCEPTED)
 	Expect.that(service.last_error()).to_equal(Error.OK)
 	service.shutdown()
 
@@ -5502,8 +5549,8 @@ func test_service_processor_drop_preserves_ok_error_and_publishes_diagnostic() -
 	Expect.that(provider.events()).to_have_size(0)
 	Expect.that(service.last_error()).to_equal(Error.OK)
 	var diagnostic: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
-	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingDiagnostic.DROPPED)
-	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingDiagnostic.PROCESSOR)
+	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingOutcome.DROPPED)
+	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingReason.PROCESSOR)
 	Expect.that(diagnostic.processor_index()).to_equal(0)
 	Expect.that(diagnostic.error()).to_equal(Error.OK)
 	service.shutdown()
@@ -5538,11 +5585,11 @@ func test_service_processing_capacity_is_independent_per_event_log_and_metric() 
 	Expect.that(provider.metrics()).to_have_size(1)
 
 	Expect.that(service.capture_message("event second")).to_equal("")
-	_expect_service_per_frame_diagnostic(service, ObservabilityProcessingDiagnostic.EVENT)
+	_expect_service_per_frame_diagnostic(service, ObservabilitySignal.EVENT)
 	Expect.that(service.capture_log("log second")).to_equal("")
-	_expect_service_per_frame_diagnostic(service, ObservabilityProcessingDiagnostic.LOG)
+	_expect_service_per_frame_diagnostic(service, ObservabilitySignal.LOG)
 	Expect.that(service.capture_counter("metric.second")).to_be_false()
-	_expect_service_per_frame_diagnostic(service, ObservabilityProcessingDiagnostic.METRIC)
+	_expect_service_per_frame_diagnostic(service, ObservabilitySignal.METRIC)
 	Expect.that(provider.events()).to_have_size(2)
 	Expect.that(provider.metrics()).to_have_size(1)
 	_shutdown_processing_service(service)
@@ -5627,7 +5674,7 @@ func test_service_constructor_preserves_positional_arguments_and_uses_injected_r
 	Expect.that(service.capture_message("first")).to_equal("memory:1")
 	Expect.that(service.capture_message("limited")).to_equal("")
 	Expect.that(service.last_processing_diagnostic().limit_kind()).to_equal(
-			ObservabilityProcessingDiagnostic.PER_FRAME)
+			ObservabilityLimitKind.PER_FRAME)
 	_service_processing_runtime.frame = 2
 	Expect.that(service.capture_message("next frame")).to_equal("memory:2")
 	Expect.that(_service_processing_runtime.monotonic_msec).to_equal(0)
@@ -6051,7 +6098,7 @@ func test_automatic_logger_preserves_event_failure_after_successful_log() -> voi
 		),
 		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [
-				Callable(self, "_processing_wrong_type") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+				Callable(self, "_processing_event_to_log") as Callable[[ObservabilityEvent], ObservabilityEvent?],
 			],
 			p_log_processors = [],
 			p_metric_processors = [],
@@ -7624,12 +7671,13 @@ func test_processing_pipeline_redacts_before_processors_and_again_after_replacem
 					),
 				),
 			))).to_equal(Error.OK)
-	var result: Dictionary = pipeline.process_event(ObservabilityEvent.new(
+	var result: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new(
 			p_message = "secret",
 	))
-	Expect.that(result["accepted"]).to_be_true()
-	var value: ObservabilityEvent = result["value"]
-	Expect.that(value.message()).to_equal("safe-first-safe-second")
+	Expect.that(result.outcome()).to_equal(ObservabilityProcessingOutcome.ACCEPTED)
+	Expect.that(result.processing_signal()).to_equal(ObservabilitySignal.EVENT)
+	Expect.that(result.value().message()).to_equal("safe-first-safe-second")
+	Expect.that(result.operation_token()).to_be_greater_than(0)
 	Expect.that(_processing_order).to_equal(["first", "reintroduce", "second"])
 
 
@@ -7661,19 +7709,19 @@ func test_processing_pipeline_uses_injected_runtime_for_admission() -> void:
 		)
 	var first := pipeline.process_event(event)
 	var per_frame := pipeline.process_event(event)
-	Expect.that(first["accepted"]).to_be_true()
-	Expect.that(per_frame["accepted"]).to_be_false()
+	Expect.that(first.is_accepted()).to_be_true()
+	Expect.that(per_frame.is_accepted()).to_be_false()
 	Expect.that(pipeline.last_diagnostic().limit_kind()).to_equal(
-			ObservabilityProcessingDiagnostic.PER_FRAME)
+			ObservabilityLimitKind.PER_FRAME)
 	runtime.frame = 31
 	var window := pipeline.process_event(event)
-	Expect.that(window["accepted"]).to_be_false()
+	Expect.that(window.is_accepted()).to_be_false()
 	Expect.that(pipeline.last_diagnostic().limit_kind()).to_equal(
-			ObservabilityProcessingDiagnostic.WINDOW)
+			ObservabilityLimitKind.WINDOW)
 	runtime.monotonic_msec = 111
 	var after_window := pipeline.process_event(event)
 
-	Expect.that(after_window["accepted"]).to_be_true()
+	Expect.that(after_window.is_accepted()).to_be_true()
 
 
 func test_service_resolves_both_capture_times_from_one_runtime() -> void:
@@ -7711,12 +7759,11 @@ func test_processing_pipeline_separates_logs_and_rejects_signal_crossing_process
 					p_log_limits = ObservabilitySignalLimits.new(),
 				),
 			))).to_equal(Error.OK)
-	var log_result: Dictionary = pipeline.process_event(ObservabilityEvent.new(
+	var log_result: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new(
 			p_kind = &"log", p_message = "line",
 	))
-	Expect.that(log_result["accepted"]).to_be_true()
-	@warning_ignore("unsafe_cast")
-	Expect.that((log_result["value"] as ObservabilityEvent).message()).to_equal("line-log")
+	Expect.that(log_result.is_accepted()).to_be_true()
+	Expect.that(log_result.value().message()).to_equal("line-log")
 	Expect.that(_processing_order).to_equal(["log"])
 
 	var crossing := ObservabilityProcessingPipeline.new(_test_runtime())
@@ -7737,13 +7784,13 @@ func test_processing_pipeline_separates_logs_and_rejects_signal_crossing_process
 			))).to_equal(Error.OK)
 	Expect.that(crossing.process_event(ObservabilityEvent.new(
 			p_kind = &"log",
-	))["accepted"]).to_be_false()
+	)).is_accepted()).to_be_false()
 	Expect.that(crossing.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+			ObservabilityProcessingReason.INVALID_PROCESSOR_RESULT)
 	Expect.that(crossing.last_diagnostic().processor_index()).to_equal(0)
 
 
-func test_processing_pipeline_reports_processor_drops_and_wrong_types() -> void:
+func test_processing_pipeline_reports_processor_drops() -> void:
 	var dropped := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(dropped.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -7758,45 +7805,24 @@ func test_processing_pipeline_reports_processor_drops_and_wrong_types() -> void:
 					p_event_limits = ObservabilitySignalLimits.new(),
 				),
 			))).to_equal(Error.OK)
-	Expect.that(dropped.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(dropped.process_event(ObservabilityEvent.new()).is_accepted()).to_be_false()
 	Expect.that(dropped.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.PROCESSOR)
+			ObservabilityProcessingReason.PROCESSOR)
 	Expect.that(dropped.last_diagnostic().processor_index()).to_equal(0)
 	Expect.that(dropped.last_diagnostic().error()).to_equal(Error.OK)
-
-	var invalid := ObservabilityProcessingPipeline.new(_test_runtime())
-	Expect.that(invalid.configure(ObservabilityConfig.new(
-				p_global_attributes = {},
-				p_provider_options = {},
-				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
-					p_message_filter_prefixes = PackedStringArray(),
-				),
-				p_processing = ObservabilityProcessingConfig.new(
-					p_event_processors = [
-						Callable(self, "_processing_wrong_type") as Callable[[ObservabilityEvent], ObservabilityEvent?],
-					],
-					p_log_processors = [],
-					p_metric_processors = [],
-					p_event_limits = ObservabilitySignalLimits.new(),
-				),
-			))).to_equal(Error.OK)
-	Expect.that(invalid.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
-	Expect.that(invalid.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
-	Expect.that(invalid.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
 
 
 func test_processing_pipeline_fails_closed_when_processor_target_expires() -> void:
 	var callbacks := MutableProcessingCallbacks.new()
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(pipeline.configure(_processing_config([
-			Callable(callbacks, "process_event"),
+			Callable(callbacks, "process_event") as Callable[[ObservabilityEvent], ObservabilityEvent?],
 	]))).to_equal(Error.OK)
 	callbacks.free()
 
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_false()
 	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+			ObservabilityProcessingReason.INVALID_PROCESSOR_RESULT)
 
 
 func test_processing_pipeline_fails_closed_when_metric_filter_target_expires() -> void:
@@ -7820,9 +7846,9 @@ func test_processing_pipeline_fails_closed_when_metric_filter_target_expires() -
 
 	Expect.that(pipeline.process_metric(ObservabilityMetric.new(
 			p_name = "metric", p_value = 1.0,
-	))["accepted"]).to_be_false()
+	)).is_accepted()).to_be_false()
 	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+			ObservabilityProcessingReason.INVALID_PROCESSOR_RESULT)
 
 
 func test_processing_pipeline_rejects_expired_metric_filter_during_configure() -> void:
@@ -7845,7 +7871,7 @@ func test_processing_pipeline_rejects_expired_metric_filter_during_configure() -
 	Expect.that(pipeline.process_metric(ObservabilityMetric.new(
 			p_name = "committed.metric",
 			p_value = 1.0,
-	))["accepted"]).to_be_true()
+	)).is_accepted()).to_be_true()
 
 
 func test_processing_pipeline_metric_filter_is_pre_redacted_and_precedes_processors() -> void:
@@ -7877,14 +7903,15 @@ func test_processing_pipeline_metric_filter_is_pre_redacted_and_precedes_process
 					),
 				),
 			))).to_equal(Error.OK)
-	var result: Dictionary = pipeline.process_metric(ObservabilityMetric.new(
+	var result: ObservabilityProcessingResult[ObservabilityMetric] = pipeline.process_metric(ObservabilityMetric.new(
 			p_name = "secret.metric", p_value = 1.0,
 	))
-	Expect.that(result["accepted"]).to_be_true()
+	Expect.that(result.outcome()).to_equal(ObservabilityProcessingOutcome.ACCEPTED)
+	Expect.that(result.processing_signal()).to_equal(ObservabilitySignal.METRIC)
 	Expect.that(_processing_filter_values).to_equal(["safe.metric"])
 	Expect.that(_processing_order).to_equal(["metric"])
-	@warning_ignore("unsafe_cast")
-	Expect.that((result["value"] as ObservabilityMetric).name()).to_equal("safe.metric-processed")
+	Expect.that(result.value().name()).to_equal("safe.metric-processed")
+	Expect.that(result.operation_token()).to_be_greater_than(0)
 
 	var rejected := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(rejected.configure(ObservabilityConfig.new(
@@ -7903,31 +7930,9 @@ func test_processing_pipeline_metric_filter_is_pre_redacted_and_precedes_process
 			))).to_equal(Error.OK)
 	Expect.that(rejected.process_metric(ObservabilityMetric.new(
 			p_name = "metric", p_value = 1.0,
-	))["accepted"]).to_be_false()
+	)).is_accepted()).to_be_false()
 	Expect.that(rejected.last_diagnostic().processor_index()).to_equal(-1)
 	Expect.that(rejected.last_diagnostic().error()).to_equal(Error.OK)
-
-	var malformed := ObservabilityProcessingPipeline.new(_test_runtime())
-	Expect.that(malformed.configure(ObservabilityConfig.new(
-				p_global_attributes = {},
-				p_provider_options = {},
-				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
-					p_message_filter_prefixes = PackedStringArray(),
-				),
-				p_processing = ObservabilityProcessingConfig.new(
-					p_metric_filter = Callable(self, "_processing_metric_non_bool") as Callable[[ObservabilityMetric], bool],
-					p_event_processors = [],
-					p_log_processors = [],
-					p_metric_processors = [],
-					p_metric_limits = ObservabilitySignalLimits.new(),
-				),
-			))).to_equal(Error.OK)
-	Expect.that(malformed.process_metric(ObservabilityMetric.new(
-			p_name = "metric", p_value = 1.0,
-	))["accepted"]).to_be_false()
-	Expect.that(malformed.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
-
 
 func test_processing_pipeline_blocks_recursive_entries_before_callbacks_or_limits() -> void:
 	_recursive_pipeline = ObservabilityProcessingPipeline.new(_test_runtime(1, 1, 1))
@@ -7947,17 +7952,20 @@ func test_processing_pipeline_blocks_recursive_entries_before_callbacks_or_limit
 					p_metric_limits = ObservabilitySignalLimits.new(1),
 				),
 			))).to_equal(Error.OK)
-	Expect.that(_recursive_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(_recursive_pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 	Expect.that(_recursive_pipeline.recursive_drop_count()).to_equal(1)
 	Expect.that(_recursive_pipeline.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.RECURSIVE)
+			ObservabilityProcessingReason.RECURSIVE)
 	Expect.that(_recursive_pipeline.process_metric(ObservabilityMetric.new(
 			p_name = "after.recursion", p_value = 1.0,
-	))["accepted"]).to_be_true()
+	)).is_accepted()).to_be_true()
 
 
 func test_processing_pipeline_recursive_state_result_is_operation_local() -> void:
-	_recursive_state_result = {}
+	_recursive_state_result = ObservabilityProcessingResult[Dictionary].dropped(
+			ObservabilitySignal.STATE,
+			ObservabilityProcessingReason.STALE_GENERATION,
+		)
 	_recursive_pipeline = ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(_recursive_pipeline.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -7976,18 +7984,37 @@ func test_processing_pipeline_recursive_state_result_is_operation_local() -> voi
 			))).to_equal(Error.OK)
 
 	Expect.that(
-			_recursive_pipeline.process_event(ObservabilityEvent.new())["accepted"],
+			_recursive_pipeline.process_event(ObservabilityEvent.new()).is_accepted(),
 		).to_be_true()
-	Expect.that(_recursive_state_result["accepted"]).to_be_false()
-	Expect.that(_recursive_state_result["valid"]).to_be_false()
-	Expect.that(_recursive_state_result["value"]).to_be_null()
-	Expect.that(_recursive_state_result["signal"]).to_equal(
-			ObservabilityProcessingDiagnostic.STATE,
+	Expect.that(_recursive_state_result.outcome()).to_equal(
+			ObservabilityProcessingOutcome.DROPPED,
 		)
-	Expect.that(_recursive_state_result["reason"]).to_equal(
-			ObservabilityProcessingDiagnostic.RECURSIVE,
+	Expect.that(_recursive_state_result.value()).to_be_null()
+	Expect.that(_recursive_state_result.operation_token()).to_equal(-1)
+	Expect.that(_recursive_state_result.processing_signal()).to_equal(
+			ObservabilitySignal.STATE,
 		)
-	Expect.that(_recursive_state_result["error"]).to_equal(Error.ERR_BUSY)
+	Expect.that(_recursive_state_result.reason()).to_equal(
+			ObservabilityProcessingReason.RECURSIVE,
+		)
+	Expect.that(_recursive_state_result.error()).to_equal(Error.ERR_BUSY)
+	Expect.that(_recursive_pipeline.last_diagnostic().processing_signal()).to_equal(
+			ObservabilitySignal.STATE,
+		)
+	Expect.that(_recursive_pipeline.last_diagnostic().outcome()).to_equal(
+			ObservabilityProcessingOutcome.DROPPED,
+		)
+	Expect.that(_recursive_pipeline.last_diagnostic().error()).to_equal(Error.ERR_BUSY)
+	var accepted: ObservabilityProcessingResult[Dictionary] = (
+			_recursive_pipeline.redact_contexts({"account": {"role": "admin"}})
+		)
+
+	Expect.that(accepted.outcome()).to_equal(ObservabilityProcessingOutcome.ACCEPTED)
+	Expect.that(accepted.processing_signal()).to_equal(ObservabilitySignal.STATE)
+	Expect.that(accepted.reason()).to_equal(ObservabilityProcessingReason.NONE)
+	Expect.that(accepted.error()).to_equal(Error.OK)
+	Expect.that(accepted.operation_token()).to_be_greater_than(0)
+	Expect.that(accepted.value()).to_equal({"account": {"role": "admin"}})
 
 
 func test_processing_pipeline_state_result_survives_later_diagnostic_overwrite() -> void:
@@ -8015,90 +8042,108 @@ func test_processing_pipeline_state_result_survives_later_diagnostic_overwrite()
 				),
 			))).to_equal(Error.OK)
 
-	var state_result: Dictionary = pipeline.redact_contexts({
-		"account": {"token": "secret"},
-	})
-	Expect.that(state_result["accepted"]).to_be_false()
-	Expect.that(state_result["valid"]).to_be_false()
-	Expect.that(state_result["signal"]).to_equal(
-			ObservabilityProcessingDiagnostic.STATE,
+	var state_result: ObservabilityProcessingResult[Dictionary] = (
+			pipeline.redact_contexts({
+				"account": {"token": "secret"},
+			})
 		)
-	Expect.that(state_result["reason"]).to_equal(
-			ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+	Expect.that(state_result.outcome()).to_equal(
+			ObservabilityProcessingOutcome.DROPPED,
 		)
-	Expect.that(state_result["error"]).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(state_result.value()).to_be_null()
+	Expect.that(state_result.operation_token()).to_equal(-1)
+	Expect.that(state_result.processing_signal()).to_equal(
+			ObservabilitySignal.STATE,
+		)
+	Expect.that(state_result.reason()).to_equal(
+			ObservabilityProcessingReason.REDACTION_FAILED,
+		)
+	Expect.that(state_result.redaction_rule_index()).to_equal(0)
+	Expect.that(state_result.error()).to_equal(Error.ERR_INVALID_DATA)
 
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_false()
 	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.PROCESSOR,
+			ObservabilityProcessingReason.PROCESSOR,
 		)
 	Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.OK)
-	Expect.that(state_result["reason"]).to_equal(
-			ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+	Expect.that(state_result.reason()).to_equal(
+			ObservabilityProcessingReason.REDACTION_FAILED,
 		)
-	Expect.that(state_result["error"]).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(state_result.error()).to_equal(Error.ERR_INVALID_DATA)
 
 
 func test_processing_pipeline_reconfigure_reentry_is_recursive_and_outer_result_is_stale() -> void:
 	_processing_runtime = _test_runtime(10, 1, 1)
-	_lifecycle_nested_result = {}
+	_lifecycle_nested_result = ObservabilityProcessingResult[ObservabilityEvent].dropped(
+			ObservabilitySignal.EVENT,
+			ObservabilityProcessingReason.STALE_GENERATION,
+		)
 	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(_processing_runtime)
 	Expect.that(_lifecycle_pipeline.configure(_processing_config(
-			[Callable(self, "_processing_reconfigure_and_reenter")],
+			[Callable(self, "_processing_reconfigure_and_reenter") as Callable[[ObservabilityEvent], ObservabilityEvent?]],
 	))).to_equal(Error.OK)
 
-	var outer: Dictionary = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
-	Expect.that(_lifecycle_nested_result["accepted"]).to_be_false()
-	Expect.that(outer["accepted"]).to_be_false()
+	var outer: ObservabilityProcessingResult[ObservabilityEvent] = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(_lifecycle_nested_result.is_accepted()).to_be_false()
+	Expect.that(outer.is_accepted()).to_be_false()
 	Expect.that(_lifecycle_pipeline.recursive_drop_count()).to_equal(1)
 	Expect.that(_lifecycle_pipeline.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.RECURSIVE)
-	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+			ObservabilityProcessingReason.RECURSIVE)
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 
 
 func test_processing_pipeline_suppresses_old_generation_processor_drop_after_reset() -> void:
 	_processing_runtime = _test_runtime(10, 1, 1)
 	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(_processing_runtime)
 	Expect.that(_lifecycle_pipeline.configure(_processing_config(
-			[Callable(self, "_processing_reconfigure_and_drop")],
+			[Callable(self, "_processing_reconfigure_and_drop") as Callable[[ObservabilityEvent], ObservabilityEvent?]],
 	))).to_equal(Error.OK)
 
 	Expect.that(_lifecycle_pipeline.process_event(
-			ObservabilityEvent.new())["accepted"]).to_be_false()
+			ObservabilityEvent.new()).is_accepted()).to_be_false()
 	Expect.that(_lifecycle_pipeline.last_diagnostic()).to_be_null()
-	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 
 
 func test_processing_pipeline_allows_overlapping_different_owners() -> void:
 	_processing_runtime = _test_runtime(10, 1, 1)
 	_overlap_stage = 0
-	_overlap_nested_result = {}
+	_overlap_nested_result = ObservabilityProcessingResult[ObservabilityEvent].dropped(
+			ObservabilitySignal.EVENT,
+			ObservabilityProcessingReason.STALE_GENERATION,
+		)
 	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(_processing_runtime)
 	Expect.that(_lifecycle_pipeline.configure(_processing_config(
-			[Callable(self, "_processing_overlap_different_owner")],
+			[Callable(self, "_processing_overlap_different_owner") as Callable[[ObservabilityEvent], ObservabilityEvent?]],
 	))).to_equal(Error.OK)
 
-	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
-	Expect.that(_overlap_nested_result["accepted"]).to_be_true()
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
+	Expect.that(_overlap_nested_result.is_accepted()).to_be_true()
 	Expect.that(_lifecycle_pipeline.recursive_drop_count()).to_equal(0)
-	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 
 
 func test_processing_pipeline_exact_release_preserves_other_active_owner_reservation() -> void:
 	_processing_runtime = _test_runtime(10, 1, 1)
 	_overlap_stage = 0
-	_overlap_nested_result = {}
-	_overlap_recursive_result = {}
+	_overlap_nested_result = ObservabilityProcessingResult[ObservabilityEvent].dropped(
+			ObservabilitySignal.EVENT,
+			ObservabilityProcessingReason.STALE_GENERATION,
+		)
+	_overlap_recursive_result = ObservabilityProcessingResult[ObservabilityEvent].dropped(
+			ObservabilitySignal.EVENT,
+			ObservabilityProcessingReason.STALE_GENERATION,
+		)
 	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(_processing_runtime)
 	Expect.that(_lifecycle_pipeline.configure(_processing_config(
-			[Callable(self, "_processing_overlap_and_probe_original_owner")],
+			[Callable(self, "_processing_overlap_and_probe_original_owner") as Callable[[ObservabilityEvent], ObservabilityEvent?]],
 	))).to_equal(Error.OK)
 
-	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
-	Expect.that(_overlap_nested_result["accepted"]).to_be_true()
-	Expect.that(_overlap_recursive_result["accepted"]).to_be_false()
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
+	Expect.that(_overlap_nested_result.is_accepted()).to_be_true()
+	Expect.that(_overlap_recursive_result.is_accepted()).to_be_false()
 	Expect.that(_lifecycle_pipeline.recursive_drop_count()).to_equal(1)
-	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 
 
 func test_processing_pipeline_uses_signal_local_limiters_and_publishes_limit_diagnostics() -> void:
@@ -8119,18 +8164,18 @@ func test_processing_pipeline_uses_signal_local_limiters_and_publishes_limit_dia
 					p_metric_limits = ObservabilitySignalLimits.new(1),
 				),
 			))).to_equal(Error.OK)
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_false()
 	Expect.that(pipeline.last_diagnostic().limit_kind()).to_equal(
-			ObservabilityProcessingDiagnostic.PER_FRAME)
+			ObservabilityLimitKind.PER_FRAME)
 	runtime.frame = 2
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 	Expect.that(pipeline.process_event(ObservabilityEvent.new(
 			p_kind = &"log",
-	))["accepted"]).to_be_true()
+	)).is_accepted()).to_be_true()
 	Expect.that(pipeline.process_metric(ObservabilityMetric.new(
 			p_name = "limit.metric", p_value = 1.0,
-	))["accepted"]).to_be_true()
+	)).is_accepted()).to_be_true()
 
 
 func test_processing_pipeline_configure_is_atomic_and_success_resets_state() -> void:
@@ -8149,8 +8194,8 @@ func test_processing_pipeline_configure_is_atomic_and_success_resets_state() -> 
 		),
 	)
 	Expect.that(pipeline.configure(active)).to_equal(Error.OK)
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_false()
 	var prior: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
 	var invalid := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -8229,7 +8274,7 @@ func test_processing_pipeline_configure_is_atomic_and_success_resets_state() -> 
 	)
 	Expect.that(pipeline.configure(overlong_policy)).to_equal(Error.ERR_INVALID_DATA)
 	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(prior.sequence())
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_false()
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {},
@@ -8245,7 +8290,7 @@ func test_processing_pipeline_configure_is_atomic_and_success_resets_state() -> 
 				),
 			))).to_equal(Error.OK)
 	Expect.that(pipeline.last_diagnostic()).to_be_null()
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 	Expect.that(pipeline.configure(null)).to_equal(Error.ERR_INVALID_PARAMETER)
 
 
@@ -8270,10 +8315,10 @@ func test_processing_pipeline_configures_structural_rules_and_rejects_matching_p
 					),
 				),
 			))).to_equal(Error.OK)
-	Expect.that(matching.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(matching.process_event(ObservabilityEvent.new()).is_accepted()).to_be_false()
 	Expect.that(matching.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.REDACTION_FAILED)
-	Expect.that(matching.last_diagnostic().rule_index()).to_equal(0)
+			ObservabilityProcessingReason.REDACTION_FAILED)
+	Expect.that(matching.last_diagnostic().redaction_rule_index()).to_equal(0)
 	Expect.that(matching.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
 
 	var nonmatching := ObservabilityProcessingPipeline.new(_test_runtime())
@@ -8296,7 +8341,7 @@ func test_processing_pipeline_configures_structural_rules_and_rejects_matching_p
 					),
 				),
 			))).to_equal(Error.OK)
-	Expect.that(nonmatching.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(nonmatching.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 
 
 func test_processing_pipeline_reports_rule_for_required_frame_field_removal() -> void:
@@ -8331,7 +8376,7 @@ func test_processing_pipeline_reports_rule_for_required_frame_field_removal() ->
 					),
 				),
 			))).to_equal(Error.OK)
-	var result: Dictionary = pipeline.process_event(ObservabilityEvent.new(
+	var result: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new(
 			p_kind = &"exception",
 			p_attributes = {},
 			p_exception = ObservabilityException.new(
@@ -8342,12 +8387,12 @@ func test_processing_pipeline_reports_rule_for_required_frame_field_removal() ->
 				),
 		))
 
-	Expect.that(result["accepted"]).to_be_false()
+	Expect.that(result.is_accepted()).to_be_false()
 	var diagnostic: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
 	Expect.that(diagnostic.reason()).to_equal(
-			ObservabilityProcessingDiagnostic.REDACTION_FAILED)
+			ObservabilityProcessingReason.REDACTION_FAILED)
 	Expect.that(diagnostic.error()).to_equal(Error.ERR_INVALID_DATA)
-	Expect.that(diagnostic.rule_index()).to_equal(1)
+	Expect.that(diagnostic.redaction_rule_index()).to_equal(1)
 
 
 func test_processing_pipeline_records_provider_results_and_keeps_admission_consumed() -> void:
@@ -8365,61 +8410,101 @@ func test_processing_pipeline_records_provider_results_and_keeps_admission_consu
 					p_event_limits = ObservabilitySignalLimits.new(1),
 				),
 			))).to_equal(Error.OK)
-	var accepted: Dictionary = pipeline.process_event(ObservabilityEvent.new())
-	Expect.that(accepted["accepted"]).to_be_true()
-	pipeline.record_provider_result(&"event", false, Error.OK, accepted["operation_token"])
+	var accepted: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(accepted.is_accepted()).to_be_true()
+	pipeline.record_provider_result(
+			ObservabilitySignal.EVENT,
+			false,
+			Error.OK,
+			accepted.operation_token(),
+		)
 	var rejected: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
-	Expect.that(rejected.reason()).to_equal(ObservabilityProcessingDiagnostic.PROVIDER_REJECTED)
+	Expect.that(rejected.reason()).to_equal(ObservabilityProcessingReason.PROVIDER_REJECTED)
 	Expect.that(rejected.error()).to_equal(Error.FAILED)
 	var isolated: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
 	Expect.that(isolated).to_not_equal(rejected)
-	pipeline.record_provider_result(&"event", true, Error.ERR_INVALID_PARAMETER)
+	pipeline.record_provider_result(
+			ObservabilitySignal.EVENT,
+			true,
+			Error.ERR_INVALID_PARAMETER,
+		)
 	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(rejected.sequence())
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_false()
 
 
 func test_processing_pipeline_pairs_provider_results_to_current_pending_tokens() -> void:
 	_processing_runtime = _test_runtime(10, 1, 1)
 	var pipeline := ObservabilityProcessingPipeline.new(_processing_runtime)
 	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
-	var old: Dictionary = pipeline.process_event(ObservabilityEvent.new())
-	Expect.that(old["accepted"]).to_be_true()
-	Expect.that(old.has("operation_token")).to_be_true()
+	var old: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(old.is_accepted()).to_be_true()
+	Expect.that(old.operation_token()).to_be_greater_than(0)
 
 	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
-	pipeline.record_provider_result(&"event", false, Error.FAILED, old["operation_token"])
+	pipeline.record_provider_result(
+			ObservabilitySignal.EVENT,
+			false,
+			Error.FAILED,
+			old.operation_token(),
+		)
 	Expect.that(pipeline.last_diagnostic()).to_be_null()
 
-	var current: Dictionary = pipeline.process_event(ObservabilityEvent.new())
-	pipeline.record_provider_result(&"event", true, Error.ERR_INVALID_PARAMETER,
-			current["operation_token"])
+	var current: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new())
+	pipeline.record_provider_result(
+			ObservabilitySignal.EVENT,
+			true,
+			Error.ERR_INVALID_PARAMETER,
+			current.operation_token(),
+		)
 	var accepted: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
-	Expect.that(accepted.outcome()).to_equal(ObservabilityProcessingDiagnostic.ACCEPTED)
+	Expect.that(accepted.outcome()).to_equal(ObservabilityProcessingOutcome.ACCEPTED)
 	Expect.that(accepted.error()).to_equal(Error.OK)
 
-	pipeline.record_provider_result(&"event", false, Error.FAILED, current["operation_token"])
-	pipeline.record_provider_result(&"metric", false, Error.FAILED, current["operation_token"])
-	pipeline.record_provider_result(&"invalid", false, Error.FAILED, current["operation_token"])
-	pipeline.record_provider_result(&"event", false, Error.FAILED, -999)
+	pipeline.record_provider_result(
+			ObservabilitySignal.EVENT,
+			false,
+			Error.FAILED,
+			current.operation_token(),
+		)
+	pipeline.record_provider_result(
+			ObservabilitySignal.METRIC,
+			false,
+			Error.FAILED,
+			current.operation_token(),
+		)
+	pipeline.record_provider_result(
+			ObservabilitySignal.STATE,
+			false,
+			Error.FAILED,
+			current.operation_token(),
+		)
+	pipeline.record_provider_result(ObservabilitySignal.EVENT, false, Error.FAILED, -999)
 	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(accepted.sequence())
 
-	var paired_after_mismatch: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	var paired_after_mismatch: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new())
 	pipeline.record_provider_result(
-			&"metric", false, Error.FAILED, paired_after_mismatch["operation_token"])
+			ObservabilitySignal.METRIC,
+			false,
+			Error.FAILED,
+			paired_after_mismatch.operation_token(),
+		)
 	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(accepted.sequence())
 	pipeline.record_provider_result(
-			&"event", false, Error.ERR_INVALID_PARAMETER,
-			paired_after_mismatch["operation_token"])
+			ObservabilitySignal.EVENT,
+			false,
+			Error.ERR_INVALID_PARAMETER,
+			paired_after_mismatch.operation_token(),
+		)
 	var rejected: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
 	Expect.that(rejected.reason()).to_equal(
-			ObservabilityProcessingDiagnostic.PROVIDER_REJECTED)
+			ObservabilityProcessingReason.PROVIDER_REJECTED)
 	Expect.that(rejected.error()).to_equal(Error.ERR_INVALID_PARAMETER)
 
-	var legacy: Dictionary = pipeline.process_event(ObservabilityEvent.new())
-	Expect.that(legacy["accepted"]).to_be_true()
-	pipeline.record_provider_result(&"event", true, Error.FAILED)
+	var legacy: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(legacy.is_accepted()).to_be_true()
+	pipeline.record_provider_result(ObservabilitySignal.EVENT, true, Error.FAILED)
 	Expect.that(pipeline.last_diagnostic().outcome()).to_equal(
-			ObservabilityProcessingDiagnostic.ACCEPTED)
+			ObservabilityProcessingOutcome.ACCEPTED)
 	Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.OK)
 
 
@@ -8427,21 +8512,31 @@ func test_processing_pipeline_keeps_only_latest_pending_result_per_owner_and_sig
 	_processing_runtime = _test_runtime(10, 1, 1)
 	var pipeline := ObservabilityProcessingPipeline.new(_processing_runtime)
 	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
-	var first: Dictionary = pipeline.process_event(ObservabilityEvent.new())
-	var latest: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	var first: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new())
+	var latest: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new())
 
 	Expect.that(pipeline._pending_provider_results).to_have_size(1)
-	Expect.that(pipeline._pending_provider_results.has(latest["operation_token"])).to_be_true()
-	Expect.that(pipeline._pending_provider_results.has(first["operation_token"])).to_be_false()
-	pipeline.record_provider_result(&"event", false, Error.FAILED, first["operation_token"])
+	Expect.that(pipeline._pending_provider_results.has(latest.operation_token())).to_be_true()
+	Expect.that(pipeline._pending_provider_results.has(first.operation_token())).to_be_false()
+	pipeline.record_provider_result(
+			ObservabilitySignal.EVENT,
+			false,
+			Error.FAILED,
+			first.operation_token(),
+		)
 	Expect.that(pipeline.last_diagnostic()).to_be_null()
 
-	pipeline.record_provider_result(&"event", true, Error.FAILED)
+	pipeline.record_provider_result(ObservabilitySignal.EVENT, true, Error.FAILED)
 	var accepted: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
-	Expect.that(accepted.outcome()).to_equal(ObservabilityProcessingDiagnostic.ACCEPTED)
+	Expect.that(accepted.outcome()).to_equal(ObservabilityProcessingOutcome.ACCEPTED)
 	Expect.that(pipeline._pending_provider_results).to_have_size(0)
-	pipeline.record_provider_result(&"event", false, Error.FAILED, latest["operation_token"])
-	pipeline.record_provider_result(&"event", false, Error.FAILED)
+	pipeline.record_provider_result(
+			ObservabilitySignal.EVENT,
+			false,
+			Error.FAILED,
+			latest.operation_token(),
+		)
+	pipeline.record_provider_result(ObservabilitySignal.EVENT, false, Error.FAILED)
 	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(accepted.sequence())
 
 
@@ -8449,28 +8544,45 @@ func test_processing_pipeline_bounds_pending_results_and_evicts_oldest_token() -
 	_processing_runtime = _test_runtime(10, 1, 1)
 	var pipeline := ObservabilityProcessingPipeline.new(_processing_runtime)
 	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
-	var oldest: Dictionary = {}
-	var newest: Dictionary = {}
+	var oldest: ObservabilityProcessingResult[ObservabilityEvent] = (
+			ObservabilityProcessingResult[ObservabilityEvent].dropped(
+					ObservabilitySignal.EVENT,
+					ObservabilityProcessingReason.STALE_GENERATION,
+				)
+		)
+	var newest: ObservabilityProcessingResult[ObservabilityEvent] = oldest
+	var has_oldest: bool = false
 	for owner_id: int in range(1, 1026):
 		_processing_runtime.caller = owner_id
-		var result: Dictionary = pipeline.process_event(ObservabilityEvent.new())
-		Expect.that(result["accepted"]).to_be_true()
-		if oldest.is_empty():
+		var result: ObservabilityProcessingResult[ObservabilityEvent] = pipeline.process_event(ObservabilityEvent.new())
+		Expect.that(result.is_accepted()).to_be_true()
+		if not has_oldest:
 			oldest = result
+			has_oldest = true
 		newest = result
 
 	Expect.that(pipeline._pending_provider_results).to_have_size(1024)
-	Expect.that(pipeline._pending_provider_results.has(oldest["operation_token"])).to_be_false()
-	Expect.that(pipeline._pending_provider_results.has(newest["operation_token"])).to_be_true()
+	Expect.that(pipeline._pending_provider_results.has(oldest.operation_token())).to_be_false()
+	Expect.that(pipeline._pending_provider_results.has(newest.operation_token())).to_be_true()
 	Expect.that(pipeline._processing_depth).to_equal(0)
 	Expect.that(pipeline._active_operations).to_have_size(0)
 	Expect.that(pipeline.recursive_drop_count()).to_equal(0)
 
-	pipeline.record_provider_result(&"event", false, Error.FAILED, oldest["operation_token"])
+	pipeline.record_provider_result(
+			ObservabilitySignal.EVENT,
+			false,
+			Error.FAILED,
+			oldest.operation_token(),
+		)
 	Expect.that(pipeline.last_diagnostic()).to_be_null()
-	pipeline.record_provider_result(&"event", true, Error.FAILED, newest["operation_token"])
+	pipeline.record_provider_result(
+			ObservabilitySignal.EVENT,
+			true,
+			Error.FAILED,
+			newest.operation_token(),
+		)
 	Expect.that(pipeline.last_diagnostic().outcome()).to_equal(
-			ObservabilityProcessingDiagnostic.ACCEPTED)
+			ObservabilityProcessingOutcome.ACCEPTED)
 
 
 func test_processing_pipeline_identity_excludes_attributes_but_includes_message() -> void:
@@ -8490,13 +8602,13 @@ func test_processing_pipeline_identity_excludes_attributes_but_includes_message(
 			))).to_equal(Error.OK)
 	Expect.that(pipeline.process_event(ObservabilityEvent.new(
 			p_message = "same", p_attributes = {"secret": "one"},
-	))["accepted"]).to_be_true()
+	)).is_accepted()).to_be_true()
 	Expect.that(pipeline.process_event(ObservabilityEvent.new(
 			p_message = "same", p_attributes = {"secret": "two"},
-	))["accepted"]).to_be_false()
+	)).is_accepted()).to_be_false()
 	Expect.that(pipeline.process_event(ObservabilityEvent.new(
 			p_message = "different", p_attributes = {"secret": "two"},
-	))["accepted"]).to_be_true()
+	)).is_accepted()).to_be_true()
 
 
 func test_processing_pipeline_rejects_event_to_log_processor_crossing() -> void:
@@ -8516,24 +8628,24 @@ func test_processing_pipeline_rejects_event_to_log_processor_crossing() -> void:
 					p_event_limits = ObservabilitySignalLimits.new(),
 				),
 			))).to_equal(Error.OK)
-	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_false()
 	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+			ObservabilityProcessingReason.INVALID_PROCESSOR_RESULT)
 	Expect.that(pipeline.last_diagnostic().processor_index()).to_equal(0)
 	Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
 
 
 func test_processing_pipeline_rejects_invalid_metric_processor_replacements() -> void:
-	var invalid_replacements: Array[Callable] = [
-		Callable(self, "_processing_metric_too_long_name"),
-		Callable(self, "_processing_metric_control_name"),
-		Callable(self, "_processing_metric_control_unit"),
-		Callable(self, "_processing_metric_invalid_unit"),
-		Callable(self, "_processing_metric_invalid_attribute_key"),
-		Callable(self, "_processing_metric_invalid_attribute_value"),
-		Callable(self, "_processing_metric_nonfinite_attribute"),
+	var invalid_replacements: Array[Callable[[ObservabilityMetric], ObservabilityMetric?]] = [
+		Callable(self, "_processing_metric_too_long_name") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+		Callable(self, "_processing_metric_control_name") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+		Callable(self, "_processing_metric_control_unit") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+		Callable(self, "_processing_metric_invalid_unit") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+		Callable(self, "_processing_metric_invalid_attribute_key") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+		Callable(self, "_processing_metric_invalid_attribute_value") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+		Callable(self, "_processing_metric_nonfinite_attribute") as Callable[[ObservabilityMetric], ObservabilityMetric?],
 	]
-	for processor: Callable in invalid_replacements:
+	for processor: Callable[[ObservabilityMetric], ObservabilityMetric?] in invalid_replacements:
 		var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
 		Expect.that(pipeline.configure(ObservabilityConfig.new(
 					p_global_attributes = {},
@@ -8550,14 +8662,14 @@ func test_processing_pipeline_rejects_invalid_metric_processor_replacements() ->
 				))).to_equal(Error.OK)
 		Expect.that(pipeline.process_metric(ObservabilityMetric.new(
 				p_name = "metric", p_value = 1.0,
-		))["accepted"]).to_be_false()
+		)).is_accepted()).to_be_false()
 		Expect.that(pipeline.last_diagnostic().reason()).to_equal(
-				ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+				ObservabilityProcessingReason.INVALID_PROCESSOR_RESULT)
 		Expect.that(pipeline.last_diagnostic().processor_index()).to_equal(0)
 		Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
 
 
-func test_processing_pipeline_reports_metric_processor_drop_and_wrong_type() -> void:
+func test_processing_pipeline_reports_metric_processor_drop() -> void:
 	var dropped := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(dropped.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -8576,35 +8688,11 @@ func test_processing_pipeline_reports_metric_processor_drop_and_wrong_type() -> 
 			))).to_equal(Error.OK)
 	Expect.that(dropped.process_metric(ObservabilityMetric.new(
 			p_name = "metric", p_value = 1.0,
-	))["accepted"]).to_be_false()
+	)).is_accepted()).to_be_false()
 	Expect.that(dropped.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.PROCESSOR)
+			ObservabilityProcessingReason.PROCESSOR)
 	Expect.that(dropped.last_diagnostic().processor_index()).to_equal(0)
 	Expect.that(dropped.last_diagnostic().error()).to_equal(Error.OK)
-
-	var wrong_type := ObservabilityProcessingPipeline.new(_test_runtime())
-	Expect.that(wrong_type.configure(ObservabilityConfig.new(
-				p_global_attributes = {},
-				p_provider_options = {},
-				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
-					p_message_filter_prefixes = PackedStringArray(),
-				),
-				p_processing = ObservabilityProcessingConfig.new(
-					p_event_processors = [],
-					p_log_processors = [],
-					p_metric_processors = [
-						Callable(self, "_processing_metric_wrong_type") as Callable[[ObservabilityMetric], ObservabilityMetric?],
-					],
-					p_metric_limits = ObservabilitySignalLimits.new(),
-				),
-			))).to_equal(Error.OK)
-	Expect.that(wrong_type.process_metric(ObservabilityMetric.new(
-			p_name = "metric", p_value = 1.0,
-	))["accepted"]).to_be_false()
-	Expect.that(wrong_type.last_diagnostic().reason()).to_equal(
-			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
-	Expect.that(wrong_type.last_diagnostic().processor_index()).to_equal(0)
-	Expect.that(wrong_type.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
 
 
 func test_processing_pipeline_event_identity_matrix_excludes_attributes_and_scope() -> void:
@@ -8612,13 +8700,13 @@ func test_processing_pipeline_event_identity_matrix_excludes_attributes_and_scop
 	Expect.that(excluded.process_event(ObservabilityEvent.new(
 			p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO,
 			p_message = "same", p_attributes = {"one": 1}, p_scope = ObservabilityScope.new(),
-	))["accepted"]).to_be_true()
+	)).is_accepted()).to_be_true()
 	var changed_scope := ObservabilityScope.new()
 	changed_scope.set_tag("region", "iad")
 	Expect.that(excluded.process_event(ObservabilityEvent.new(
 			p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO,
 			p_message = "same", p_attributes = {"two": 2}, p_scope = changed_scope,
-	))["accepted"]).to_be_false()
+	)).is_accepted()).to_be_false()
 
 	for event: ObservabilityEvent in [
 		ObservabilityEvent.new(p_kind = &"exception", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same"),
@@ -8630,8 +8718,8 @@ func test_processing_pipeline_event_identity_matrix_excludes_attributes_and_scop
 		var pipeline := _processing_repeated_pipeline()
 		Expect.that(pipeline.process_event(ObservabilityEvent.new(
 			p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same",
-		))["accepted"]).to_be_true()
-		Expect.that(pipeline.process_event(event)["accepted"]).to_be_true()
+		)).is_accepted()).to_be_true()
+		Expect.that(pipeline.process_event(event).is_accepted()).to_be_true()
 
 
 func test_processing_pipeline_log_and_metric_identity_matrices() -> void:
@@ -8639,11 +8727,11 @@ func test_processing_pipeline_log_and_metric_identity_matrices() -> void:
 	Expect.that(excluded_log.process_event(ObservabilityEvent.new(
 			p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO,
 			p_message = "same", p_attributes = {"one": 1}, p_engine_ticks_msec = 1,
-	))["accepted"]).to_be_true()
+	)).is_accepted()).to_be_true()
 	Expect.that(excluded_log.process_event(ObservabilityEvent.new(
 			p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO,
 			p_message = "same", p_attributes = {"two": 2}, p_engine_ticks_msec = 2,
-	))["accepted"]).to_be_false()
+	)).is_accepted()).to_be_false()
 	for event: ObservabilityEvent in [
 		ObservabilityEvent.new(p_kind = &"log", p_source = &"other", p_level = ObservabilityLevel.INFO, p_message = "same"),
 		ObservabilityEvent.new(p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.WARN, p_message = "same"),
@@ -8652,18 +8740,18 @@ func test_processing_pipeline_log_and_metric_identity_matrices() -> void:
 		var pipeline := _processing_repeated_pipeline()
 		Expect.that(pipeline.process_event(ObservabilityEvent.new(
 			p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same",
-		))["accepted"]).to_be_true()
-		Expect.that(pipeline.process_event(event)["accepted"]).to_be_true()
+		)).is_accepted()).to_be_true()
+		Expect.that(pipeline.process_event(event).is_accepted()).to_be_true()
 
 	var excluded_metric := _processing_repeated_pipeline()
 	Expect.that(excluded_metric.process_metric(ObservabilityMetric.new(
 			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0,
 			p_unit = "count", p_attributes = {"one": 1},
-	))["accepted"]).to_be_true()
+	)).is_accepted()).to_be_true()
 	Expect.that(excluded_metric.process_metric(ObservabilityMetric.new(
 			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 2.0,
 			p_unit = "count", p_attributes = {"two": 2},
-	))["accepted"]).to_be_false()
+	)).is_accepted()).to_be_false()
 	for metric: ObservabilityMetric in [
 		ObservabilityMetric.new(p_type = ObservabilityMetricType.DISTRIBUTION, p_name = "metric", p_value = 1.0, p_unit = "count"),
 		ObservabilityMetric.new(p_type = ObservabilityMetricType.GAUGE, p_name = "other", p_value = 1.0, p_unit = "count"),
@@ -8672,8 +8760,8 @@ func test_processing_pipeline_log_and_metric_identity_matrices() -> void:
 		var pipeline := _processing_repeated_pipeline()
 		Expect.that(pipeline.process_metric(ObservabilityMetric.new(
 			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0, p_unit = "count",
-		))["accepted"]).to_be_true()
-		Expect.that(pipeline.process_metric(metric)["accepted"]).to_be_true()
+		)).is_accepted()).to_be_true()
+		Expect.that(pipeline.process_metric(metric).is_accepted()).to_be_true()
 
 
 func _processing_replace_first(event: ObservabilityEvent) -> ObservabilityEvent:
@@ -8709,12 +8797,8 @@ func _processing_event_to_log(event: ObservabilityEvent) -> ObservabilityEvent:
 	return ObservabilityEvent.new(p_kind = &"log", p_message = event.message())
 
 
-func _processing_drop(_event: ObservabilityEvent) -> Variant:
+func _processing_drop(_event: ObservabilityEvent) -> ObservabilityEvent?:
 	return null
-
-
-func _processing_wrong_type(_event: ObservabilityEvent) -> Variant:
-	return ObservabilityMetric.new(p_name = "wrong", p_value = 1.0)
 
 
 func _processing_metric_filter(metric: ObservabilityMetric) -> bool:
@@ -8726,22 +8810,14 @@ func _processing_metric_false(_metric: ObservabilityMetric) -> bool:
 	return false
 
 
-func _processing_metric_non_bool(_metric: ObservabilityMetric) -> Variant:
-	return "not a bool"
-
-
 func _processing_metric_marker(metric: ObservabilityMetric) -> ObservabilityMetric:
 	_processing_order.append("metric")
 	return ObservabilityMetric.new(
 			metric.type(), metric.name() + "-processed", metric.value(), metric.unit(), metric.attributes())
 
 
-func _processing_metric_drop(_metric: ObservabilityMetric) -> Variant:
+func _processing_metric_drop(_metric: ObservabilityMetric) -> ObservabilityMetric?:
 	return null
-
-
-func _processing_metric_wrong_type(_metric: ObservabilityMetric) -> Variant:
-	return ObservabilityEvent.new()
 
 
 func _processing_metric_too_long_name(_metric: ObservabilityMetric) -> ObservabilityMetric:
@@ -8819,7 +8895,9 @@ func _exception_snapshot(event: ObservabilityEvent) -> Dictionary:
 	}
 
 
-func _processing_config(processors: Array[Callable]) -> ObservabilityConfig:
+func _processing_config(
+		processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]],
+) -> ObservabilityConfig:
 	return ObservabilityConfig.new(
 		p_global_attributes = {},
 		p_provider_options = {},
@@ -8841,7 +8919,7 @@ func _processing_reconfigure_and_reenter(event: ObservabilityEvent) -> Observabi
 	return event
 
 
-func _processing_reconfigure_and_drop(_event: ObservabilityEvent) -> Variant:
+func _processing_reconfigure_and_drop(_event: ObservabilityEvent) -> ObservabilityEvent?:
 	_lifecycle_pipeline.configure(_processing_config([]))
 	return null
 
@@ -8896,7 +8974,7 @@ func _service_replace_event(event: ObservabilityEvent) -> ObservabilityEvent:
 	return _processing_event_with_message(event, "processed")
 
 
-func _service_drop_event(_event: ObservabilityEvent) -> Variant:
+func _service_drop_event(_event: ObservabilityEvent) -> ObservabilityEvent?:
 	return null
 
 
@@ -8988,12 +9066,12 @@ func _service_replace_with_unnormalized_exception(
 
 func _expect_service_per_frame_diagnostic(
 		service: FoundryObservability,
-		processing_signal: StringName,
+		processing_signal: ObservabilitySignal,
 ) -> void:
 	var diagnostic: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
 	Expect.that(diagnostic.processing_signal()).to_equal(processing_signal)
-	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingDiagnostic.RATE_LIMITED)
-	Expect.that(diagnostic.limit_kind()).to_equal(ObservabilityProcessingDiagnostic.PER_FRAME)
+	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingReason.RATE_LIMITED)
+	Expect.that(diagnostic.limit_kind()).to_equal(ObservabilityLimitKind.PER_FRAME)
 
 
 func _expect_service_diagnostic_unchanged(
@@ -9080,13 +9158,13 @@ func _expect_state_redaction_failure(service: FoundryObservability) -> void:
 	if diagnostic == null:
 		return
 	Expect.that(diagnostic.processing_signal()).to_equal(
-			ObservabilityProcessingDiagnostic.STATE,
+			ObservabilitySignal.STATE,
 		)
 	Expect.that(diagnostic.outcome()).to_equal(
-			ObservabilityProcessingDiagnostic.DROPPED,
+			ObservabilityProcessingOutcome.DROPPED,
 		)
 	Expect.that(diagnostic.reason()).to_equal(
-			ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+			ObservabilityProcessingReason.REDACTION_FAILED,
 		)
 	Expect.that(diagnostic.error()).to_equal(Error.ERR_INVALID_DATA)
 
@@ -9211,7 +9289,3 @@ func _restore_project_setting(
 
 func _keep_combat_metric(metric: ObservabilityMetric) -> bool:
 	return metric.name().begins_with("combat.")
-
-
-func _invalid_metric_filter(_metric: ObservabilityMetric) -> String:
-	return "not a bool"

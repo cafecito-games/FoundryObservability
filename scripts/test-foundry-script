@@ -134,7 +134,7 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 [[ -f "$addon/ObservabilityMetric.fs" ]] || fail "ObservabilityMetric.fs is missing"
 [[ -f "$addon/ObservabilitySignalLimits.fs" ]] \
 	|| fail "ObservabilitySignalLimits.fs is missing"
-[[ -f "$addon/ObservabilitySignalLimiter.fs" ]] \
+[[ -f "$addon/processing/ObservabilitySignalLimiter.fs" ]] \
 	|| fail "ObservabilitySignalLimiter.fs is missing"
 [[ -f "$addon/ObservabilityRedactionRule.fs" ]] \
 	|| fail "ObservabilityRedactionRule.fs is missing"
@@ -144,8 +144,10 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 	|| fail "ObservabilityRedactor.fs is missing"
 [[ -f "$addon/ObservabilityProcessingDiagnostic.fs" ]] \
 	|| fail "ObservabilityProcessingDiagnostic.fs is missing"
-[[ -f "$addon/ObservabilityProcessingPipeline.fs" ]] \
+[[ -f "$addon/processing/ObservabilityProcessingPipeline.fs" ]] \
 	|| fail "ObservabilityProcessingPipeline.fs is missing"
+[[ -f "$addon/processing/ObservabilityProcessingLease.fs" ]] \
+	|| fail "ObservabilityProcessingLease.fs is missing"
 [[ -f "$addon/ObservabilityStackFrame.fs" ]] || fail "ObservabilityStackFrame.fs is missing"
 [[ -f "$addon/ObservabilityMetricType.fs" ]] || fail "ObservabilityMetricType.fs is missing"
 [[ -f "$addon/ObservabilityMetricsProvider.fs" ]] || fail "ObservabilityMetricsProvider.fs is missing"
@@ -173,15 +175,16 @@ for attachment_resource in \
 done
 for processing_resource in \
 	ObservabilitySignalLimits \
-	ObservabilitySignalLimiter \
 	ObservabilityRedactionRule \
 	ObservabilityRedactionPolicy \
-	ObservabilityProcessingDiagnostic \
-	ObservabilityProcessingPipeline; do
+	ObservabilityProcessingDiagnostic; do
 	[[ -s "$addon/${processing_resource}.fs.uid" ]] \
 		|| fail "${processing_resource}.fs.uid is missing or empty"
 done
 for typed_processing_resource in \
+	ObservabilitySignalLimiter \
+	ObservabilityProcessingPipeline \
+	ObservabilityProcessingLease \
 	ObservabilityRedactor \
 	ObservabilityValueVisitDecision \
 	ObservabilityValuePolicy \
@@ -192,10 +195,14 @@ done
 grep -Fxq 'uid://d13rdctcore1' \
 	"$addon/processing/ObservabilityRedactor.fs.uid" \
 	|| fail "ObservabilityRedactor.fs.uid has the wrong stable UID"
-grep -Fxq 'uid://d13sgnlmit1' "$addon/ObservabilitySignalLimiter.fs.uid" \
+grep -Fxq 'uid://d13sgnlmit1' "$addon/processing/ObservabilitySignalLimiter.fs.uid" \
 	|| fail "ObservabilitySignalLimiter.fs.uid has the wrong stable UID"
-grep -Fxq 'uid://d13prcspipe1' "$addon/ObservabilityProcessingPipeline.fs.uid" \
+grep -Fxq 'uid://d13prcspipe1' "$addon/processing/ObservabilityProcessingPipeline.fs.uid" \
 	|| fail "ObservabilityProcessingPipeline.fs.uid has the wrong stable UID"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityProcessingLease.fs.uid" \
+	$'uid://d14process012\n' \
+	"processing lease UID contract is missing"
 for sentry_attachment_resource in \
 	SentryAttachmentRuntimeProbe \
 	SentryBuiltInAttachmentCollector; do
@@ -298,36 +305,142 @@ for field in _policy _rules _rule_paths _compiled_patterns _invalid_rule_index; 
 		"$addon/processing/ObservabilityRedactor.fs" \
 		|| fail "ObservabilityRedactor field must be immutable: ${field}"
 done
-rg -q '^func processing_signal\(\) -> StringName:$' \
+rg -q '^func processing_signal\(\) -> ObservabilitySignal:$' \
 	"$addon/ObservabilityProcessingDiagnostic.fs" \
 	|| fail "ObservabilityProcessingDiagnostic must expose processing_signal()"
+for diagnostic_field in \
+	'_signal: ObservabilitySignal' \
+	'_outcome: ObservabilityProcessingOutcome' \
+	'_reason: ObservabilityProcessingReason' \
+	'_limit_kind: ObservabilityLimitKind'; do
+	rg -Fq "final var ${diagnostic_field}" \
+		"$addon/ObservabilityProcessingDiagnostic.fs" \
+		|| fail "processing diagnostic field must be final and typed: $diagnostic_field"
+done
+for diagnostic_accessor in \
+	'func outcome() -> ObservabilityProcessingOutcome:' \
+	'func reason() -> ObservabilityProcessingReason:' \
+	'func limit_kind() -> ObservabilityLimitKind:' \
+	'func redaction_rule_index() -> int:'; do
+	rg -Fq "$diagnostic_accessor" "$addon/ObservabilityProcessingDiagnostic.fs" \
+		|| fail "processing diagnostic is missing typed accessor: $diagnostic_accessor"
+done
 rg -q '^class_name ObservabilityProcessingPipeline$' \
-	"$addon/ObservabilityProcessingPipeline.fs" \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
 	|| fail "processing pipeline declaration is missing"
-rg -q '^extends RefCounted$' "$addon/ObservabilityProcessingPipeline.fs" \
+rg -q '^namespace foundry\.observability\.processing$' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must use the processing namespace"
+rg -q '^extends RefCounted$' "$addon/processing/ObservabilityProcessingPipeline.fs" \
 	|| fail "processing pipeline must remain a RefCounted resource"
 for pipeline_member in \
 	'func configure(config: ObservabilityConfig? = null) -> int:' \
-	'func process_event(event: ObservabilityEvent) -> Dictionary:' \
-	'func process_metric(metric: ObservabilityMetric) -> Dictionary:' \
+	'func process_event(event: ObservabilityEvent) -> ObservabilityProcessingResult[ObservabilityEvent]:' \
+	'func process_metric(metric: ObservabilityMetric) -> ObservabilityProcessingResult[ObservabilityMetric]:' \
+	'func redact_contexts(contexts: Dictionary) -> ObservabilityProcessingResult[Dictionary]:' \
+	'func redact_user(user: ObservabilityUser) -> ObservabilityProcessingResult[Dictionary]:' \
+	'func redact_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> ObservabilityProcessingResult[Dictionary]:' \
+	'func redact_attachment(attachment: ObservabilityAttachment) -> ObservabilityProcessingResult[Dictionary]:' \
 	'func record_provider_result(' \
 	'func last_diagnostic() -> ObservabilityProcessingDiagnostic?' \
 	'func recursive_drop_count() -> int:'; do
-	rg -Fq "$pipeline_member" "$addon/ObservabilityProcessingPipeline.fs" \
+	rg -Fq "$pipeline_member" "$addon/processing/ObservabilityProcessingPipeline.fs" \
 		|| fail "processing pipeline is missing required API: $pipeline_member"
 done
-for pipeline_state in _redactor _event_processors _log_processors _metric_processors \
-	_metric_filter _runtime _event_limiter _log_limiter _metric_limiter _processing_depth \
+for pipeline_state in _redactor _runtime _event_limiter _log_limiter _metric_limiter _processing_depth \
 	_event_limiter_mutex _log_limiter_mutex _metric_limiter_mutex \
 	_config_generation _operation_sequence _active_operations _pending_provider_results \
 	_recursive_drops _diagnostic_sequence _last_diagnostic _state_mutex; do
-	rg -q "^var ${pipeline_state}:" "$addon/ObservabilityProcessingPipeline.fs" \
+	rg -q "^var ${pipeline_state}:" "$addon/processing/ObservabilityProcessingPipeline.fs" \
 		|| fail "processing pipeline is missing state: ${pipeline_state}"
+done
+for typed_pipeline_state in \
+	'var _event_processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]] = []' \
+	'var _log_processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]] = []' \
+	'var _metric_processors: Array[Callable[[ObservabilityMetric], ObservabilityMetric?]] = []' \
+	'var _has_metric_filter: bool = false' \
+	'var _metric_filter: Callable[[ObservabilityMetric], bool]?'; do
+	rg -Fq "$typed_pipeline_state" "$addon/processing/ObservabilityProcessingPipeline.fs" \
+		|| fail "processing pipeline is missing exact typed state: $typed_pipeline_state"
+done
+rg -Fq 'final var _has_metric_filter: bool' \
+	"$addon/ObservabilityProcessingConfig.fs" \
+	|| fail "processing config must retain typed nullable Callable presence"
+rg -Fq 'func has_metric_filter() -> bool:' \
+	"$addon/ObservabilityProcessingConfig.fs" \
+	|| fail "processing config must expose typed nullable Callable presence"
+rg -Fq 'var candidate_has_metric_filter: bool = processing.has_metric_filter()' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must narrow the nullable metric filter through its presence bit"
+if rg -n 'Variant.*(processor|metric_filter).*(call|=)|(processor|metric_filter)\.call\(.*\).*Variant' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs"; then
+	fail "processing pipeline must not probe typed Callable results through Variant"
+fi
+if rg -n 'snapshot\["|result\["(accepted|value|operation_token)"\]' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs"; then
+	fail "processing pipeline must not retain magic-key snapshot/result protocols"
+fi
+rg -q '^func _reserve_state\(owner_id: int\) -> ObservabilityProcessingLease\[Dictionary\]\?:$' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must reserve a typed Dictionary state lease"
+for typed_state_signature in \
+	$'func _finish_state_success(\n\t\tlease: ObservabilityProcessingLease[Dictionary],\n\t\tvalue: Dictionary,\n) -> ObservabilityProcessingResult[Dictionary]:' \
+	$'func _finish_state_invalid(\n\t\tlease: ObservabilityProcessingLease[Dictionary],\n) -> ObservabilityProcessingResult[Dictionary]:' \
+	$'func _finish_state_redaction_failure(\n\t\tlease: ObservabilityProcessingLease[Dictionary],\n\t\tredaction_rule_index: int,\n) -> ObservabilityProcessingResult[Dictionary]:' \
+	$'func _state_dropped(\n\t\treason: ObservabilityProcessingReason,\n\t\terror: int,\n) -> ObservabilityProcessingResult[Dictionary]:'; do
+	rg -UFq "$typed_state_signature" \
+		"$addon/processing/ObservabilityProcessingPipeline.fs" \
+		|| fail "processing pipeline is missing exact typed state contract: $typed_state_signature"
+done
+for typed_state_factory in \
+	'ObservabilityProcessingResult[Dictionary].accepted(' \
+	'ObservabilityProcessingResult[Dictionary].dropped('; do
+	rg -Fq "$typed_state_factory" \
+		"$addon/processing/ObservabilityProcessingPipeline.fs" \
+		|| fail "processing pipeline is missing typed state result factory: $typed_state_factory"
+done
+if rg -n 'func (_redact_state_value|_state_rejected)\(|"(accepted|valid|signal|reason|error)":' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs"; then
+	fail "processing pipeline must not retain the state Dictionary result protocol"
+fi
+if rg -n '^func (redact_contexts|redact_user|redact_breadcrumb|redact_attachment).*-> Dictionary:' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs"; then
+	fail "processing pipeline state APIs must not return raw result Dictionaries"
+fi
+if rg -n 'redaction(\.get\("(valid|value)"\)|\["value"\])' \
+	"$addon/FoundryObservability.fs"; then
+	fail "state callers must consume typed processing result accessors"
+fi
+if rg -n '(_recursive_state_result|state_result)\["(accepted|valid|value|signal|reason|error)"\]' \
+	"$repo_root/test_project/tests/observability-core.test.fs"; then
+	fail "processing tests must use typed state result accessors"
+fi
+if rg -q '^func _(_rejected|rule_index|int_value)\(' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs"; then
+	fail "processing pipeline must not retain weak dictionary result/snapshot helpers"
+fi
+lease_source="$addon/processing/ObservabilityProcessingLease.fs"
+rg -q '^namespace foundry\.observability\.processing$' "$lease_source" \
+	|| fail "processing lease must use the processing namespace"
+rg -q '^final class_name ObservabilityProcessingLease\[T\] extends RefCounted$' "$lease_source" \
+	|| fail "immutable generic processing lease declaration is missing"
+for lease_field in \
+	'_generation: int' \
+	'_operation_token: int' \
+	'_owner_id: int' \
+	'_signal: ObservabilitySignal' \
+	'_processors: Array[Callable[[T], T?]]' \
+	'_redactor: ObservabilityRedactor' \
+	'_limiter: ObservabilitySignalLimiter' \
+	'_limiter_mutex: Mutex' \
+	'_runtime: ObservabilityRuntime'; do
+	rg -Fq "final var ${lease_field}" "$lease_source" \
+		|| fail "processing lease field must be final and typed: $lease_field"
 done
 if rg -n '\b(_processing_clock|_processing_frame|_clock: Callable|_frame: Callable|_owner: Callable)\b' \
 	"$addon/FoundryObservability.fs" \
 	"$addon/AutomaticObservabilityLogger.fs" \
-	"$addon/ObservabilityProcessingPipeline.fs"; then
+	"$addon/processing/ObservabilityProcessingPipeline.fs"; then
 	fail "core runtime access must use ObservabilityRuntime"
 fi
 if rg -n '_frame_supplier' "$addon/AutomaticObservabilityLogger.fs"; then
@@ -336,16 +449,14 @@ fi
 if rg -n '\b(Time\.get_ticks_msec|Time\.get_unix_time_from_system|Engine\.get_process_frames|OS\.get_thread_caller_id|OS\.get_main_thread_id)\(' \
 	"$addon/FoundryObservability.fs" \
 	"$addon/AutomaticObservabilityLogger.fs" \
-	"$addon/ObservabilityProcessingPipeline.fs"; then
+	"$addon/processing/ObservabilityProcessingPipeline.fs"; then
 	fail "core runtime consumers must not call engine runtime facts directly"
 fi
-rg -Fq '"operation_token"' "$addon/ObservabilityProcessingPipeline.fs" \
-	|| fail "processing pipeline accepted results must expose an opaque operation token"
 rg -q '^const MAX_PENDING_PROVIDER_RESULTS: int = 1024$' \
-	"$addon/ObservabilityProcessingPipeline.fs" \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
 	|| fail "processing pipeline pending provider results must have a conservative fixed bound"
 pending_result_bound_references=$( \
-	rg -Fo 'MAX_PENDING_PROVIDER_RESULTS' "$addon/ObservabilityProcessingPipeline.fs" \
+	rg -Fo 'MAX_PENDING_PROVIDER_RESULTS' "$addon/processing/ObservabilityProcessingPipeline.fs" \
 		| wc -l | tr -d ' ' \
 )
 (( pending_result_bound_references >= 2 )) \
@@ -397,18 +508,20 @@ rg -q '^trait_name ObservabilityBreadcrumbsProvider$' \
 	|| fail "optional breadcrumb provider contract is missing"
 rg -q '^class_name ObservabilityMetric$' "$addon/ObservabilityMetric.fs" \
 	|| fail "metric value type declaration is missing"
-rg -q '^class_name ObservabilitySignalLimiter$' "$addon/ObservabilitySignalLimiter.fs" \
+rg -q '^class_name ObservabilitySignalLimiter$' "$addon/processing/ObservabilitySignalLimiter.fs" \
 	|| fail "signal limiter declaration is missing"
-rg -q '^extends RefCounted$' "$addon/ObservabilitySignalLimiter.fs" \
+rg -q '^namespace foundry\.observability\.processing$' "$addon/processing/ObservabilitySignalLimiter.fs" \
+	|| fail "signal limiter must use the processing namespace"
+rg -q '^extends RefCounted$' "$addon/processing/ObservabilitySignalLimiter.fs" \
 	|| fail "signal limiter must remain a RefCounted resource"
-rg -q '^const MAX_IDENTITIES: int = 1024$' "$addon/ObservabilitySignalLimiter.fs" \
+rg -q '^const MAX_IDENTITIES: int = 1024$' "$addon/processing/ObservabilitySignalLimiter.fs" \
 	|| fail "signal limiter identity bound is missing"
 rg -q -U \
 	'(?s)func _init\(.*p_sample_rate: float = 1\.0,.*p_limits: ObservabilitySignalLimits\? = null,.*p_legacy_limit_per_second: int = 0,' \
-	"$addon/ObservabilitySignalLimiter.fs" \
+	"$addon/processing/ObservabilitySignalLimiter.fs" \
 	|| fail "signal limiter constructor contract has changed"
 rg -Fq '_limits = p_limits.duplicate() if p_limits != null else ObservabilitySignalLimits.new()' \
-	"$addon/ObservabilitySignalLimiter.fs" \
+	"$addon/processing/ObservabilitySignalLimiter.fs" \
 	|| fail "signal limiter must defensively copy limits"
 require_exact_file \
 	"addons/FoundryObservability/processing/ObservabilitySignal.fs" \
@@ -511,9 +624,6 @@ fi
 if rg -q 'active_containers|is_same\(' "$redactor_source"; then
 	fail "redactor must delegate cycle identity state to the shared value walker"
 fi
-rg -q '^import foundry\.observability\.processing$' \
-	"$addon/ObservabilitySignalLimiter.fs" \
-	|| fail "signal limiter must import the processing model"
 rg -q '^final class_name ObservabilityAdmissionDecision extends RefCounted$' \
 	"$addon/processing/ObservabilityAdmissionDecision.fs" \
 	|| fail "typed admission decision model is missing"
@@ -537,25 +647,27 @@ rg -q -U \
 	'^\tif not is_valid_state\(p_accepted, p_reason, p_limit_kind\):\n\t\tpush_error\("ObservabilityAdmissionDecision requires a valid admission state\."\)\n\t\t_accepted = false\n\t\t_reason = ObservabilityProcessingReason\.SAMPLED\n\t\t_limit_kind = ObservabilityLimitKind\.NONE\n\t\tassert\(\n\t\t\t\tis_valid_state\(_accepted, _reason, _limit_kind\),\n\t\t\t\t"ObservabilityAdmissionDecision fallback must remain valid\.",\n\t\t\t\)\n\t\treturn$' \
 	"$addon/processing/ObservabilityAdmissionDecision.fs" \
 	|| fail "admission decision must canonicalize invalid state outside assert"
-rg -q -U \
-	'\t\t_:\n\t\t\tpush_error\("Unexpected dropped admission reason\."\)\n\t\t\tassert\(false, "Unexpected dropped admission reason\."\)\n\t\t\treturn &"invalid_admission_reason"' \
-	"$addon/ObservabilityProcessingPipeline.fs" \
-	|| fail "invalid admission reason must remain observable outside assert"
-rg -q -U \
-	'push_error\("Unexpected admission limit kind\."\)\n\tassert\(false, "Unexpected admission limit kind\."\)\n\treturn &"invalid_admission_limit"' \
-	"$addon/ObservabilityProcessingPipeline.fs" \
-	|| fail "invalid admission limit must remain observable outside assert"
+rg -Fq 'admission.reason()' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must preserve typed admission reasons"
+rg -Fq 'admission.limit_kind()' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must preserve typed admission limit kinds"
+if rg -q '^func _diagnostic_(drop_reason|limit_kind)\(' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs"; then
+	fail "processing pipeline must not translate typed admission enums through StringName"
+fi
 rg -q -U \
 	'^func admit\(\n\t\tidentity: String,\n\t\tnow_msec: int,\n\t\tframe_index: int,\n\) -> ObservabilityAdmissionDecision:$' \
-	"$addon/ObservabilitySignalLimiter.fs" \
+	"$addon/processing/ObservabilitySignalLimiter.fs" \
 	|| fail "typed signal limiter admit contract is missing"
 if rg -q -U '(?s)func admit\(.*?\) -> Dictionary:' \
-	"$addon/ObservabilitySignalLimiter.fs"; then
+	"$addon/processing/ObservabilitySignalLimiter.fs"; then
 	fail "signal limiter must not retain the Dictionary admission contract"
 fi
-rg -q 'identity\.sha256_text()' "$addon/ObservabilitySignalLimiter.fs" \
+rg -q 'identity\.sha256_text()' "$addon/processing/ObservabilitySignalLimiter.fs" \
 	|| fail "signal limiter must hash identities before retention"
-if rg -q '^var [^_]' "$addon/ObservabilitySignalLimiter.fs"; then
+if rg -q '^var [^_]' "$addon/processing/ObservabilitySignalLimiter.fs"; then
 	fail "signal limiter runtime state must remain private"
 fi
 rg -q '^class_name ObservabilityRedactor$' \
@@ -895,8 +1007,16 @@ fi
 
 foundry_bin=$(resolve_foundry_bin)
 import_log=$(mktemp "${TMPDIR:-/tmp}/foundryobservability-import.XXXXXX")
+invalid_callable_log=""
+invalid_callable_fixture=""
 cleanup() {
 	rm -f "$import_log"
+	if [[ -n "$invalid_callable_log" ]]; then
+		rm -f "$invalid_callable_log"
+	fi
+	if [[ -n "$invalid_callable_fixture" ]]; then
+		rm -f "$invalid_callable_fixture"
+	fi
 	restore_test_addons
 }
 trap cleanup EXIT
@@ -923,5 +1043,42 @@ fi
 		--fail-on=warning \
 		addons/FoundryObservabilitySentry
 )
+
+invalid_callable_log=$(mktemp "${TMPDIR:-/tmp}/foundryobservability-invalid-callable.XXXXXX")
+invalid_callable_fixture="$test_addon/processing/InvalidTypedCallableContract.fixture.fs"
+printf '%s\n' \
+	'namespace foundry.observability.processing.contract' \
+	'' \
+	'import foundry.observability' \
+	'' \
+	'func wrong_result(_event: ObservabilityEvent) -> ObservabilityMetric:' \
+	'	return ObservabilityMetric.new(p_name = "wrong", p_value = 1.0)' \
+	'' \
+	'func prove_rejection() -> void:' \
+	'	var processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]] = [' \
+	'		Callable(self, "wrong_result"),' \
+	'	]' \
+	'	assert(processors.is_empty())' \
+	>"$invalid_callable_fixture"
+if (
+	cd "$project_dir"
+	"$foundry_bin" --headless script lint \
+		--project "$project_dir" \
+		--fail-on=warning \
+		addons/FoundryObservability/processing/InvalidTypedCallableContract.fixture.fs
+) >"$invalid_callable_log" 2>&1; then
+	cat "$invalid_callable_log" >&2
+	fail "Foundry Script analyzer accepted a processor with the wrong return type"
+fi
+if ! rg -Fq 'Callable[[ObservabilityEvent], ObservabilityMetric]' "$invalid_callable_log" \
+		|| ! rg -Fq 'Array[Callable[[ObservabilityEvent], ObservabilityEvent?]]' \
+			"$invalid_callable_log" \
+		|| ! rg -Fq '"ruleId": "analyzer-error"' "$invalid_callable_log"; then
+	cat "$invalid_callable_log" >&2
+	fail "Foundry Script analyzer did not report the expected typed Callable rejection"
+fi
+rm -f "$invalid_callable_fixture" "$invalid_callable_log"
+invalid_callable_fixture=""
+invalid_callable_log=""
 
 echo "FoundryScript contract checks passed"

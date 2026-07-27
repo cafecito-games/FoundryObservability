@@ -12,6 +12,7 @@ final var _metrics_enabled: bool
 final var _event_sample_rate: float
 final var _log_sample_rate: float
 final var _metric_sample_rate: float
+final var _has_metric_filter: bool
 final var _metric_filter: Callable[[ObservabilityMetric], bool]?
 final var _event_processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]]
 final var _log_processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]]
@@ -46,6 +47,10 @@ func _init(
 	_event_sample_rate = p_event_sample_rate
 	_log_sample_rate = p_log_sample_rate
 	_metric_sample_rate = p_metric_sample_rate
+	## A null nullable Callable arrives as an invalid Callable value at this boundary.
+	## Capture presence while a live target is still distinguishable; the bit remains
+	## true if that target expires later so configure() can reject transactionally.
+	_has_metric_filter = p_metric_filter.is_valid()
 	_metric_filter = p_metric_filter
 	_event_processors = _copy_event_processors(p_event_processors)
 	_log_processors = _copy_event_processors(p_log_processors)
@@ -86,6 +91,11 @@ func log_sample_rate() -> float:
 
 func metric_sample_rate() -> float:
 	return _metric_sample_rate
+
+
+## Avoids crossing a nullable Callable return boundary when no filter is configured.
+func has_metric_filter() -> bool:
+	return _has_metric_filter
 
 
 func metric_filter() -> Callable[[ObservabilityMetric], bool]?:

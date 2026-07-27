@@ -223,6 +223,10 @@ func outcome() -> ObservabilityProcessingOutcome:
 	return _outcome
 
 
+func is_accepted() -> bool:
+	return _outcome == ObservabilityProcessingOutcome.ACCEPTED
+
+
 ## Returns the signal family; "signal" is a Foundry Script declaration keyword.
 func processing_signal() -> ObservabilitySignal:
 	return _signal
