@@ -1,5 +1,7 @@
 namespace foundry.observability
 
+import foundry.observability.processing
+
 ## Bounded deterministic admission control for one observability signal.
 class_name ObservabilitySignalLimiter
 extends RefCounted
@@ -36,13 +38,20 @@ func _init(
 
 
 ## Returns a stable payload-free admission outcome.
-func admit(identity: String, now_msec: int, frame_index: int) -> Dictionary:
+func admit(
+		identity: String,
+		now_msec: int,
+		frame_index: int,
+) -> ObservabilityAdmissionDecision:
 	var compensated_rate: float = _sample_rate - _sample_compensation
 	var sampled_total: float = _sample_accumulator + compensated_rate
 	_sample_compensation = (sampled_total - _sample_accumulator) - compensated_rate
 	_sample_accumulator = sampled_total
 	if _sample_accumulator < 1.0:
-		return _dropped(&"sampled", &"")
+		return _dropped(
+				ObservabilityProcessingReason.SAMPLED,
+				ObservabilityLimitKind.NONE,
+			)
 	_sample_accumulator -= 1.0
 
 	var candidate_frame_count: int = 1
@@ -71,14 +80,26 @@ func admit(identity: String, now_msec: int, frame_index: int) -> Dictionary:
 		candidate_legacy_count = _legacy_second_count + 1
 
 	if _limits.per_frame() > 0 and candidate_frame_count > _limits.per_frame():
-		return _dropped(&"rate_limited", &"per_frame")
+		return _dropped(
+				ObservabilityProcessingReason.RATE_LIMITED,
+				ObservabilityLimitKind.PER_FRAME,
+			)
 	if has_repeated_identity:
-		return _dropped(&"rate_limited", &"repeated")
+		return _dropped(
+				ObservabilityProcessingReason.RATE_LIMITED,
+				ObservabilityLimitKind.REPEATED,
+			)
 	if _limits.window_count() > 0 and _limits.window_msec() > 0 \
 			and candidate_timepoints.size() >= _limits.window_count():
-		return _dropped(&"rate_limited", &"window")
+		return _dropped(
+				ObservabilityProcessingReason.RATE_LIMITED,
+				ObservabilityLimitKind.WINDOW,
+			)
 	if _legacy_limit_per_second > 0 and candidate_legacy_count > _legacy_limit_per_second:
-		return _dropped(&"rate_limited", &"legacy_log_window")
+		return _dropped(
+				ObservabilityProcessingReason.RATE_LIMITED,
+				ObservabilityLimitKind.LEGACY_LOG_WINDOW,
+			)
 
 	_has_current_frame = true
 	_current_frame = frame_index
@@ -98,7 +119,7 @@ func admit(identity: String, now_msec: int, frame_index: int) -> Dictionary:
 	_legacy_second_count = candidate_legacy_count
 	_has_last_now_msec = true
 	_last_now_msec = effective_now_msec
-	return {"accepted": true, "reason": &"", "limit_kind": &""}
+	return ObservabilityAdmissionDecision.accepted_decision()
 
 
 ## Clears sample, time, identity, frame, and legacy state.
@@ -144,5 +165,8 @@ func _evict_oldest_identity() -> void:
 	_identity_records.erase(oldest_digest)
 
 
-func _dropped(reason: StringName, limit_kind: StringName) -> Dictionary:
-	return {"accepted": false, "reason": reason, "limit_kind": limit_kind}
+func _dropped(
+		reason: ObservabilityProcessingReason,
+		limit_kind: ObservabilityLimitKind,
+) -> ObservabilityAdmissionDecision:
+	return ObservabilityAdmissionDecision.dropped(reason, limit_kind)

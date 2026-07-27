@@ -1,5 +1,6 @@
 namespace foundry.observability
 
+import foundry.observability.processing
 import foundry.observability.runtime
 
 ## Coordinates provider-neutral processing before provider delivery.
@@ -245,11 +246,10 @@ func _process_event_signal(event: ObservabilityEvent, p_signal: StringName) -> D
 	if not _valid_event(current, p_signal):
 		return _finish_invalid_payload(snapshot, p_signal)
 
-	var admission: Dictionary = _admit(snapshot, _event_identity(current, p_signal))
+	var admission: Dictionary = _admit(
+			snapshot, p_signal, _event_identity(current, p_signal))
 	if not admission["accepted"]:
-		return _finish_drop(
-				snapshot, p_signal, StringName(str(admission["reason"])), -1, -1,
-				StringName(str(admission["limit_kind"])), Error.OK)
+		return admission
 	return _finish_success(snapshot, p_signal, current)
 
 
@@ -312,11 +312,9 @@ func _process_metric_signal(metric: ObservabilityMetric) -> Dictionary:
 	if not _valid_metric(current):
 		return _finish_invalid_payload(snapshot, p_signal)
 
-	var admission: Dictionary = _admit(snapshot, _metric_identity(current))
+	var admission: Dictionary = _admit(snapshot, p_signal, _metric_identity(current))
 	if not admission["accepted"]:
-		return _finish_drop(
-				snapshot, p_signal, StringName(str(admission["reason"])), -1, -1,
-				StringName(str(admission["limit_kind"])), Error.OK)
+		return admission
 	return _finish_success(snapshot, p_signal, current)
 
 
@@ -535,7 +533,11 @@ func _finish_drop(
 	return _rejected(p_signal)
 
 
-func _admit(snapshot: Dictionary, identity: String) -> Dictionary:
+func _admit(
+		snapshot: Dictionary,
+		p_signal: StringName,
+		identity: String,
+) -> Dictionary:
 	@warning_ignore("unsafe_cast")
 	var limiter: ObservabilitySignalLimiter = snapshot["limiter"] as ObservabilitySignalLimiter
 	@warning_ignore("unsafe_cast")
@@ -543,9 +545,52 @@ func _admit(snapshot: Dictionary, identity: String) -> Dictionary:
 	var now_msec: int = _now_msec()
 	var frame_index: int = _frame_index()
 	limiter_mutex.lock()
-	var admission: Dictionary = limiter.admit(identity, now_msec, frame_index)
+	var admission: ObservabilityAdmissionDecision = limiter.admit(
+			identity,
+			now_msec,
+			frame_index,
+		)
 	limiter_mutex.unlock()
-	return admission
+	if not admission.accepted():
+		return _finish_drop(
+				snapshot,
+				p_signal,
+				_diagnostic_reason(admission.reason()),
+				-1,
+				-1,
+				_diagnostic_limit_kind(admission.limit_kind()),
+				Error.OK,
+			)
+	return {"accepted": true}
+
+
+func _diagnostic_reason(reason: ObservabilityProcessingReason) -> StringName:
+	match reason:
+		ObservabilityProcessingReason.SAMPLED:
+			return &"sampled"
+		ObservabilityProcessingReason.RATE_LIMITED:
+			return &"rate_limited"
+		_:
+			push_error("Unexpected dropped admission reason.")
+			assert(false, "Unexpected dropped admission reason.")
+			return &"invalid_admission_reason"
+
+
+func _diagnostic_limit_kind(limit_kind: ObservabilityLimitKind) -> StringName:
+	match limit_kind:
+		ObservabilityLimitKind.NONE:
+			return &""
+		ObservabilityLimitKind.PER_FRAME:
+			return &"per_frame"
+		ObservabilityLimitKind.REPEATED:
+			return &"repeated"
+		ObservabilityLimitKind.WINDOW:
+			return &"window"
+		ObservabilityLimitKind.LEGACY_LOG_WINDOW:
+			return &"legacy_log_window"
+	push_error("Unexpected admission limit kind.")
+	assert(false, "Unexpected admission limit kind.")
+	return &"invalid_admission_limit"
 
 
 func _register_pending_result_locked(

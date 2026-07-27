@@ -29,6 +29,14 @@ require_content_text() {
 		|| fail "$failure_message"
 }
 
+require_exact_file() {
+	local relative_path=$1
+	local expected=$2
+	local failure_message=$3
+	printf '%s' "$expected" | cmp -s - "$repo_root/$relative_path" \
+		|| fail "$failure_message"
+}
+
 reject_content_text() {
 	local content=$1
 	local rejected=$2
@@ -349,9 +357,84 @@ rg -q -U \
 rg -Fq '_limits = p_limits.duplicate() if p_limits != null else ObservabilitySignalLimits.new()' \
 	"$addon/ObservabilitySignalLimiter.fs" \
 	|| fail "signal limiter must defensively copy limits"
-rg -Fq 'func admit(identity: String, now_msec: int, frame_index: int) -> Dictionary:' \
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilitySignal.fs" \
+	$'namespace foundry.observability.processing\n\n## Closed provider-neutral signal families.\nenum_name ObservabilitySignal:\n\tEVENT = 0\n\tLOG = 1\n\tMETRIC = 2\n\tSTATE = 3\n' \
+	"processing signal enum contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilitySignal.fs.uid" \
+	$'uid://d14process001\n' \
+	"processing signal UID contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityProcessingOutcome.fs" \
+	$'namespace foundry.observability.processing\n\n## Closed processing outcomes.\nenum_name ObservabilityProcessingOutcome:\n\tACCEPTED = 0\n\tDROPPED = 1\n\tFAILED = 2\n' \
+	"processing outcome enum contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityProcessingOutcome.fs.uid" \
+	$'uid://d14process002\n' \
+	"processing outcome UID contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityProcessingReason.fs" \
+	$'namespace foundry.observability.processing\n\n## Stable payload-free processing reasons.\nenum_name ObservabilityProcessingReason:\n\tNONE = 0\n\tPROCESSOR = 1\n\tSAMPLED = 2\n\tRATE_LIMITED = 3\n\tRECURSIVE = 4\n\tINVALID_PROCESSOR_RESULT = 5\n\tREDACTION_FAILED = 6\n\tINVALID_PAYLOAD = 7\n\tPROVIDER_REJECTED = 8\n\tSTALE_GENERATION = 9\n' \
+	"processing reason enum contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityProcessingReason.fs.uid" \
+	$'uid://d14process003\n' \
+	"processing reason UID contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityLimitKind.fs" \
+	$'namespace foundry.observability.processing\n\n## Stable signal admission limit families.\nenum_name ObservabilityLimitKind:\n\tNONE = 0\n\tPER_FRAME = 1\n\tREPEATED = 2\n\tWINDOW = 3\n\tLEGACY_LOG_WINDOW = 4\n' \
+	"processing limit kind enum contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityLimitKind.fs.uid" \
+	$'uid://d14process004\n' \
+	"processing limit kind UID contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityAdmissionDecision.fs.uid" \
+	$'uid://d14process005\n' \
+	"admission decision UID contract is missing"
+rg -q '^import foundry\.observability\.processing$' \
 	"$addon/ObservabilitySignalLimiter.fs" \
-	|| fail "signal limiter admit contract is missing"
+	|| fail "signal limiter must import the processing model"
+rg -q '^final class_name ObservabilityAdmissionDecision extends RefCounted$' \
+	"$addon/processing/ObservabilityAdmissionDecision.fs" \
+	|| fail "typed admission decision model is missing"
+rg -q '^final var _accepted: bool$' \
+	"$addon/processing/ObservabilityAdmissionDecision.fs" \
+	|| fail "admission decision accepted field must be final and typed"
+rg -q '^final var _reason: ObservabilityProcessingReason$' \
+	"$addon/processing/ObservabilityAdmissionDecision.fs" \
+	|| fail "admission decision reason field must be final and typed"
+rg -q '^final var _limit_kind: ObservabilityLimitKind$' \
+	"$addon/processing/ObservabilityAdmissionDecision.fs" \
+	|| fail "admission decision limit field must be final and typed"
+rg -q -U \
+	'^static func is_valid_state\(\n\t\tp_accepted: bool,\n\t\tp_reason: ObservabilityProcessingReason,\n\t\tp_limit_kind: ObservabilityLimitKind,\n\) -> bool:$' \
+	"$addon/processing/ObservabilityAdmissionDecision.fs" \
+	|| fail "typed admission decision invariant is missing"
+rg -Fq 'is_valid_state(p_accepted, p_reason, p_limit_kind)' \
+	"$addon/processing/ObservabilityAdmissionDecision.fs" \
+	|| fail "admission decision constructor invariant is missing"
+rg -q -U \
+	'^\tif not is_valid_state\(p_accepted, p_reason, p_limit_kind\):\n\t\tpush_error\("ObservabilityAdmissionDecision requires a valid admission state\."\)\n\t\t_accepted = false\n\t\t_reason = ObservabilityProcessingReason\.SAMPLED\n\t\t_limit_kind = ObservabilityLimitKind\.NONE\n\t\tassert\(\n\t\t\t\tis_valid_state\(_accepted, _reason, _limit_kind\),\n\t\t\t\t"ObservabilityAdmissionDecision fallback must remain valid\.",\n\t\t\t\)\n\t\treturn$' \
+	"$addon/processing/ObservabilityAdmissionDecision.fs" \
+	|| fail "admission decision must canonicalize invalid state outside assert"
+rg -q -U \
+	'\t\t_:\n\t\t\tpush_error\("Unexpected dropped admission reason\."\)\n\t\t\tassert\(false, "Unexpected dropped admission reason\."\)\n\t\t\treturn &"invalid_admission_reason"' \
+	"$addon/ObservabilityProcessingPipeline.fs" \
+	|| fail "invalid admission reason must remain observable outside assert"
+rg -q -U \
+	'push_error\("Unexpected admission limit kind\."\)\n\tassert\(false, "Unexpected admission limit kind\."\)\n\treturn &"invalid_admission_limit"' \
+	"$addon/ObservabilityProcessingPipeline.fs" \
+	|| fail "invalid admission limit must remain observable outside assert"
+rg -q -U \
+	'^func admit\(\n\t\tidentity: String,\n\t\tnow_msec: int,\n\t\tframe_index: int,\n\) -> ObservabilityAdmissionDecision:$' \
+	"$addon/ObservabilitySignalLimiter.fs" \
+	|| fail "typed signal limiter admit contract is missing"
+if rg -q -U '(?s)func admit\(.*?\) -> Dictionary:' \
+	"$addon/ObservabilitySignalLimiter.fs"; then
+	fail "signal limiter must not retain the Dictionary admission contract"
+fi
 rg -q 'identity\.sha256_text()' "$addon/ObservabilitySignalLimiter.fs" \
 	|| fail "signal limiter must hash identities before retention"
 if rg -q '^var [^_]' "$addon/ObservabilitySignalLimiter.fs"; then
