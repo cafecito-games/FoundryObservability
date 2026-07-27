@@ -205,6 +205,22 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 	|| fail "ObservabilityAttachmentsProvider.fs is missing"
 [[ -f "$addon/foundrylib/FoundryLibObservabilitySink.fs" ]] || fail "FoundryLib observability sink is missing"
 [[ -f "$sentry_addon/SentryObservabilityProvider.fs" ]] || fail "Sentry provider is missing"
+[[ -f "$sentry_addon/SentryNativeBridge.fs" ]] \
+	|| fail "Sentry native bridge trait is missing"
+[[ -f "$sentry_addon/DynamicSentryNativeBridgeAdapter.fs" ]] \
+	|| fail "dynamic Sentry native bridge adapter is missing"
+while IFS= read -r dynamic_use; do
+	case "$dynamic_use" in
+		*DynamicSentryNativeBridgeAdapter.fs:*) ;;
+		*) fail "native bridge dynamic call escaped its adapter: $dynamic_use" ;;
+	esac
+done < <(
+	rg -n 'bridge\.(call|has_method)\(|_bridge\.(call|has_method)\(' \
+		"$sentry_addon" --glob '*.fs' || true
+)
+rg -q '^var _bridge: SentryNativeBridge\?' \
+	"$sentry_addon/SentryObservabilityProvider.fs" \
+	|| fail "Sentry provider must depend on nullable SentryNativeBridge"
 [[ -f "$sentry_addon/SentryRuntimeSnapshot.fs" ]] \
 	|| fail "Sentry runtime snapshot is missing"
 [[ -f "$sentry_addon/SentryRuntimeContextSource.fs" ]] \
@@ -865,6 +881,85 @@ for sentry_runtime_resource in \
 	[[ -s "$sentry_addon/${sentry_runtime_resource}.fs.uid" ]] \
 		|| fail "${sentry_runtime_resource}.fs.uid is missing or empty"
 done
+for sentry_bridge_resource in \
+	SentryNativeBridge \
+	DynamicSentryNativeBridgeAdapter; do
+	[[ -s "$sentry_addon/${sentry_bridge_resource}.fs.uid" ]] \
+		|| fail "${sentry_bridge_resource}.fs.uid is missing or empty"
+done
+grep -Fxq 'uid://d14sentry007' "$sentry_addon/SentryNativeBridge.fs.uid" \
+	|| fail "SentryNativeBridge.fs.uid has the wrong stable UID"
+grep -Fxq 'uid://d14sentry008' \
+	"$sentry_addon/DynamicSentryNativeBridgeAdapter.fs.uid" \
+	|| fail "DynamicSentryNativeBridgeAdapter.fs.uid has the wrong stable UID"
+duplicate_sentry_uid=$(
+	sort "$sentry_addon"/*.fs.uid | uniq -d
+)
+[[ -z "$duplicate_sentry_uid" ]] \
+	|| fail "Sentry resource UIDs must be unique: $duplicate_sentry_uid"
+rg -q '^trait_name SentryNativeBridge$' \
+	"$sentry_addon/SentryNativeBridge.fs" \
+	|| fail "Sentry native bridge trait declaration is missing"
+for signature in \
+	'abstract func contract_valid() -> bool' \
+	'abstract func supports_core() -> bool' \
+	'abstract func lifecycle_version() -> int' \
+	'abstract func configure(payload: Dictionary) -> int' \
+	'abstract func is_available(owner: String) -> bool' \
+	'abstract func capture(payload: Dictionary) -> String' \
+	'abstract func supports_logs() -> bool' \
+	'abstract func capture_log(payload: Dictionary) -> String' \
+	'abstract func supports_scope() -> bool' \
+	'abstract func apply_scope(payload: Dictionary) -> bool' \
+	'abstract func supports_breadcrumbs() -> bool' \
+	'abstract func capture_breadcrumb(payload: Dictionary) -> bool' \
+	'abstract func clear_breadcrumbs() -> bool' \
+	'abstract func supports_feedback() -> bool' \
+	'abstract func capture_feedback(payload: Dictionary) -> String' \
+	'abstract func supports_metrics() -> bool' \
+	'abstract func capture_metric(payload: Dictionary) -> bool' \
+	'abstract func supports_attachments() -> bool' \
+	'abstract func replace_attachments(payloads: Array[Dictionary]) -> bool' \
+	'abstract func capture_with_attachments(payload: Dictionary) -> String' \
+	'abstract func flush(owner: String, timeout_msec: int) -> int' \
+	'abstract func shutdown(owner: String) -> void'; do
+	grep -Fqx "$signature" "$sentry_addon/SentryNativeBridge.fs" \
+		|| fail "Sentry native bridge trait is missing: ${signature}"
+done
+for required_native_method in \
+	lifecycleVersion \
+	configure \
+	isAvailable \
+	capture \
+	flush \
+	shutdown; do
+	rg -q "has_method\\(\"${required_native_method}\"\\)" \
+		"$sentry_addon/DynamicSentryNativeBridgeAdapter.fs" \
+		|| fail "dynamic Sentry adapter core capability omits ${required_native_method}"
+done
+rg -q 'func supports_logs\(\) -> bool:' \
+	"$sentry_addon/DynamicSentryNativeBridgeAdapter.fs" \
+	|| fail "dynamic Sentry adapter must expose structured-log capability"
+grep -Fqx '		p_bridge: SentryNativeBridge? = null,' \
+	"$sentry_addon/SentryObservabilityProvider.fs" \
+	|| fail "Sentry provider constructor must accept a nullable typed bridge"
+rg -q '_bridge = DynamicSentryNativeBridgeAdapter\.new\(native_bridge\)' \
+	"$sentry_addon/SentryObservabilityProvider.fs" \
+	|| fail "Sentry provider must wrap a resolved native object exactly once"
+while IFS=: read -r raw_line raw_use; do
+	[[ "$raw_use" == *'var native := RawMalformedSentryNativeBridge.new()'* \
+			|| "$raw_use" == *'native = RawMalformedSentryNativeBridge.new()'* ]] \
+		|| fail "raw malformed Sentry object escaped adapter validation: $raw_use"
+	raw_window=$(
+		sed -n "${raw_line},$((raw_line + 3))p" \
+			"$project_dir/tests/observability-sentry.test.fs"
+	)
+	rg -q 'DynamicSentryNativeBridgeAdapter\.new\(native\)' <<<"$raw_window" \
+		|| fail "raw malformed Sentry object is not immediately wrapped by the adapter"
+done < <(
+	rg -n 'RawMalformedSentryNativeBridge\.new\(\)' \
+		"$project_dir/tests/observability-sentry.test.fs" || true
+)
 rg -q '^trait_name SentryRuntimeContextSource$' \
 	"$sentry_addon/SentryRuntimeContextSource.fs" \
 	|| fail "Sentry runtime context source trait declaration is missing"

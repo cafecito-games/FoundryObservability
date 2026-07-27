@@ -1,20 +1,27 @@
 namespace foundry.observability.sentry.tests
 
-class_name FakeSentryBridge
+import foundry.observability.sentry
+
+class_name FakeSentryNativeBridge
 extends RefCounted
+uses SentryNativeBridge
 
 var available: bool = true
-var availability_result: Variant = true
-var configure_result: Variant = Error.OK
-var configure_results: Array[Variant] = []
-var malformed_configure_mutates_session: bool = false
+var configure_result: int = Error.OK
+var configure_results: Array[int] = []
 var flush_result: int = Error.OK
 var apply_scope_result: bool = true
 var apply_scope_results: Array[bool] = []
-var clear_breadcrumbs_result: Variant = true
-var replace_attachments_result: Variant = true
-var replace_attachments_results: Array[Variant] = []
-var malformed_clear_mutates_trail: bool = false
+var clear_breadcrumbs_result: bool = true
+var replace_attachments_result: bool = true
+var replace_attachments_results: Array[bool] = []
+var scope_supported: bool = true
+var breadcrumbs_supported: bool = true
+var feedback_supported: bool = true
+var metrics_supported: bool = true
+var attachments_supported: bool = true
+var logs_supported: bool = true
+var core_supported: bool = true
 var clear_breadcrumbs_count: int = 0
 var configured_payload: Dictionary = {}
 var configured_payloads: Array[Dictionary] = []
@@ -43,34 +50,29 @@ var next_feedback_id: int = 1
 var _active_configuration: Dictionary = {}
 
 
-func lifecycleVersion() -> int:
+func contract_valid() -> bool:
+	return true
+
+
+func supports_core() -> bool:
+	return core_supported
+
+
+func lifecycle_version() -> int:
 	return 1
 
 
-func configure(payload: Dictionary) -> Variant:
+func configure(payload: Dictionary) -> int:
 	configured_payload = payload.duplicate(true)
 	configured_payloads.append(configured_payload.duplicate(true))
-	var result: Variant = configure_result
+	var result: int = configure_result
 	if not configure_results.is_empty():
 		result = configure_results.pop_front()
 	var changed_configuration: bool = (
 			not active_owner.is_empty()
 			and configured_payload != _active_configuration
 		)
-	if not (result is int) and malformed_configure_mutates_session:
-		var malformed_owner: String = str(payload.get("lifecycle_owner", ""))
-		if payload.get("enabled", false):
-			active_owner = malformed_owner
-			_active_configuration = configured_payload.duplicate(true)
-		elif malformed_owner == active_owner:
-			active_owner = ""
-			_active_configuration = {}
-		current_scope_payload = {
-			"tags": {},
-			"contexts": {},
-		}
-		current_breadcrumb_payloads = []
-	elif result is int and result == Error.OK:
+	if result == Error.OK:
 		var owner: String = str(payload.get("lifecycle_owner", ""))
 		if payload.get("enabled", false):
 			if active_owner.is_empty() or changed_configuration:
@@ -103,10 +105,10 @@ func active_configuration() -> Dictionary:
 	return _active_configuration.duplicate(true)
 
 
-func isAvailable(owner: String) -> Variant:
+func is_available(owner: String) -> bool:
 	if not available or owner.is_empty() or owner != active_owner:
 		return false
-	return availability_result
+	return true
 
 
 func capture(payload: Dictionary) -> String:
@@ -119,24 +121,32 @@ func capture(payload: Dictionary) -> String:
 	return event_id
 
 
-func captureWithAttachments(payload: Dictionary) -> String:
+func capture_with_attachments(payload: Dictionary) -> String:
+	if not attachments_supported:
+		return ""
 	return capture(payload)
 
 
-func captureLog(payload: Dictionary) -> String:
+func supports_logs() -> bool:
+	return logs_supported
+
+
+func capture_log(payload: Dictionary) -> String:
+	if not logs_supported:
+		return ""
 	captured_log_payloads.append(payload.duplicate(true))
 	var event_id: String = "sentry-log:%s" % next_log_id
 	next_log_id += 1
 	return event_id
 
 
-func captureBreadcrumb(payload: Dictionary) -> bool:
-	captured_breadcrumb_payloads.append(payload.duplicate(true))
-	current_breadcrumb_payloads.append(payload.duplicate(true))
-	return true
+func supports_scope() -> bool:
+	return scope_supported
 
 
-func applyScope(payload: Dictionary) -> bool:
+func apply_scope(payload: Dictionary) -> bool:
+	if not scope_supported:
+		return false
 	applied_scope_payloads.append(payload.duplicate(true))
 	var result: bool = apply_scope_result
 	if not apply_scope_results.is_empty():
@@ -146,35 +156,66 @@ func applyScope(payload: Dictionary) -> bool:
 	return result
 
 
-func clearBreadcrumbs() -> Variant:
+func supports_breadcrumbs() -> bool:
+	return breadcrumbs_supported
+
+
+func capture_breadcrumb(payload: Dictionary) -> bool:
+	if not breadcrumbs_supported:
+		return false
+	captured_breadcrumb_payloads.append(payload.duplicate(true))
+	current_breadcrumb_payloads.append(payload.duplicate(true))
+	return true
+
+
+func clear_breadcrumbs() -> bool:
+	if not breadcrumbs_supported:
+		return false
 	clear_breadcrumbs_count += 1
-	if (clear_breadcrumbs_result is bool and clear_breadcrumbs_result == true) \
-			or (not (clear_breadcrumbs_result is bool) and malformed_clear_mutates_trail):
+	if clear_breadcrumbs_result:
 		current_breadcrumb_payloads = []
 	return clear_breadcrumbs_result
 
 
-func replaceAttachments(payloads: Array) -> Variant:
-	var snapshot: Array = payloads.duplicate(true)
-	replaced_attachment_payloads.append(snapshot)
-	var result: Variant = replace_attachments_result
-	if not replace_attachments_results.is_empty():
-		result = replace_attachments_results.pop_front()
-	if result is bool and result == true:
-		current_attachment_payloads = snapshot.duplicate(true)
-	return result
+func supports_feedback() -> bool:
+	return feedback_supported
 
 
-func captureFeedback(payload: Dictionary) -> String:
+func capture_feedback(payload: Dictionary) -> String:
+	if not feedback_supported:
+		return ""
 	captured_feedback_payloads.append(payload.duplicate(true))
 	var feedback_id: String = "sentry-feedback:%s" % next_feedback_id
 	next_feedback_id += 1
 	return feedback_id
 
 
-func captureMetric(payload: Dictionary) -> bool:
+func supports_metrics() -> bool:
+	return metrics_supported
+
+
+func capture_metric(payload: Dictionary) -> bool:
+	if not metrics_supported:
+		return false
 	captured_metric_payloads.append(payload.duplicate(true))
 	return true
+
+
+func supports_attachments() -> bool:
+	return attachments_supported
+
+
+func replace_attachments(payloads: Array[Dictionary]) -> bool:
+	if not attachments_supported:
+		return false
+	var snapshot: Array[Dictionary] = payloads.duplicate(true)
+	replaced_attachment_payloads.append(snapshot)
+	var result: bool = replace_attachments_result
+	if not replace_attachments_results.is_empty():
+		result = replace_attachments_results.pop_front()
+	if result:
+		current_attachment_payloads = snapshot.duplicate(true)
+	return result
 
 
 func flush(owner: String, timeout_msec: int) -> int:

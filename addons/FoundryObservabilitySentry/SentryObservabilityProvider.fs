@@ -12,7 +12,7 @@ const _NATIVE_CLASS: String = "SentryObservabilityBridge"
 const _LIFECYCLE_VERSION: int = 1
 const DEFAULT_MAX_ATTACHMENT_BYTES: int = 20 * 1024 * 1024
 
-var _bridge: Object? = null
+var _bridge: SentryNativeBridge? = null
 var _context_collector: SentryRuntimeContextCollector
 var _attachment_collector: SentryBuiltInAttachmentCollector
 var _redactor: ObservabilityRedactor = ObservabilityRedactor.new()
@@ -35,7 +35,7 @@ var _attachment_config: ObservabilityConfig
 
 ## Creates a provider with optional native and typed runtime seams for deterministic tests.
 func _init(
-		p_bridge: Object? = null,
+		p_bridge: SentryNativeBridge? = null,
 		p_runtime_context_source: SentryRuntimeContextSource? = null,
 		p_attachment_source: SentryAttachmentSource? = null,
 ) -> void:
@@ -76,7 +76,7 @@ func provider_name() -> StringName:
 func is_available() -> bool:
 	if not _enabled or _shutdown:
 		return false
-	var bridge: Object? = _resolve_bridge()
+	var bridge: SentryNativeBridge? = _resolve_bridge()
 	if bridge == null:
 		return false
 	return _is_bridge_available(bridge)
@@ -94,27 +94,28 @@ func configure(config: ObservabilityConfig) -> int:
 	if not candidate_redactor.is_valid():
 		return Error.ERR_INVALID_DATA
 
-	var bridge: Object? = _resolve_bridge()
+	var bridge: SentryNativeBridge? = _resolve_bridge()
 	if config.enabled() and bridge == null:
 		return Error.ERR_UNAVAILABLE
+	if bridge != null and not bridge.contract_valid():
+		_fail_closed(bridge)
+		return Error.ERR_UNAVAILABLE
+	if bridge != null and not bridge.supports_core():
+		if config.enabled() or _enabled:
+			return Error.ERR_UNAVAILABLE
+		_reset_local_state()
+		_shutdown = false
+		return Error.OK
 	if bridge != null and not _has_lifecycle_contract(bridge):
 		if config.enabled() or _enabled:
 			return Error.ERR_UNAVAILABLE
-		_enabled = false
-		_redactor = ObservabilityRedactor.new()
-		_stable_contexts = {}
-		_scope = ObservabilityScope.new()
-		_user = null
-		_clear_attachment_state()
-		_clear_last_config_payload()
+		_reset_local_state()
 		_shutdown = false
 		return Error.OK
-	if config.enabled() and config.processing().logs_enabled() and (bridge == null or not bridge.has_method("captureLog")):
-		return Error.FAILED
-	if config.enabled() \
-			and bridge != null \
-			and bridge.has_method("captureBreadcrumb") \
-			and not bridge.has_method("clearBreadcrumbs"):
+	if config.enabled() and config.processing().logs_enabled() and (
+			bridge == null
+			or not bridge.supports_logs()
+	):
 		return Error.FAILED
 	var attachment_features_enabled: bool = (
 			config.attachments().attach_game_log()
@@ -123,8 +124,7 @@ func configure(config: ObservabilityConfig) -> int:
 		)
 	if config.enabled() and attachment_features_enabled and (
 			bridge == null
-			or not bridge.has_method("replaceAttachments")
-			or not bridge.has_method("captureWithAttachments")
+			or not bridge.supports_attachments()
 	):
 		return Error.FAILED
 
@@ -204,11 +204,13 @@ func configure(config: ObservabilityConfig) -> int:
 	var candidate_config_payload: Dictionary = payload.duplicate(true)
 	var retained_scope_payload: Dictionary = _scope_payload(_scope, _user)
 	var retained_scope_was_enabled: bool = _enabled and not _shutdown
-	var retained_native_attachments: Array = _native_attachment_payloads.duplicate(true)
+	var retained_native_attachments: Array[Dictionary] = (
+			_native_attachment_payloads.duplicate(true)
+		)
 	var candidate_attachment_config: ObservabilityConfig = _attachment_config_from(config)
 	var candidate_persistent_builtins: Array[Dictionary] = []
 	var candidate_persistent_failures: Array[ObservabilityAttachmentFailure] = []
-	if config.enabled() and bridge.has_method("replaceAttachments"):
+	if config.enabled() and bridge.supports_attachments():
 		var built_in_result: SentryAttachmentCollection = _attachment_collector.collect(
 				null,
 				candidate_attachment_config,
@@ -232,8 +234,7 @@ func configure(config: ObservabilityConfig) -> int:
 		)
 	var prior_breadcrumb_session_was_enabled: bool = (
 			retained_scope_was_enabled
-			and bridge.has_method("captureBreadcrumb")
-			and bridge.has_method("clearBreadcrumbs")
+			and bridge.supports_breadcrumbs()
 		)
 	# Every post-configure failure may retain the prior session only when no live
 	# breadcrumb trail existed or the complete candidate cannot restart that session.
@@ -243,15 +244,14 @@ func configure(config: ObservabilityConfig) -> int:
 		)
 	# Local candidate state commits only after configure, scope, and breadcrumb resets;
 	# otherwise the prior session must be fully restored or the provider fails closed.
-	var result: Variant = bridge.call(
-			"configure",
+	# A provider may configure again after an explicit shutdown. From this point,
+	# native state may mutate, so a later failure must perform a fresh shutdown.
+	_shutdown = false
+	var result_code: int = bridge.configure(
 			candidate_config_payload.duplicate(true),
 		)
-	if not (result is int):
-		# A malformed result makes native mutation unknowable; rollback is untrustworthy.
-		_fail_closed(bridge)
-		return Error.FAILED
-	var result_code: int = result
+	if not _accept_native_contract(bridge):
+		return result_code
 	if result_code != Error.OK:
 		if not can_preserve_prior_session_after_configuration_attempt \
 				or not _restore_retained_session(
@@ -262,7 +262,7 @@ func configure(config: ObservabilityConfig) -> int:
 		):
 			_fail_closed(bridge)
 		return result_code
-	if config.enabled() and bridge.has_method("replaceAttachments"):
+	if config.enabled() and bridge.supports_attachments():
 		if not _replace_native_snapshot(bridge, candidate_persistent_builtins):
 			if not can_preserve_prior_session_after_configuration_attempt \
 					or not _rollback_after_session_reset_failure(
@@ -288,9 +288,11 @@ func configure(config: ObservabilityConfig) -> int:
 			):
 				_fail_closed(bridge)
 			return Error.FAILED
-	if config.enabled() and bridge.has_method("clearBreadcrumbs"):
-		var clear_result: Variant = bridge.call("clearBreadcrumbs")
-		if not (clear_result is bool) or clear_result != true:
+	if config.enabled() and bridge.supports_breadcrumbs():
+		var clear_result: bool = bridge.clear_breadcrumbs()
+		if not _accept_native_contract(bridge):
+			return Error.FAILED
+		if not clear_result:
 			if not _can_preserve_breadcrumb_trail_after_clear_failure(
 					clear_result,
 					can_preserve_prior_session_after_configuration_attempt,
@@ -329,7 +331,7 @@ func capture(event: ObservabilityEvent) -> String:
 	if event == null or not _enabled or _shutdown:
 		return ""
 
-	var bridge: Object? = _resolve_bridge()
+	var bridge: SentryNativeBridge? = _resolve_bridge()
 	if bridge == null or not is_available():
 		return ""
 	var event_scope: ObservabilityScope? = event.scope()
@@ -379,30 +381,30 @@ func capture(event: ObservabilityEvent) -> String:
 		if not frames.is_empty():
 			exception_payload["frames"] = frames
 		payload["exception"] = exception_payload
-	var method: String = "capture"
+	var event_id: String = ""
 	if event.kind() == &"log":
-		method = "captureLog"
-		if not bridge.has_method(method):
-			return ""
+		event_id = bridge.capture_log(payload)
 	else:
 		_reset_attachment_failures_for_capture()
 		var capture_attachments: Array = _capture_local_attachments(event)
 		if not capture_attachments.is_empty():
 			payload["attachments"] = capture_attachments
-		if bridge.has_method("replaceAttachments") \
-				and bridge.has_method("captureWithAttachments"):
-			method = "captureWithAttachments"
-	return str(bridge.call(method, payload))
+		if bridge.supports_attachments():
+			event_id = bridge.capture_with_attachments(payload)
+		else:
+			event_id = bridge.capture(payload)
+	if not _accept_native_contract(bridge):
+		return ""
+	return event_id
 
 
 ## Atomically adds one persistent user attachment to the native snapshot.
 func add_attachment(attachment: ObservabilityAttachment) -> String:
 	if not _enabled or _shutdown or attachment == null or not attachment.is_valid():
 		return ""
-	var bridge: Object? = _resolve_bridge()
+	var bridge: SentryNativeBridge? = _resolve_bridge()
 	if bridge == null \
-			or not bridge.has_method("replaceAttachments") \
-			or not bridge.has_method("captureWithAttachments"):
+			or not bridge.supports_attachments():
 		return ""
 	_attachment_sequence += 1
 	var handle: String = "sentry-attachment:%s" % _attachment_sequence
@@ -422,8 +424,8 @@ func remove_attachment(handle: String) -> int:
 		return Error.FAILED
 	if not _attachments.has(handle):
 		return Error.ERR_DOES_NOT_EXIST
-	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not bridge.has_method("replaceAttachments"):
+	var bridge: SentryNativeBridge? = _resolve_bridge()
+	if bridge == null or not bridge.supports_attachments():
 		return Error.FAILED
 	var candidate: Dictionary = _attachments.duplicate(true)
 	candidate.erase(handle)
@@ -439,8 +441,8 @@ func remove_attachment(handle: String) -> int:
 func clear_attachments() -> bool:
 	if not _enabled or _shutdown:
 		return false
-	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not bridge.has_method("replaceAttachments"):
+	var bridge: SentryNativeBridge? = _resolve_bridge()
+	if bridge == null or not bridge.supports_attachments():
 		return false
 	var native_candidate: Array[Dictionary] = _persistent_builtin_attachments.duplicate(true)
 	if not _replace_native_snapshot(bridge, native_candidate):
@@ -558,11 +560,11 @@ func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
 	if breadcrumb == null or not _enabled or _shutdown:
 		return false
 
-	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not is_available() or not bridge.has_method("captureBreadcrumb"):
+	var bridge: SentryNativeBridge? = _resolve_bridge()
+	if bridge == null or not is_available() or not bridge.supports_breadcrumbs():
 		return false
 
-	var result: Variant = bridge.call("captureBreadcrumb", {
+	var accepted: bool = bridge.capture_breadcrumb({
 			"message": breadcrumb.message(),
 			"level": breadcrumb.level(),
 			"category": String(breadcrumb.category()),
@@ -570,9 +572,9 @@ func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
 			"attributes": breadcrumb.attributes(),
 			"type": String(breadcrumb.type()),
 		})
-	if not (result is bool):
+	if not _accept_native_contract(bridge):
 		return false
-	return result
+	return accepted
 
 
 ## Clears native breadcrumbs through the optional bridge operation.
@@ -580,12 +582,14 @@ func clear_breadcrumbs() -> bool:
 	if not _enabled or _shutdown:
 		return false
 
-	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not is_available() or not bridge.has_method("clearBreadcrumbs"):
+	var bridge: SentryNativeBridge? = _resolve_bridge()
+	if bridge == null or not is_available() or not bridge.supports_breadcrumbs():
 		return false
 
-	var result: Variant = bridge.call("clearBreadcrumbs")
-	return result is bool and result == true
+	var cleared: bool = bridge.clear_breadcrumbs()
+	if not _accept_native_contract(bridge):
+		return false
+	return cleared
 
 
 ## Translates explicit feedback to the native dedicated feedback API.
@@ -593,8 +597,8 @@ func capture_feedback(feedback: ObservabilityFeedback) -> String:
 	if feedback == null or not _enabled or _shutdown:
 		return ""
 
-	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not is_available() or not bridge.has_method("captureFeedback"):
+	var bridge: SentryNativeBridge? = _resolve_bridge()
+	if bridge == null or not is_available() or not bridge.supports_feedback():
 		return ""
 
 	var payload: Dictionary = {"message": feedback.message()}
@@ -604,7 +608,10 @@ func capture_feedback(feedback: ObservabilityFeedback) -> String:
 		payload["contact_email"] = feedback.contact_email()
 	if not feedback.associated_event_id().is_empty():
 		payload["associated_event_id"] = feedback.associated_event_id()
-	return str(bridge.call("captureFeedback", payload))
+	var feedback_id: String = bridge.capture_feedback(payload)
+	if not _accept_native_contract(bridge):
+		return ""
+	return feedback_id
 
 
 ## Translates one normalized custom metric to the optional native metrics API.
@@ -612,30 +619,30 @@ func capture_metric(metric: ObservabilityMetric) -> bool:
 	if metric == null or not _enabled or _shutdown:
 		return false
 
-	var bridge: Object? = _resolve_bridge()
-	if bridge == null or not is_available() or not bridge.has_method("captureMetric"):
+	var bridge: SentryNativeBridge? = _resolve_bridge()
+	if bridge == null or not is_available() or not bridge.supports_metrics():
 		return false
 
-	var result: Variant = bridge.call("captureMetric", {
+	var accepted: bool = bridge.capture_metric({
 			"type": metric.type(),
 			"name": metric.name(),
 			"value": metric.value(),
 			"unit": metric.unit(),
 			"attributes": metric.attributes(),
 		})
-	if not (result is bool):
+	if not _accept_native_contract(bridge):
 		return false
-	return result
+	return accepted
 
 
 ## Flushes native Sentry work within the requested timeout.
 func flush(timeout_msec: int = 2000) -> int:
-	var bridge: Object? = _resolve_bridge()
+	var bridge: SentryNativeBridge? = _resolve_bridge()
 	if bridge == null or not _enabled or _shutdown or not is_available():
 		return Error.OK
-	var result: Variant = bridge.call("flush", _owner, timeout_msec)
-	if not (result is int):
-		return Error.FAILED
+	var result: int = bridge.flush(_owner, timeout_msec)
+	if not _accept_native_contract(bridge):
+		return Error.ERR_UNAVAILABLE
 	return result
 
 
@@ -643,55 +650,52 @@ func flush(timeout_msec: int = 2000) -> int:
 func shutdown() -> void:
 	if _shutdown:
 		return
+	var bridge: SentryNativeBridge? = _resolve_bridge()
+	var can_shutdown_native: bool = (
+			bridge != null
+			and bridge.contract_valid()
+			and bridge.supports_core()
+	)
 	_shutdown = true
-	_enabled = false
-	_redactor = ObservabilityRedactor.new()
-	_stable_contexts = {}
-	_scope = ObservabilityScope.new()
-	_user = null
-	_clear_attachment_state()
-	_clear_last_config_payload()
-	var bridge: Object? = _resolve_bridge()
-	if bridge != null and _has_lifecycle_contract(bridge):
-		bridge.call("shutdown", _owner)
+	_reset_local_state()
+	if can_shutdown_native:
+		bridge.shutdown(_owner)
 
 
-func _resolve_bridge() -> Object?:
+func _resolve_bridge() -> SentryNativeBridge?:
 	if _bridge != null:
 		return _bridge
+	var native_bridge: Object? = null
 	if Engine.has_singleton(_NATIVE_CLASS):
-		_bridge = Engine.get_singleton(_NATIVE_CLASS)
-		return _bridge
-	if not ClassDB.class_exists(_NATIVE_CLASS) or not ClassDB.can_instantiate(_NATIVE_CLASS):
+		native_bridge = Engine.get_singleton(_NATIVE_CLASS)
+	elif ClassDB.class_exists(_NATIVE_CLASS) and ClassDB.can_instantiate(_NATIVE_CLASS):
+		native_bridge = ClassDB.instantiate(_NATIVE_CLASS)
+	if native_bridge == null:
 		return null
-	_bridge = ClassDB.instantiate(_NATIVE_CLASS)
+	_bridge = DynamicSentryNativeBridgeAdapter.new(native_bridge)
 	return _bridge
 
 
-func _has_lifecycle_contract(bridge: Object) -> bool:
-	for method: String in [
-		"lifecycleVersion",
-		"configure",
-		"isAvailable",
-		"capture",
-		"flush",
-		"shutdown",
-	]:
-		if not bridge.has_method(method):
-			return false
-	var version_result: Variant = bridge.call("lifecycleVersion")
-	return version_result is int and version_result >= _LIFECYCLE_VERSION
+func _has_lifecycle_contract(bridge: SentryNativeBridge) -> bool:
+	if not bridge.contract_valid() or not bridge.supports_core():
+		return false
+	var version: int = bridge.lifecycle_version()
+	if not _accept_native_contract(bridge):
+		return false
+	return version >= _LIFECYCLE_VERSION
 
 
-func _has_scope_contract(bridge: Object) -> bool:
-	return bridge.has_method("applyScope")
+func _has_scope_contract(bridge: SentryNativeBridge) -> bool:
+	return bridge.supports_scope()
 
 
-func _is_bridge_available(bridge: Object) -> bool:
+func _is_bridge_available(bridge: SentryNativeBridge) -> bool:
 	if not _has_lifecycle_contract(bridge):
 		return false
-	var result: Variant = bridge.call("isAvailable", _owner)
-	return result is bool and result == true
+	var available: bool = bridge.is_available(_owner)
+	if not _accept_native_contract(bridge):
+		return false
+	return available
 
 
 func _native_payloads_for(candidate: Dictionary) -> Array[Dictionary]:
@@ -718,14 +722,18 @@ func _native_payloads_for(candidate: Dictionary) -> Array[Dictionary]:
 	return payloads
 
 
-func _replace_native_snapshot(bridge: Object, payloads: Array) -> bool:
-	if not bridge.has_method("replaceAttachments"):
+func _replace_native_snapshot(
+		bridge: SentryNativeBridge,
+		payloads: Array[Dictionary],
+) -> bool:
+	if not bridge.supports_attachments():
 		return false
-	var result: Variant = bridge.call(
-			"replaceAttachments",
+	var replaced: bool = bridge.replace_attachments(
 			payloads.duplicate(true),
 		)
-	return result is bool and result == true
+	if not _accept_native_contract(bridge):
+		return false
+	return replaced
 
 
 func _capture_local_attachments(event: ObservabilityEvent) -> Array:
@@ -917,7 +925,7 @@ func _apply_scope_candidate(
 		candidate_scope: ObservabilityScope,
 		candidate_user: ObservabilityUser?,
 ) -> bool:
-	var bridge: Object? = _resolve_bridge()
+	var bridge: SentryNativeBridge? = _resolve_bridge()
 	if bridge == null:
 		return false
 	return _apply_scope_payload(
@@ -926,46 +934,49 @@ func _apply_scope_candidate(
 		)
 
 
-func _apply_scope_payload(bridge: Object, payload: Dictionary) -> bool:
+func _apply_scope_payload(
+		bridge: SentryNativeBridge,
+		payload: Dictionary,
+) -> bool:
 	if not _has_scope_contract(bridge) or not _is_bridge_available(bridge):
 		return false
-	var result: Variant = bridge.call(
-			"applyScope",
-			payload,
-		)
-	return result is bool and result == true
+	var applied: bool = bridge.apply_scope(payload)
+	if not _accept_native_contract(bridge):
+		return false
+	return applied
 
 
 func _restore_retained_session(
-		bridge: Object,
+		bridge: SentryNativeBridge,
 		retained_scope_was_enabled: bool,
 		retained_scope_payload: Dictionary,
-		retained_native_attachments: Array,
+		retained_native_attachments: Array[Dictionary],
 ) -> bool:
 	if not retained_scope_was_enabled:
 		return true
 	if _has_scope_contract(bridge) \
 			and not _apply_scope_payload(bridge, retained_scope_payload):
 		return false
-	if bridge.has_method("replaceAttachments") \
+	if bridge.supports_attachments() \
 			and not _replace_native_snapshot(bridge, retained_native_attachments):
 		return false
 	return true
 
 
 func _rollback_after_session_reset_failure(
-		bridge: Object,
+		bridge: SentryNativeBridge,
 		retained_scope_was_enabled: bool,
 		retained_scope_payload: Dictionary,
-		retained_native_attachments: Array,
+		retained_native_attachments: Array[Dictionary],
 ) -> bool:
 	if not _has_last_config_payload:
 		return false
-	var rollback_result: Variant = bridge.call(
-			"configure",
+	var rollback_result: int = bridge.configure(
 			_last_config_payload.duplicate(true),
 		)
-	if not (rollback_result is int) or rollback_result != Error.OK:
+	if not _accept_native_contract(bridge):
+		return false
+	if rollback_result != Error.OK:
 		return false
 	return _restore_retained_session(
 			bridge,
@@ -976,11 +987,11 @@ func _rollback_after_session_reset_failure(
 
 
 func _can_preserve_breadcrumb_trail_after_clear_failure(
-		clear_result: Variant,
+		clear_result: bool,
 		can_preserve_prior_session_after_configuration_attempt: bool,
 		retained_scope_was_enabled: bool,
 ) -> bool:
-	if not (clear_result is bool) or clear_result != false:
+	if clear_result:
 		return false
 	if not can_preserve_prior_session_after_configuration_attempt:
 		return false
@@ -1000,8 +1011,22 @@ func _config_payloads_are_equivalent(candidate_config_payload: Dictionary) -> bo
 	return candidate_snapshot == committed_snapshot
 
 
-func _fail_closed(bridge: Object) -> void:
-	bridge.call("shutdown", _owner)
+func _fail_closed(bridge: SentryNativeBridge) -> void:
+	if _shutdown:
+		return
+	bridge.shutdown(_owner)
+	_reset_local_state()
+	_shutdown = true
+
+
+func _accept_native_contract(bridge: SentryNativeBridge) -> bool:
+	if bridge.contract_valid():
+		return true
+	_fail_closed(bridge)
+	return false
+
+
+func _reset_local_state() -> void:
 	_enabled = false
 	_redactor = ObservabilityRedactor.new()
 	_stable_contexts = {}
@@ -1009,7 +1034,6 @@ func _fail_closed(bridge: Object) -> void:
 	_user = null
 	_clear_attachment_state()
 	_clear_last_config_payload()
-	_shutdown = true
 
 
 func _clear_attachment_state() -> void:

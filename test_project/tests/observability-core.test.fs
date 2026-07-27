@@ -9011,8 +9011,12 @@ func test_startup_settings_register_project_defaults_idempotently() -> void:
 
 
 func test_startup_initializes_before_immediate_capture() -> void:
-	var bridge := FakeSentryBridge.new()
-	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var bridge := FakeSentryNativeBridge.new()
+	var native := FakeSentryNativeObject.new(bridge)
+	Engine.register_singleton(
+			"SentryObservabilityBridge",
+			native,
+		)
 	var settings := ObservabilityStartupSettings.from_sources(
 			{
 				ObservabilityStartupSettings.DSN: "https://public@example/1",
@@ -9221,9 +9225,13 @@ func test_startup_configures_provider_before_other_provider_behavior() -> void:
 
 
 func test_startup_maps_provider_unavailable_configuration_result() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	bridge.configure_result = Error.ERR_UNAVAILABLE
-	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var native := FakeSentryNativeObject.new(bridge)
+	Engine.register_singleton(
+			"SentryObservabilityBridge",
+			native,
+		)
 	var service: FoundryObservability = _startup_service(
 			ObservabilityStartupSettings.from_sources({
 				ObservabilityStartupSettings.DSN: "https://public@example/1",
@@ -9243,8 +9251,12 @@ func test_startup_maps_provider_unavailable_configuration_result() -> void:
 
 
 func test_startup_uses_fresh_provider_for_each_explicit_initialization() -> void:
-	var bridge := FakeSentryBridge.new()
-	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var bridge := FakeSentryNativeBridge.new()
+	var native := FakeSentryNativeObject.new(bridge)
+	Engine.register_singleton(
+			"SentryObservabilityBridge",
+			native,
+		)
 	var first_settings := ObservabilityStartupSettings.from_sources({
 		ObservabilityStartupSettings.DSN: "https://public@example/1",
 		ObservabilityStartupSettings.ENVIRONMENT: "production",
@@ -9279,8 +9291,12 @@ func test_startup_uses_fresh_provider_for_each_explicit_initialization() -> void
 
 
 func test_startup_capture_disable_tears_down_once_and_can_restart() -> void:
-	var bridge := FakeSentryBridge.new()
-	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var bridge := FakeSentryNativeBridge.new()
+	var native := FakeSentryNativeObject.new(bridge)
+	Engine.register_singleton(
+			"SentryObservabilityBridge",
+			native,
+		)
 	var enabled_settings := ObservabilityStartupSettings.from_sources({
 		ObservabilityStartupSettings.DSN: "https://public@example/1",
 	})
@@ -9339,8 +9355,12 @@ func test_startup_capture_disable_tears_down_once_and_can_restart() -> void:
 
 
 func test_startup_only_skips_preserve_an_active_provider() -> void:
-	var bridge := FakeSentryBridge.new()
-	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var bridge := FakeSentryNativeBridge.new()
+	var native := FakeSentryNativeObject.new(bridge)
+	Engine.register_singleton(
+			"SentryObservabilityBridge",
+			native,
+		)
 	var service: FoundryObservability = _startup_service(
 			ObservabilityStartupSettings.from_sources({
 				ObservabilityStartupSettings.DSN: "https://public@example/1",
@@ -9404,8 +9424,12 @@ func test_startup_only_skips_preserve_an_active_provider() -> void:
 
 
 func test_startup_failure_preserves_working_provider_and_diagnostics() -> void:
-	var bridge := FakeSentryBridge.new()
-	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var bridge := FakeSentryNativeBridge.new()
+	var native := FakeSentryNativeObject.new(bridge)
+	Engine.register_singleton(
+			"SentryObservabilityBridge",
+			native,
+		)
 	var service: FoundryObservability = _startup_service(
 			ObservabilityStartupSettings.from_sources({
 				ObservabilityStartupSettings.DSN: "https://public@example/1",

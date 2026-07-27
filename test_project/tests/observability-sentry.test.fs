@@ -124,65 +124,135 @@ class FakeRuntimeContextSource extends RefCounted:
 			)
 
 
-class CountingBreadcrumblessSentryBridge extends \
-		"res://tests/support/breadcrumbless_sentry_bridge.notest.fs":
+class RawMalformedSentryNativeBridge extends RefCounted:
+	var lifecycle_result: Variant = 1
+	var configure_result: Variant = Error.OK
+	var availability_result: Variant = true
+	var capture_result: Variant = "sentry:1"
+	var log_result: Variant = "sentry-log:1"
+	var scope_result: Variant = true
+	var breadcrumb_result: Variant = true
+	var clear_result: Variant = true
+	var feedback_result: Variant = "sentry-feedback:1"
+	var metric_result: Variant = true
+	var replace_result: Variant = true
+	var attachment_capture_result: Variant = "sentry:1"
+	var flush_result: Variant = Error.OK
+	var configure_mutates_session: bool = false
+	var clear_mutates_trail: bool = false
+	var active_owner: String = ""
+	var current_breadcrumb_payloads: Array[Dictionary] = []
+	var shutdown_count: int = 0
+
+	func lifecycleVersion() -> Variant:
+		return lifecycle_result
+
+	func configure(payload: Dictionary) -> Variant:
+		if (configure_result is int and configure_result == Error.OK) \
+				or configure_mutates_session:
+			active_owner = str(payload.get("lifecycle_owner", ""))
+		return configure_result
+
+	func isAvailable(owner: String) -> Variant:
+		if owner != active_owner:
+			return false
+		return availability_result
+
+	func capture(_payload: Dictionary) -> Variant:
+		return capture_result
+
+	func captureLog(_payload: Dictionary) -> Variant:
+		return log_result
+
+	func applyScope(_payload: Dictionary) -> Variant:
+		return scope_result
+
+	func captureBreadcrumb(payload: Dictionary) -> Variant:
+		current_breadcrumb_payloads.append(payload.duplicate(true))
+		return breadcrumb_result
+
+	func clearBreadcrumbs() -> Variant:
+		if (clear_result is bool and clear_result == true) or clear_mutates_trail:
+			current_breadcrumb_payloads = []
+		return clear_result
+
+	func captureFeedback(_payload: Dictionary) -> Variant:
+		return feedback_result
+
+	func captureMetric(_payload: Dictionary) -> Variant:
+		return metric_result
+
+	func replaceAttachments(_payloads: Array) -> Variant:
+		return replace_result
+
+	func captureWithAttachments(_payload: Dictionary) -> Variant:
+		return attachment_capture_result
+
+	func flush(_owner: String, _timeout_msec: int) -> Variant:
+		return flush_result
+
+	func shutdown(_owner: String) -> void:
+		active_owner = ""
+		current_breadcrumb_payloads = []
+		shutdown_count += 1
+
+
+class RawPartialSentryNativeBridge extends RefCounted:
+	func applyScope(_payload: Dictionary) -> bool:
+		return true
+
+	func captureBreadcrumb(_payload: Dictionary) -> bool:
+		return true
+
+	func captureFeedback(_payload: Dictionary) -> String:
+		return "feedback"
+
+	func captureMetric(_payload: Dictionary) -> bool:
+		return true
+
+	func replaceAttachments(_payloads: Array) -> bool:
+		return true
+
+
+class RawIncompleteCoreSentryNativeBridge extends RefCounted:
+	var configure_count: int = 0
+
+	func lifecycleVersion() -> int:
+		return 1
+
+	func configure(_payload: Dictionary) -> int:
+		configure_count += 1
+		return Error.OK
+
+	func isAvailable(_owner: String) -> bool:
+		return true
+
+
+class RawCoreOnlySentryNativeBridge extends RefCounted:
+	var active_owner: String = ""
+	var configure_count: int = 0
 	var capture_count: int = 0
+
+	func lifecycleVersion() -> int:
+		return 1
+
+	func configure(payload: Dictionary) -> int:
+		configure_count += 1
+		active_owner = str(payload.get("lifecycle_owner", ""))
+		return Error.OK
+
+	func isAvailable(owner: String) -> bool:
+		return owner == active_owner
 
 	func capture(_payload: Dictionary) -> String:
 		capture_count += 1
 		return "sentry:%s" % capture_count
 
+	func flush(_owner: String, _timeout_msec: int) -> int:
+		return Error.OK
 
-class MalformedScopeSentryBridge extends \
-		"res://tests/support/breadcrumbless_sentry_bridge.notest.fs":
-	var apply_scope_result: Variant = true
-	var clear_breadcrumbs_result: Variant = true
-	var applied_scope_payloads: Array[Dictionary] = []
-	var clear_breadcrumbs_count: int = 0
-
-	func applyScope(payload: Dictionary) -> Variant:
-		applied_scope_payloads.append(payload.duplicate(true))
-		return apply_scope_result
-
-	func clearBreadcrumbs() -> Variant:
-		clear_breadcrumbs_count += 1
-		return clear_breadcrumbs_result
-
-
-class CaptureOnlyBreadcrumbSentryBridge extends \
-		"res://tests/support/breadcrumbless_sentry_bridge.notest.fs":
-	var captured_breadcrumb_payloads: Array[Dictionary] = []
-
-	func captureBreadcrumb(payload: Dictionary) -> bool:
-		captured_breadcrumb_payloads.append(payload.duplicate(true))
-		return true
-
-
-class ScopeOnlySentryBridge extends \
-		"res://tests/support/breadcrumbless_sentry_bridge.notest.fs":
-	var configure_result: int = Error.OK
-	var current_scope_payload: Dictionary = {
-			"tags": {},
-			"contexts": {},
-		}
-	var captured_payloads: Array[Dictionary] = []
-
-	func configure(payload: Dictionary) -> int:
-		if configure_result != Error.OK:
-			current_scope_payload = {
-				"tags": {},
-				"contexts": {},
-			}
-			return configure_result
-		return super.configure(payload)
-
-	func capture(payload: Dictionary) -> String:
-		captured_payloads.append(payload.duplicate(true))
-		return "sentry:%s" % captured_payloads.size()
-
-	func applyScope(payload: Dictionary) -> bool:
-		current_scope_payload = payload.duplicate(true)
-		return true
+	func shutdown(_owner: String) -> void:
+		active_owner = ""
 
 
 class FakeAttachmentSource extends RefCounted:
@@ -216,10 +286,241 @@ class FakeAttachmentSource extends RefCounted:
 		return game_log
 
 
-class ReplaceOnlySentryBridge extends \
-		"res://tests/support/breadcrumbless_sentry_bridge.notest.fs":
-	func replaceAttachments(_payloads: Array) -> bool:
-		return true
+func test_sentry_provider_accepts_typed_bridge() -> void:
+	var bridge := FakeSentryNativeBridge.new()
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example.invalid/1"},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.is_available()).to_be_true()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_kind = &"message",
+			p_message = "typed bridge",
+		))).to_equal("sentry:1")
+	Expect.that(bridge.captured_payloads).to_have_size(1)
+	provider.shutdown()
+
+
+func test_dynamic_bridge_adapter_rejects_missing_required_contract() -> void:
+	var adapter := DynamicSentryNativeBridgeAdapter.new(RefCounted.new())
+
+	Expect.that(adapter.supports_core()).to_be_false()
+	Expect.that(adapter.contract_valid()).to_be_true()
+	Expect.that(adapter.lifecycle_version()).to_equal(-1)
+	Expect.that(adapter.contract_valid()).to_be_false()
+	Expect.that(adapter.configure({})).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(adapter.is_available("owner")).to_be_false()
+
+
+func test_dynamic_bridge_adapter_rejects_every_malformed_return_family() -> void:
+	var native := RawMalformedSentryNativeBridge.new()
+	var adapter := DynamicSentryNativeBridgeAdapter.new(native)
+	native.lifecycle_result = true
+	Expect.that(adapter.lifecycle_version()).to_equal(-1)
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.configure_result = false
+	Expect.that(adapter.configure({})).to_equal(Error.ERR_UNAVAILABLE)
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.availability_result = 1
+	Expect.that(adapter.is_available("owner")).to_be_false()
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.capture_result = &"event"
+	Expect.that(adapter.capture({})).to_equal("")
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.log_result = 1
+	Expect.that(adapter.capture_log({})).to_equal("")
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.scope_result = "true"
+	Expect.that(adapter.apply_scope({})).to_be_false()
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.breadcrumb_result = 1
+	Expect.that(adapter.capture_breadcrumb({})).to_be_false()
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.clear_result = 1
+	Expect.that(adapter.clear_breadcrumbs()).to_be_false()
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.feedback_result = &"feedback"
+	Expect.that(adapter.capture_feedback({})).to_equal("")
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.metric_result = 1
+	Expect.that(adapter.capture_metric({})).to_be_false()
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.replace_result = 1
+	Expect.that(adapter.replace_attachments([])).to_be_false()
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.attachment_capture_result = &"attachment"
+	Expect.that(adapter.capture_with_attachments({})).to_equal("")
+
+	native = RawMalformedSentryNativeBridge.new()
+	adapter = DynamicSentryNativeBridgeAdapter.new(native)
+	native.flush_result = false
+	Expect.that(adapter.flush("owner", 50)).to_equal(Error.ERR_UNAVAILABLE)
+	adapter.shutdown("owner")
+	Expect.that(native.shutdown_count).to_equal(1)
+
+
+func test_dynamic_bridge_adapter_requires_complete_optional_families() -> void:
+	var adapter := DynamicSentryNativeBridgeAdapter.new(
+			RawPartialSentryNativeBridge.new(),
+		)
+
+	Expect.that(adapter.supports_scope()).to_be_true()
+	Expect.that(adapter.supports_breadcrumbs()).to_be_false()
+	Expect.that(adapter.supports_feedback()).to_be_true()
+	Expect.that(adapter.supports_metrics()).to_be_true()
+	Expect.that(adapter.supports_attachments()).to_be_false()
+	Expect.that(adapter.supports_logs()).to_be_false()
+	Expect.that(adapter.contract_valid()).to_be_true()
+
+
+func test_mutating_malformed_configure_fails_closed_through_dynamic_adapter() -> void:
+	var native := RawMalformedSentryNativeBridge.new()
+	native.configure_result = "activated"
+	native.configure_mutates_session = true
+	var adapter := DynamicSentryNativeBridgeAdapter.new(native)
+	var provider := SentryObservabilityProvider.new(p_bridge = adapter)
+
+	Expect.that(provider.configure(ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example.invalid/1"},
+			))).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(adapter.contract_valid()).to_be_false()
+	Expect.that(native.shutdown_count).to_equal(1)
+	Expect.that(native.active_owner).to_equal("")
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "stale session",
+		))).to_equal("")
+
+
+func test_mutating_malformed_clear_fails_closed_through_dynamic_adapter() -> void:
+	var native := RawMalformedSentryNativeBridge.new()
+	var adapter := DynamicSentryNativeBridgeAdapter.new(native)
+	var provider := SentryObservabilityProvider.new(p_bridge = adapter)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example.invalid/1"},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "will be cleared",
+		))).to_be_true()
+	Expect.that(native.current_breadcrumb_payloads).to_have_size(1)
+	native.clear_result = "cleared"
+	native.clear_mutates_trail = true
+
+	Expect.that(provider.configure(config)).to_equal(Error.FAILED)
+	Expect.that(adapter.contract_valid()).to_be_false()
+	Expect.that(native.shutdown_count).to_equal(1)
+	Expect.that(native.active_owner).to_equal("")
+	Expect.that(native.current_breadcrumb_payloads).to_have_size(0)
+	Expect.that(provider.is_available()).to_be_false()
+
+
+func test_missing_required_core_contract_is_rejected_before_configure() -> void:
+	var native := RawIncompleteCoreSentryNativeBridge.new()
+	var adapter := DynamicSentryNativeBridgeAdapter.new(native)
+	var provider := SentryObservabilityProvider.new(p_bridge = adapter)
+
+	Expect.that(adapter.supports_core()).to_be_false()
+	Expect.that(provider.configure(ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example.invalid/1"},
+			))).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(native.configure_count).to_equal(0)
+	Expect.that(adapter.contract_valid()).to_be_true()
+
+
+func test_missing_log_contract_is_rejected_only_when_logs_are_enabled() -> void:
+	var enabled_native := RawCoreOnlySentryNativeBridge.new()
+	var enabled_adapter := DynamicSentryNativeBridgeAdapter.new(enabled_native)
+	var enabled_provider := SentryObservabilityProvider.new(p_bridge = enabled_adapter)
+
+	Expect.that(enabled_adapter.supports_core()).to_be_true()
+	Expect.that(enabled_adapter.supports_logs()).to_be_false()
+	Expect.that(enabled_provider.configure(ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example.invalid/1"},
+			))).to_equal(Error.FAILED)
+	Expect.that(enabled_native.configure_count).to_equal(0)
+
+	var disabled_native := RawCoreOnlySentryNativeBridge.new()
+	var disabled_adapter := DynamicSentryNativeBridgeAdapter.new(disabled_native)
+	var disabled_provider := SentryObservabilityProvider.new(p_bridge = disabled_adapter)
+	Expect.that(disabled_provider.configure(ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example.invalid/1"},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_logs_enabled = false,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
+	Expect.that(disabled_native.configure_count).to_equal(1)
+	Expect.that(disabled_provider.capture(ObservabilityEvent.new(
+			p_message = "core event",
+		))).to_equal("sentry:1")
+	disabled_provider.shutdown()
+
+
+func test_ordinary_capability_rejections_preserve_an_active_session() -> void:
+	var bridge := FakeSentryNativeBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
+		)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {"dsn": "https://public@example.invalid/1"},
+		)
+
+	Expect.that(provider.configure(config)).to_equal(Error.OK)
+	var active_owner: String = bridge.active_owner
+	Expect.that(bridge.configured_payloads).to_have_size(1)
+
+	bridge.core_supported = false
+	Expect.that(provider.configure(config)).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(bridge.configured_payloads).to_have_size(1)
+	Expect.that(bridge.active_owner).to_equal(active_owner)
+	bridge.core_supported = true
+	Expect.that(provider.is_available()).to_be_true()
+
+	bridge.logs_supported = false
+	Expect.that(provider.configure(config)).to_equal(Error.FAILED)
+	Expect.that(bridge.configured_payloads).to_have_size(1)
+	Expect.that(bridge.active_owner).to_equal(active_owner)
+	bridge.logs_supported = true
+	Expect.that(provider.capture(ObservabilityEvent.new(
+			p_message = "retained active session",
+		))).to_equal("sentry:1")
+	provider.shutdown()
 
 
 func test_sentry_attachment_collection_isolates_inputs_and_accessor_outputs() -> void:
@@ -561,7 +862,7 @@ func test_runtime_context_collector_omits_invalid_and_unsupported_values() -> vo
 
 
 func test_provider_forwards_stable_and_capture_time_runtime_context() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var probe := FakeRuntimeContextSource.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
@@ -599,7 +900,7 @@ func test_provider_forwards_stable_and_capture_time_runtime_context() -> void:
 
 
 func test_provider_redacts_stable_and_volatile_runtime_contexts_across_sessions() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var probe := FakeRuntimeContextSource.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
@@ -732,7 +1033,7 @@ func test_provider_redacts_stable_and_volatile_runtime_contexts_across_sessions(
 
 
 func test_provider_redacts_stable_and_volatile_runtime_contexts_once_each() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var probe := FakeRuntimeContextSource.new()
 	probe.app_name = "a"
 	probe.volatile_orientation = "a"
@@ -785,7 +1086,7 @@ func test_provider_redacts_stable_and_volatile_runtime_contexts_once_each() -> v
 
 
 func test_provider_redacts_global_attributes_before_native_config_and_capture_paths() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -856,7 +1157,7 @@ func test_provider_redacts_global_attributes_before_native_config_and_capture_pa
 
 
 func test_invalid_global_attribute_redaction_preserves_committed_session_and_policy() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var probe := FakeRuntimeContextSource.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
@@ -929,8 +1230,11 @@ func test_invalid_global_attribute_redaction_preserves_committed_session_and_pol
 
 
 func test_failed_session_reset_never_retains_raw_or_candidate_global_attributes() -> void:
-	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var bridge := FakeSentryNativeBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
+		)
 	var policy := ObservabilityRedactionPolicy.new([
 		ObservabilityRedactionRule.sensitive_key("password"),
 	])
@@ -984,7 +1288,10 @@ func test_failed_session_reset_never_retains_raw_or_candidate_global_attributes(
 
 
 func test_provider_failed_reconfigure_preserves_last_stable_runtime_context() -> void:
-	var bridge := ScopeOnlySentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.breadcrumbs_supported = false
+	bridge.metrics_supported = false
+	bridge.attachments_supported = false
 	var probe := FakeRuntimeContextSource.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
@@ -1015,7 +1322,7 @@ func test_provider_failed_reconfigure_preserves_last_stable_runtime_context() ->
 
 
 func test_provider_disabled_configuration_and_shutdown_do_not_capture_stale_context() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -1042,19 +1349,19 @@ func test_provider_disabled_configuration_and_shutdown_do_not_capture_stale_cont
 
 
 func test_provider_name_is_sentry() -> void:
-	var provider := SentryObservabilityProvider.new(p_bridge = FakeSentryBridge.new())
+	var provider := SentryObservabilityProvider.new(p_bridge = FakeSentryNativeBridge.new())
 	Expect.that(provider.provider_name()).to_equal(&"sentry")
 
 
 func test_enabled_configuration_requires_compatible_native_bridge_and_dsn() -> void:
-	var missing_dsn := SentryObservabilityProvider.new(p_bridge = FakeSentryBridge.new())
+	var missing_dsn := SentryObservabilityProvider.new(p_bridge = FakeSentryNativeBridge.new())
 	Expect.that(missing_dsn.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {},
 			))).to_equal(Error.FAILED)
 
 	var incompatible_bridge := SentryObservabilityProvider.new(
-			p_bridge = IncompatibleSentryBridge.new(),
+			p_bridge = DynamicSentryNativeBridgeAdapter.new(RefCounted.new()),
 		)
 	Expect.that(incompatible_bridge.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -1079,20 +1386,10 @@ func test_enabled_configuration_reports_native_bridge_availability() -> void:
 
 
 func test_non_boolean_native_availability_is_rejected() -> void:
-	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
-
-	Expect.that(provider.configure(ObservabilityConfig.new(
-				p_global_attributes = {},
-				p_provider_options = {"dsn": "https://public@example/1"},
-			))).to_equal(Error.OK)
-	bridge.availability_result = 1
-
-	Expect.that(provider.is_available()).to_be_false()
-	Expect.that(provider.capture(ObservabilityEvent.new(
-			p_message = "unavailable",
-	))).to_equal("")
-	provider.shutdown()
+	var native := RawMalformedSentryNativeBridge.new()
+	native.availability_result = 1
+	var adapter := DynamicSentryNativeBridgeAdapter.new(native)
+	Expect.that(adapter.is_available("owner")).to_be_false()
 
 
 func test_disabled_configuration_is_safe_without_native_bridge() -> void:
@@ -1104,8 +1401,9 @@ func test_disabled_configuration_is_safe_without_native_bridge() -> void:
 
 
 func test_resolves_registered_engine_singleton() -> void:
-	var bridge := FakeSentryBridge.new()
-	Engine.register_singleton("SentryObservabilityBridge", bridge)
+	var bridge := FakeSentryNativeBridge.new()
+	var native := FakeSentryNativeObject.new(bridge)
+	Engine.register_singleton("SentryObservabilityBridge", native)
 	var provider := SentryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -1121,7 +1419,7 @@ func test_resolves_registered_engine_singleton() -> void:
 
 
 func test_forwards_stable_lifecycle_owner_to_bridge_calls() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -1139,7 +1437,7 @@ func test_forwards_stable_lifecycle_owner_to_bridge_calls() -> void:
 
 
 func test_replaced_sentry_provider_ignores_stale_shutdown() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var first := SentryObservabilityProvider.new(p_bridge = bridge)
 	var second := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
@@ -1160,7 +1458,10 @@ func test_replaced_sentry_provider_ignores_stale_shutdown() -> void:
 
 
 func test_failed_reconfigure_preserves_restored_native_session() -> void:
-	var bridge := ScopeOnlySentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.breadcrumbs_supported = false
+	bridge.metrics_supported = false
+	bridge.attachments_supported = false
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var initial_config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -1186,7 +1487,7 @@ func test_failed_reconfigure_preserves_restored_native_session() -> void:
 
 
 func test_forwards_config_event_and_flush_to_native_bridge() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -1230,7 +1531,7 @@ func test_forwards_config_event_and_flush_to_native_bridge() -> void:
 
 
 func test_scope_mutations_forward_complete_candidate_payloads_and_nested_copies() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var context: Dictionary = {
 			"round": {
@@ -1278,7 +1579,7 @@ func test_scope_mutations_forward_complete_candidate_payloads_and_nested_copies(
 
 
 func test_scope_remove_and_clear_operations_forward_complete_candidates() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -1320,7 +1621,7 @@ func test_scope_remove_and_clear_operations_forward_complete_candidates() -> voi
 
 
 func test_scope_user_replacement_and_removal_use_exact_native_mapping() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -1368,7 +1669,7 @@ func test_scope_user_replacement_and_removal_use_exact_native_mapping() -> void:
 
 
 func test_rejected_scope_candidate_rolls_back_provider_state() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -1394,7 +1695,7 @@ func test_rejected_scope_candidate_rolls_back_provider_state() -> void:
 
 
 func test_reconfigure_scope_reset_is_atomic_across_success_and_failure() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -1435,7 +1736,7 @@ func test_reconfigure_scope_reset_is_atomic_across_success_and_failure() -> void
 
 
 func test_same_configuration_success_clears_native_and_local_scope_immediately() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -1464,7 +1765,10 @@ func test_same_configuration_success_clears_native_and_local_scope_immediately()
 
 
 func test_breadcrumbless_failed_replacement_reapplies_retained_scope() -> void:
-	var bridge := ScopeOnlySentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.breadcrumbs_supported = false
+	bridge.metrics_supported = false
+	bridge.attachments_supported = false
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var initial_config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -1506,7 +1810,7 @@ func test_breadcrumbless_failed_replacement_reapplies_retained_scope() -> void:
 
 
 func test_changed_config_scope_reset_failure_fails_closed() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var initial_config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -1544,7 +1848,7 @@ func test_changed_config_scope_reset_failure_fails_closed() -> void:
 
 
 func test_equivalent_config_scope_reset_failure_restores_scope_and_breadcrumbs() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -1574,7 +1878,7 @@ func test_equivalent_config_scope_reset_failure_restores_scope_and_breadcrumbs()
 
 
 func test_initial_scope_reset_failure_shuts_down_orphan_native_session() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	bridge.apply_scope_results = [false]
 
@@ -1595,7 +1899,7 @@ func test_initial_scope_reset_failure_shuts_down_orphan_native_session() -> void
 
 
 func test_scope_reset_rollback_configure_failure_fails_closed_and_can_recover() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -1656,7 +1960,7 @@ func test_scope_reset_rollback_configure_failure_fails_closed_and_can_recover() 
 
 
 func test_scope_reset_retained_scope_reapply_failure_fails_closed() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -1710,7 +2014,7 @@ func test_scope_reset_retained_scope_reapply_failure_fails_closed() -> void:
 
 
 func test_failed_configure_scope_resync_failure_fails_closed_with_original_error() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -1748,7 +2052,7 @@ func test_failed_configure_scope_resync_failure_fails_closed_with_original_error
 
 
 func test_scope_reset_failure_rolls_back_to_committed_disabled_configuration() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var enabled_config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -1770,7 +2074,7 @@ func test_scope_reset_failure_rolls_back_to_committed_disabled_configuration() -
 
 
 func test_scope_operations_require_enabled_available_native_capability() -> void:
-	var disabled_bridge := FakeSentryBridge.new()
+	var disabled_bridge := FakeSentryNativeBridge.new()
 	var disabled := SentryObservabilityProvider.new(p_bridge = disabled_bridge)
 	Expect.that(disabled.configure(ObservabilityConfig.new(p_enabled = false))).to_equal(Error.OK)
 	Expect.that(disabled.set_tag("region", "iad")).to_be_false()
@@ -1785,9 +2089,9 @@ func test_scope_operations_require_enabled_available_native_capability() -> void
 	Expect.that(disabled.clear_contexts()).to_be_false()
 	Expect.that(disabled_bridge.applied_scope_payloads).to_equal([])
 
-	var unsupported := SentryObservabilityProvider.new(
-			p_bridge = BreadcrumblessSentryBridge.new(),
-		)
+	var unsupported_bridge := FakeSentryNativeBridge.new()
+	unsupported_bridge.scope_supported = false
+	var unsupported := SentryObservabilityProvider.new(p_bridge = unsupported_bridge)
 	Expect.that(unsupported.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {"dsn": "https://public@example/1"},
@@ -1798,7 +2102,7 @@ func test_scope_operations_require_enabled_available_native_capability() -> void
 		))).to_equal("sentry:1")
 	unsupported.shutdown()
 
-	var shutdown_bridge := FakeSentryBridge.new()
+	var shutdown_bridge := FakeSentryNativeBridge.new()
 	var shutdown_provider := SentryObservabilityProvider.new(p_bridge = shutdown_bridge)
 	Expect.that(shutdown_provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -1813,7 +2117,7 @@ func test_scope_operations_require_enabled_available_native_capability() -> void
 
 
 func test_event_local_scope_is_forwarded_once_without_mutating_global_scope() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var local_scope := ObservabilityScope.new()
 	Expect.that(local_scope.set_tag("region", "iad")).to_be_true()
@@ -1851,7 +2155,8 @@ func test_event_local_scope_is_forwarded_once_without_mutating_global_scope() ->
 
 
 func test_event_local_scope_requires_native_scope_capability_before_capture() -> void:
-	var bridge := CountingBreadcrumblessSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.scope_supported = false
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var local_scope := ObservabilityScope.new()
 	Expect.that(local_scope.set_tag("region", "iad")).to_be_true()
@@ -1865,17 +2170,17 @@ func test_event_local_scope_requires_native_scope_capability_before_capture() ->
 			p_attributes = {},
 			p_scope = local_scope,
 	))).to_equal("")
-	Expect.that(bridge.capture_count).to_equal(0)
+	Expect.that(bridge.captured_payloads).to_have_size(0)
 
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "supported unscoped event",
 	))).to_equal("sentry:1")
-	Expect.that(bridge.capture_count).to_equal(1)
+	Expect.that(bridge.captured_payloads).to_have_size(1)
 	provider.shutdown()
 
 
 func test_forwards_mobile_diagnostic_config_to_native_bridge() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -1902,7 +2207,7 @@ func test_forwards_mobile_diagnostic_config_to_native_bridge() -> void:
 
 
 func test_mobile_diagnostic_timeouts_are_normalized_before_provider_configuration() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -1921,7 +2226,7 @@ func test_mobile_diagnostic_timeouts_are_normalized_before_provider_configuratio
 
 func test_service_forwards_normalized_structured_exception_frames_to_native_bridge() -> void:
 	var service: FoundryObservability = _service()
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var frame := ObservabilityStackFrame.new(
 			p_file = "res://player.fs",
@@ -1974,7 +2279,7 @@ func test_service_forwards_normalized_structured_exception_frames_to_native_brid
 
 func test_service_preserves_legacy_exception_bridge_payload_without_frames() -> void:
 	var service: FoundryObservability = _service()
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
@@ -1996,7 +2301,7 @@ func test_service_preserves_legacy_exception_bridge_payload_without_frames() -> 
 
 func test_service_delivers_processor_replacement_event_to_sentry_bridge() -> void:
 	var service: FoundryObservability = _service()
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
@@ -2020,7 +2325,7 @@ func test_service_delivers_processor_replacement_event_to_sentry_bridge() -> voi
 
 
 func test_direct_provider_skips_null_exception_frames() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var frames: Array[ObservabilityStackFrame] = []
 	frames.append(null)
@@ -2052,7 +2357,7 @@ func test_direct_provider_skips_null_exception_frames() -> void:
 
 func test_service_omits_empty_structured_frame_context_from_native_bridge() -> void:
 	var service: FoundryObservability = _service()
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var frame := ObservabilityStackFrame.new(
 			p_file = "res://empty.fs",
@@ -2086,7 +2391,7 @@ func test_service_omits_empty_structured_frame_context_from_native_bridge() -> v
 
 
 func test_routes_log_events_to_native_structured_log_method() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {"build": 42},
@@ -2120,7 +2425,7 @@ func test_routes_log_events_to_native_structured_log_method() -> void:
 
 
 func test_forwards_normalized_breadcrumbs_to_native_bridge() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -2151,7 +2456,7 @@ func test_forwards_normalized_breadcrumbs_to_native_bridge() -> void:
 
 
 func test_enabled_configure_starts_with_an_explicitly_cleared_breadcrumb_trail() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -2165,7 +2470,7 @@ func test_enabled_configure_starts_with_an_explicitly_cleared_breadcrumb_trail()
 
 
 func test_identical_successful_configure_clears_only_the_live_breadcrumb_trail() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -2189,7 +2494,7 @@ func test_identical_successful_configure_clears_only_the_live_breadcrumb_trail()
 
 
 func test_changed_successful_configure_starts_a_fresh_breadcrumb_trail() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -2213,7 +2518,7 @@ func test_changed_successful_configure_starts_a_fresh_breadcrumb_trail() -> void
 
 
 func test_changed_failed_configure_fails_closed_and_can_recover() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var initial_config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -2250,7 +2555,7 @@ func test_changed_failed_configure_fails_closed_and_can_recover() -> void:
 
 
 func test_equivalent_failed_configure_preserves_breadcrumb_trail_and_scope() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -2283,92 +2588,25 @@ func test_equivalent_failed_configure_preserves_breadcrumb_trail_and_scope() -> 
 	provider.shutdown()
 
 
-func test_initial_mutating_malformed_configure_result_fails_closed() -> void:
-	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(
-			p_bridge = bridge,
-			p_runtime_context_source = FakeRuntimeContextSource.new(),
-		)
-	bridge.configure_result = "activated"
-	bridge.malformed_configure_mutates_session = true
-
-	Expect.that(provider.configure(ObservabilityConfig.new(
-				p_environment = "production",
-				p_global_attributes = {},
-				p_provider_options = {"dsn": "https://public@example/1"},
-			))).to_equal(Error.FAILED)
-	Expect.that(bridge.configured_payloads.size()).to_equal(1)
-	Expect.that(bridge.shutdown_count).to_equal(1)
-	Expect.that(bridge.active_owner).to_equal("")
-	Expect.that(bridge.active_configuration()).to_equal({})
-	Expect.that(bridge.current_scope_payload).to_equal({
-			"tags": {},
-			"contexts": {},
-		})
-	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
-	Expect.that(provider.is_available()).to_be_false()
-	Expect.that(provider.capture(ObservabilityEvent.new(
-			p_message = "failed closed",
-	))).to_equal("")
-	Expect.that(provider.set_tag("mode", "ranked")).to_be_false()
-	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
-			p_message = "failed closed",
-	))).to_be_false()
+func test_dynamic_adapter_rejects_malformed_configure_result() -> void:
+	var native := RawMalformedSentryNativeBridge.new()
+	native.configure_result = "activated"
+	var adapter := DynamicSentryNativeBridgeAdapter.new(native)
+	Expect.that(adapter.configure({})).to_equal(Error.ERR_UNAVAILABLE)
 
 
-func test_changed_mutating_malformed_configure_result_fails_closed_and_can_recover() -> void:
-	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(
-			p_bridge = bridge,
-			p_runtime_context_source = FakeRuntimeContextSource.new(),
-		)
-	var initial_config := ObservabilityConfig.new(
-		p_environment = "production",
-		p_global_attributes = {},
-		p_provider_options = {"dsn": "https://public@example/1"},
-	)
-	var replacement_config := ObservabilityConfig.new(
-		p_environment = "staging",
-		p_global_attributes = {},
-		p_provider_options = {"dsn": "https://public@example/2"},
-	)
-
-	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
-	Expect.that(provider.set_tag("region", "iad")).to_be_true()
-	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
-			p_message = "lost during malformed restart",
-	))).to_be_true()
-	bridge.configure_result = "failed"
-	bridge.malformed_configure_mutates_session = true
-
-	Expect.that(provider.configure(replacement_config)).to_equal(Error.FAILED)
-	Expect.that(bridge.configured_payloads.size()).to_equal(2)
-	Expect.that(bridge.shutdown_count).to_equal(1)
-	Expect.that(bridge.active_owner).to_equal("")
-	Expect.that(bridge.active_configuration()).to_equal({})
-	Expect.that(bridge.current_scope_payload).to_equal({
-			"tags": {},
-			"contexts": {},
-		})
-	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
-	Expect.that(provider.is_available()).to_be_false()
-	Expect.that(provider.capture(ObservabilityEvent.new(
-			p_message = "failed closed",
-	))).to_equal("")
-
-	bridge.configure_result = Error.OK
-	bridge.malformed_configure_mutates_session = false
-	Expect.that(provider.configure(replacement_config)).to_equal(Error.OK)
-	Expect.that(provider.is_available()).to_be_true()
-	Expect.that(provider.set_tag("fresh", "scope")).to_be_true()
-	Expect.that(provider.capture(ObservabilityEvent.new(
-			p_message = "recovered",
-	))).to_equal("sentry:1")
-	provider.shutdown()
+func test_dynamic_adapter_remains_invalid_after_malformed_configure_result() -> void:
+	var native := RawMalformedSentryNativeBridge.new()
+	var adapter := DynamicSentryNativeBridgeAdapter.new(native)
+	native.configure_result = "failed"
+	Expect.that(adapter.configure({})).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(adapter.contract_valid()).to_be_false()
+	native.configure_result = Error.OK
+	Expect.that(adapter.configure({})).to_equal(Error.ERR_UNAVAILABLE)
 
 
 func test_equivalent_reconfigure_clear_rejection_restores_scope_and_trail() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -2417,7 +2655,7 @@ func test_equivalent_reconfigure_clear_rejection_restores_scope_and_trail() -> v
 
 
 func test_changed_config_false_clear_result_fails_closed_and_can_recover() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -2460,49 +2698,18 @@ func test_changed_config_false_clear_result_fails_closed_and_can_recover() -> vo
 	provider.shutdown()
 
 
-func test_equivalent_config_malformed_clear_result_fails_closed_and_can_recover() -> void:
-	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(
-			p_bridge = bridge,
-			p_runtime_context_source = FakeRuntimeContextSource.new(),
-		)
-	var config := ObservabilityConfig.new(
-		p_environment = "production",
-		p_global_attributes = {"build": {"number": 42}},
-		p_provider_options = {
-			"dsn": "https://public@example/1",
-			"transport": {"tunnel": "primary"},
-		},
-	)
-
-	Expect.that(provider.configure(config)).to_equal(Error.OK)
-	Expect.that(provider.set_tag("region", "iad")).to_be_true()
-	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
-			p_message = "possibly cleared",
-	))).to_be_true()
-	bridge.clear_breadcrumbs_result = "false"
-	bridge.malformed_clear_mutates_trail = true
-
-	Expect.that(provider.configure(config)).to_equal(Error.FAILED)
-	Expect.that(bridge.active_owner).to_equal("")
-	Expect.that(bridge.active_configuration()).to_equal({})
-	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
-	Expect.that(provider.is_available()).to_be_false()
-	Expect.that(provider.capture(ObservabilityEvent.new(
-			p_message = "failed closed",
-	))).to_equal("")
-	Expect.that(provider.set_tag("mode", "ranked")).to_be_false()
-
-	bridge.clear_breadcrumbs_result = true
-	bridge.malformed_clear_mutates_trail = false
-	Expect.that(provider.configure(config)).to_equal(Error.OK)
-	Expect.that(provider.is_available()).to_be_true()
-	Expect.that(provider.set_tag("fresh", "scope")).to_be_true()
-	provider.shutdown()
+func test_dynamic_adapter_remains_invalid_after_malformed_clear_result() -> void:
+	var native := RawMalformedSentryNativeBridge.new()
+	var adapter := DynamicSentryNativeBridgeAdapter.new(native)
+	native.clear_result = "false"
+	Expect.that(adapter.clear_breadcrumbs()).to_be_false()
+	Expect.that(adapter.contract_valid()).to_be_false()
+	native.clear_result = true
+	Expect.that(adapter.clear_breadcrumbs()).to_be_false()
 
 
 func test_nested_config_change_is_not_equivalent_for_clear_recovery() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
 			p_runtime_context_source = FakeRuntimeContextSource.new(),
@@ -2535,27 +2742,15 @@ func test_nested_config_change_is_not_equivalent_for_clear_recovery() -> void:
 	Expect.that(provider.is_available()).to_be_false()
 
 
-func test_initial_malformed_clear_result_fails_closed() -> void:
-	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
-	bridge.clear_breadcrumbs_result = "true"
-
-	Expect.that(provider.configure(ObservabilityConfig.new(
-				p_global_attributes = {},
-				p_provider_options = {"dsn": "https://public@example/1"},
-			))).to_equal(Error.FAILED)
-	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
-	Expect.that(bridge.active_owner).to_equal("")
-	Expect.that(bridge.active_configuration()).to_equal({})
-	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
-	Expect.that(provider.is_available()).to_be_false()
-	Expect.that(provider.capture(ObservabilityEvent.new(
-			p_message = "unavailable",
-	))).to_equal("")
+func test_dynamic_adapter_rejects_malformed_clear_result() -> void:
+	var native := RawMalformedSentryNativeBridge.new()
+	native.clear_result = "true"
+	var adapter := DynamicSentryNativeBridgeAdapter.new(native)
+	Expect.that(adapter.clear_breadcrumbs()).to_be_false()
 
 
 func test_clear_breadcrumbs_returns_explicit_native_result_and_respects_lifecycle() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.clear_breadcrumbs()).to_be_false()
@@ -2575,38 +2770,19 @@ func test_clear_breadcrumbs_returns_explicit_native_result_and_respects_lifecycl
 	Expect.that(bridge.clear_breadcrumbs_count).to_equal(3)
 
 
-func test_non_boolean_native_scope_and_clear_results_are_rejected() -> void:
-	var bridge := MalformedScopeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
-
-	Expect.that(provider.configure(ObservabilityConfig.new(
-				p_global_attributes = {},
-				p_provider_options = {"dsn": "https://public@example/1"},
-			))).to_equal(Error.OK)
-	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
-	bridge.applied_scope_payloads.clear()
-
-	bridge.apply_scope_result = "true"
-	Expect.that(provider.set_tag("rejected", "value")).to_be_false()
-	bridge.apply_scope_result = true
-	Expect.that(provider.set_tag("accepted", "value")).to_be_true()
-	Expect.that(bridge.applied_scope_payloads.back()).to_equal({
-			"tags": {"accepted": "value"},
-			"contexts": {},
-		})
-
-	bridge.clear_breadcrumbs_result = "true"
-	Expect.that(provider.clear_breadcrumbs()).to_be_false()
-	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
-	bridge.clear_breadcrumbs_result = true
-	Expect.that(provider.clear_breadcrumbs()).to_be_true()
-	Expect.that(bridge.clear_breadcrumbs_count).to_equal(3)
-	provider.shutdown()
+func test_dynamic_adapter_rejects_malformed_scope_and_clear_results() -> void:
+	var native := RawMalformedSentryNativeBridge.new()
+	var adapter := DynamicSentryNativeBridgeAdapter.new(native)
+	native.scope_result = "true"
+	native.clear_result = "true"
+	Expect.that(adapter.apply_scope({})).to_be_false()
+	Expect.that(adapter.clear_breadcrumbs()).to_be_false()
 
 
 func test_missing_native_breadcrumb_capability_preserves_event_capture() -> void:
-	var provider := SentryObservabilityProvider.new(
-			p_bridge = BreadcrumblessSentryBridge.new())
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.breadcrumbs_supported = false
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {"dsn": "https://public@example/1"},
@@ -2621,25 +2797,26 @@ func test_missing_native_breadcrumb_capability_preserves_event_capture() -> void
 	provider.shutdown()
 
 
-func test_capture_only_breadcrumb_bridge_cannot_start_a_fresh_session() -> void:
-	var provider := SentryObservabilityProvider.new(
-			p_bridge = CaptureOnlyBreadcrumbSentryBridge.new())
+func test_incomplete_breadcrumb_capability_does_not_block_a_fresh_session() -> void:
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.breadcrumbs_supported = false
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {"dsn": "https://public@example/1"},
-			))).to_equal(Error.FAILED)
-	Expect.that(provider.is_available()).to_be_false()
+			))).to_equal(Error.OK)
+	Expect.that(provider.is_available()).to_be_true()
 	Expect.that(provider.capture(ObservabilityEvent.new(
-			p_message = "unavailable",
-	))).to_equal("")
+			p_message = "available",
+	))).to_equal("sentry:1")
 	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
 			p_message = "unavailable",
 	))).to_be_false()
 
 
 func test_captures_feedback_with_only_explicit_optional_fields() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -2677,7 +2854,7 @@ func test_captures_feedback_with_only_explicit_optional_fields() -> void:
 
 
 func test_forwards_normalized_custom_metrics_to_native_bridge() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -2710,7 +2887,9 @@ func test_forwards_normalized_custom_metrics_to_native_bridge() -> void:
 
 
 func test_missing_native_metric_capability_preserves_event_capture() -> void:
-	var provider := SentryObservabilityProvider.new(p_bridge = MetriclessSentryBridge.new())
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.metrics_supported = false
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {"dsn": "https://public@example/1"},
@@ -2734,7 +2913,9 @@ func test_missing_native_metric_capability_preserves_event_capture() -> void:
 
 
 func test_rejects_bridge_without_feedback_method() -> void:
-	var provider := SentryObservabilityProvider.new(p_bridge = FeedbacklessSentryBridge.new())
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.feedback_supported = false
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -2749,8 +2930,10 @@ func test_rejects_bridge_without_feedback_method() -> void:
 	provider.shutdown()
 
 
-func test_rejects_bridge_without_structured_log_method() -> void:
-	var provider := SentryObservabilityProvider.new(p_bridge = EventOnlySentryBridge.new())
+func test_typed_bridge_rejects_enabled_logs_without_structured_log_capability() -> void:
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.logs_supported = false
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {"dsn": "https://public@example/1"},
@@ -2761,16 +2944,16 @@ func test_rejects_bridge_without_structured_log_method() -> void:
 					p_metric_processors = [],
 				),
 			))).to_equal(Error.FAILED)
-	Expect.that(provider.capture(ObservabilityEvent.new(
-			p_kind = &"log",
-			p_message = "unsupported",
-		))).to_equal("")
+	Expect.that(provider.is_available()).to_be_false()
+	Expect.that(bridge.configured_payloads).to_have_size(0)
 	provider.shutdown()
 
 
-func test_service_reports_structured_log_bridge_mismatch() -> void:
+func test_service_rejects_typed_bridge_without_enabled_log_capability() -> void:
 	var service: FoundryObservability = _service()
-	var provider := SentryObservabilityProvider.new(p_bridge = EventOnlySentryBridge.new())
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.logs_supported = false
+	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -2779,12 +2962,11 @@ func test_service_reports_structured_log_bridge_mismatch() -> void:
 	Expect.that(service.provider_name()).to_equal(&"null")
 	Expect.that(service.last_error()).to_equal(Error.FAILED)
 	Expect.that(service.capture_log("unsupported")).to_equal("")
-	provider.shutdown()
 	service.shutdown()
 
 
 func test_shutdown_is_idempotent() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -2807,7 +2989,7 @@ func test_shutdown_is_idempotent() -> void:
 
 
 func test_shutdown_discards_committed_configuration_rollback_state() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -2830,7 +3012,7 @@ func test_shutdown_discards_committed_configuration_rollback_state() -> void:
 
 
 func test_attachment_candidates_replace_native_snapshot_atomically() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -2864,7 +3046,7 @@ func test_attachment_candidates_replace_native_snapshot_atomically() -> void:
 
 	Expect.that(provider.remove_attachment(first_handle)).to_equal(Error.OK)
 	Expect.that(provider.remove_attachment(first_handle)).to_equal(Error.ERR_DOES_NOT_EXIST)
-	bridge.replace_attachments_results = [false, "accepted"]
+	bridge.replace_attachments_results = [false, false]
 	Expect.that(provider.clear_attachments()).to_be_false()
 	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
 	var retained_payload: Array = bridge.current_attachment_payloads.duplicate(true)
@@ -2891,7 +3073,7 @@ func test_provider_redacts_persistent_and_capture_local_builtin_attachment_metad
 	var root := Node.new()
 	root.name = "Root"
 	probe.tree = root
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -2961,7 +3143,7 @@ func test_invalid_redacted_builtin_attachment_is_omitted_without_dropping_event(
 	var root := Node.new()
 	root.name = "Root"
 	probe.tree = root
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -3015,7 +3197,7 @@ func test_invalid_persistent_builtin_redaction_survives_configure_and_combines()
 	var root := Node.new()
 	root.name = "Root"
 	probe.tree = root
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -3090,7 +3272,8 @@ func test_invalid_persistent_builtin_redaction_survives_configure_and_combines()
 
 
 func test_attachment_bridge_methods_are_optional_until_feature_or_api_is_used() -> void:
-	var bridge := CountingBreadcrumblessSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
+	bridge.attachments_supported = false
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -3104,9 +3287,9 @@ func test_attachment_bridge_methods_are_optional_until_feature_or_api_is_used() 
 			p_message = "legacy bridge still captures",
 		))).to_equal("sentry:1")
 
-	var feature_provider := SentryObservabilityProvider.new(
-			p_bridge = ReplaceOnlySentryBridge.new(),
-		)
+	var feature_bridge := FakeSentryNativeBridge.new()
+	feature_bridge.attachments_supported = false
+	var feature_provider := SentryObservabilityProvider.new(p_bridge = feature_bridge)
 	Expect.that(feature_provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {"dsn": "https://public@example/1"},
@@ -3120,14 +3303,14 @@ func test_attachment_bridge_methods_are_optional_until_feature_or_api_is_used() 
 
 
 func test_capture_materializes_only_res_paths_into_event_local_attachments() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {"dsn": "https://public@example/1"},
 			))).to_equal(Error.OK)
 	var resource := ObservabilityAttachment.from_path(
-			"res://tests/support/fake_sentry_bridge.notest.fs",
+			"res://tests/support/fake_sentry_native_bridge.notest.fs",
 			"bridge.fs",
 			"text/plain",
 		)
@@ -3150,7 +3333,7 @@ func test_capture_materializes_only_res_paths_into_event_local_attachments() -> 
 
 
 func test_attachment_preflight_failures_do_not_block_events_and_clear_on_success() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -3192,7 +3375,7 @@ func test_attachment_preflight_failures_do_not_block_events_and_clear_on_success
 
 
 func test_attachment_management_preserves_latest_event_failure_history() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -3264,7 +3447,7 @@ func test_oversized_global_path_failure_survives_logs_until_applicable_capture()
 		)
 	file.store_buffer(PackedByteArray([1, 2, 3]))
 	file.close()
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -3315,8 +3498,11 @@ func test_oversized_global_path_failure_survives_logs_until_applicable_capture()
 
 
 func test_attachment_reconfigure_invalidates_handles_and_restores_equivalent_failures() -> void:
-	var bridge := FakeSentryBridge.new()
-	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
+	var bridge := FakeSentryNativeBridge.new()
+	var provider := SentryObservabilityProvider.new(
+			p_bridge = bridge,
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
+		)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
 		p_provider_options = {"dsn": "https://public@example/1"},
@@ -3344,7 +3530,7 @@ func test_attachment_reconfigure_invalidates_handles_and_restores_equivalent_fai
 
 
 func test_attachment_restore_rejection_fails_closed() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -3548,7 +3734,7 @@ func test_zero_attachment_limit_disables_every_sentry_delivery_path() -> void:
 	root.name = "Root"
 	probe.tree = root
 	probe.game_log = "user://sentry-zero-game.log"
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -3573,7 +3759,7 @@ func test_zero_attachment_limit_disables_every_sentry_delivery_path() -> void:
 			"empty.log",
 		)).is_empty()).to_be_false()
 	Expect.that(provider.add_attachment(ObservabilityAttachment.from_path(
-			"res://tests/support/fake_sentry_bridge.notest.fs",
+			"res://tests/support/fake_sentry_native_bridge.notest.fs",
 			"resource.fs",
 		)).is_empty()).to_be_false()
 	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
@@ -3594,7 +3780,7 @@ func test_zero_attachment_limit_disables_every_sentry_delivery_path() -> void:
 
 
 func test_game_log_path_is_registered_lazily_before_the_file_exists() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var path: String = "user://sentry-lazy-game-%s.log" % bridge.get_instance_id()
 	var absolute_path: String = ProjectSettings.globalize_path(path)
 	if FileAccess.file_exists(absolute_path):
@@ -3629,7 +3815,7 @@ func test_game_log_path_is_registered_lazily_before_the_file_exists() -> void:
 func test_empty_or_disabled_game_log_path_reports_missing_file() -> void:
 	var probe := FakeAttachmentSource.new()
 	probe.game_log = ""
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -3655,7 +3841,7 @@ func test_empty_or_disabled_game_log_path_reports_missing_file() -> void:
 
 
 func test_missing_configured_game_log_is_preflighted_at_event_time() -> void:
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var path: String = "user://sentry-missing-game-%s.log" % bridge.get_instance_id()
 	var absolute_path: String = ProjectSettings.globalize_path(path)
 	if FileAccess.file_exists(absolute_path):
@@ -3694,7 +3880,7 @@ func test_user_clear_preserves_configured_game_log_attachment() -> void:
 	file.close()
 	var probe := FakeAttachmentSource.new()
 	probe.game_log = "user://sentry-game.log"
-	var bridge := FakeSentryBridge.new()
+	var bridge := FakeSentryNativeBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			bridge,
 			null,

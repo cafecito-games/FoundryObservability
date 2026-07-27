@@ -423,6 +423,16 @@ grep -qx 'addons/FoundryObservabilitySentry/plugin.cfg' <<<"$sentry_listing" \
 	|| fail "Sentry package is missing plugin.cfg"
 grep -qx 'addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs' <<<"$sentry_listing" \
 	|| fail "Sentry package is missing the FoundryScript provider"
+for bridge_resource in \
+	SentryNativeBridge \
+	DynamicSentryNativeBridgeAdapter; do
+	grep -qx "addons/FoundryObservabilitySentry/${bridge_resource}.fs" \
+		<<<"$sentry_listing" \
+		|| fail "Sentry package is missing ${bridge_resource}.fs"
+	grep -qx "addons/FoundryObservabilitySentry/${bridge_resource}.fs.uid" \
+		<<<"$sentry_listing" \
+		|| fail "Sentry package is missing ${bridge_resource}.fs.uid"
+done
 for context_resource in \
 	SentryRuntimeSnapshot \
 	SentryRuntimeContextSource \
