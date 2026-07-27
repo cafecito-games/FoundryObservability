@@ -2987,6 +2987,172 @@ func test_processing_diagnostic_preserves_payload_free_fields() -> void:
 	Expect.that(copied.sequence()).to_equal(7)
 
 
+func test_focused_configuration_defaults_match_current_behavior() -> void:
+	var processing := ObservabilityProcessingConfig.new()
+	var automatic := ObservabilityAutomaticCaptureConfig.new()
+	var attachments := ObservabilityAttachmentConfig.new()
+	var stack_traces := ObservabilityStackTraceConfig.new()
+	var mobile := ObservabilityMobileDiagnosticsConfig.new()
+
+	Expect.that(processing.logs_enabled()).to_be_true()
+	Expect.that(processing.log_minimum_level()).to_equal(ObservabilityLevel.TRACE)
+	Expect.that(processing.log_rate_limit_per_second()).to_equal(0)
+	Expect.that(processing.metrics_enabled()).to_be_true()
+	Expect.that(processing.event_sample_rate()).to_equal(1.0)
+	Expect.that(processing.log_sample_rate()).to_equal(1.0)
+	Expect.that(processing.metric_sample_rate()).to_equal(1.0)
+	Expect.that(processing.metric_filter()).to_equal(null)
+	Expect.that(processing.event_processors()).to_have_size(0)
+	Expect.that(processing.log_processors()).to_have_size(0)
+	Expect.that(processing.metric_processors()).to_have_size(0)
+	Expect.that(processing.event_limits().per_frame()).to_equal(5)
+	Expect.that(processing.event_limits().repeated_window_msec()).to_equal(1000)
+	Expect.that(processing.event_limits().window_count()).to_equal(20)
+	Expect.that(processing.event_limits().window_msec()).to_equal(10000)
+	Expect.that(processing.log_limits().per_frame()).to_equal(0)
+	Expect.that(processing.log_limits().repeated_window_msec()).to_equal(0)
+	Expect.that(processing.log_limits().window_count()).to_equal(0)
+	Expect.that(processing.log_limits().window_msec()).to_equal(0)
+	Expect.that(processing.metric_limits().per_frame()).to_equal(0)
+	Expect.that(processing.metric_limits().repeated_window_msec()).to_equal(0)
+	Expect.that(processing.metric_limits().window_count()).to_equal(0)
+	Expect.that(processing.metric_limits().window_msec()).to_equal(0)
+	Expect.that(processing.redaction_policy().rules()).to_have_size(0)
+	Expect.that(automatic.enabled()).to_be_true()
+	Expect.that(automatic.event_mask()).to_equal(ObservabilityCaptureMask.DEFAULT_EVENTS)
+	Expect.that(automatic.breadcrumb_mask()).to_equal(
+			ObservabilityCaptureMask.DEFAULT_BREADCRUMBS,
+		)
+	Expect.that(automatic.log_mask()).to_equal(ObservabilityCaptureMask.NONE)
+	Expect.that(automatic.max_breadcrumbs()).to_equal(100)
+	Expect.that(automatic.message_filter_prefixes()).to_equal(
+			PackedStringArray(["FoundryObservability: "]),
+		)
+	Expect.that(attachments.max_bytes()).to_equal(20 * 1024 * 1024)
+	Expect.that(attachments.attach_game_log()).to_be_false()
+	Expect.that(attachments.attach_screenshot()).to_be_false()
+	Expect.that(attachments.attach_scene_tree()).to_be_false()
+	Expect.that(stack_traces.source_context_enabled()).to_be_true()
+	Expect.that(stack_traces.variables_enabled()).to_be_false()
+	Expect.that(mobile.application_hang_detection_enabled()).to_be_true()
+	Expect.that(mobile.application_hang_timeout_msec()).to_equal(5000)
+	Expect.that(mobile.android_anr_detection_enabled()).to_be_true()
+	Expect.that(mobile.android_anr_timeout_msec()).to_equal(5000)
+	Expect.that(mobile.android_anr_attach_thread_dump()).to_be_false()
+
+
+func test_processing_configuration_uses_exact_callable_types_and_copies_arrays() -> void:
+	var event_processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]] = [
+			func(event: ObservabilityEvent) -> ObservabilityEvent?: return event]
+	var metric_processors: Array[Callable[[ObservabilityMetric], ObservabilityMetric?]] = [
+			func(metric: ObservabilityMetric) -> ObservabilityMetric?: return metric]
+	var metric_filter: Callable[[ObservabilityMetric], bool]? = (
+			func(_metric: ObservabilityMetric) -> bool: return true
+		)
+	var config := ObservabilityProcessingConfig.new(
+			p_event_processors = event_processors,
+			p_log_processors = [],
+			p_metric_processors = metric_processors,
+			p_metric_filter = metric_filter,
+		)
+
+	event_processors.clear()
+	metric_processors.clear()
+	Expect.that(config.event_processors()).to_have_size(1)
+	Expect.that(config.metric_processors()).to_have_size(1)
+	Expect.that(config.metric_filter()).to_not_equal(null)
+
+
+func test_focused_configurations_normalize_and_defensively_copy_values() -> void:
+	var prefixes := PackedStringArray(["Internal: "])
+	var event_processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]] = [
+			func(event: ObservabilityEvent) -> ObservabilityEvent?: return event]
+	var log_processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]] = [
+			func(event: ObservabilityEvent) -> ObservabilityEvent?: return event]
+	var metric_processors: Array[Callable[[ObservabilityMetric], ObservabilityMetric?]] = [
+			func(metric: ObservabilityMetric) -> ObservabilityMetric?: return metric]
+	var metric_filter: Callable[[ObservabilityMetric], bool]? = (
+			func(metric: ObservabilityMetric) -> bool: return metric.value() > 0.0
+		)
+	var limits := ObservabilitySignalLimits.new(1, 2, 3, 4)
+	var policy := ObservabilityRedactionPolicy.new([
+			ObservabilityRedactionRule.sensitive_key("authorization"),
+		])
+	var processing := ObservabilityProcessingConfig.new(
+			p_log_rate_limit_per_second = -1,
+			p_metric_filter = metric_filter,
+			p_event_processors = event_processors,
+			p_log_processors = log_processors,
+			p_metric_processors = metric_processors,
+			p_event_limits = limits,
+			p_log_limits = limits,
+			p_metric_limits = limits,
+			p_redaction_policy = policy,
+		)
+	var automatic := ObservabilityAutomaticCaptureConfig.new(
+			p_max_breadcrumbs = -1,
+			p_message_filter_prefixes = prefixes,
+		)
+	var attachments := ObservabilityAttachmentConfig.new(-1)
+	var mobile := ObservabilityMobileDiagnosticsConfig.new(true, 1, true, 2)
+
+	prefixes.append("Changed: ")
+	event_processors.clear()
+	log_processors.clear()
+	metric_processors.clear()
+	var exposed_prefixes := automatic.message_filter_prefixes()
+	exposed_prefixes.clear()
+	var exposed_event_processors := processing.event_processors()
+	var exposed_log_processors := processing.log_processors()
+	var exposed_metric_processors := processing.metric_processors()
+	exposed_event_processors.clear()
+	exposed_log_processors.clear()
+	exposed_metric_processors.clear()
+	var exposed_limits: ObservabilitySignalLimits = processing.event_limits()
+	var later_limits: ObservabilitySignalLimits = processing.event_limits()
+	var exposed_log_limits: ObservabilitySignalLimits = processing.log_limits()
+	var later_log_limits: ObservabilitySignalLimits = processing.log_limits()
+	var exposed_metric_limits: ObservabilitySignalLimits = processing.metric_limits()
+	var later_metric_limits: ObservabilitySignalLimits = processing.metric_limits()
+	var exposed_policy := processing.redaction_policy()
+	var exposed_rules := exposed_policy.rules()
+	exposed_rules.clear()
+	var later_policy: ObservabilityRedactionPolicy = processing.redaction_policy()
+	var event: ObservabilityEvent = ObservabilityEvent.new()
+	var metric: ObservabilityMetric = ObservabilityMetric.new(
+			ObservabilityMetricType.COUNTER, "count", 1.0)
+	var event_result: ObservabilityEvent? = processing.event_processors()[0].call(event)
+	var log_result: ObservabilityEvent? = processing.log_processors()[0].call(event)
+	var metric_result: ObservabilityMetric? = processing.metric_processors()[0].call(metric)
+	var filter_result: bool = processing.metric_filter().call(metric)
+
+	Expect.that(processing.log_rate_limit_per_second()).to_equal(0)
+	Expect.that(automatic.max_breadcrumbs()).to_equal(0)
+	Expect.that(attachments.max_bytes()).to_equal(0)
+	Expect.that(mobile.application_hang_timeout_msec()).to_equal(1000)
+	Expect.that(mobile.android_anr_timeout_msec()).to_equal(1000)
+	Expect.that(automatic.message_filter_prefixes()).to_equal(PackedStringArray(["Internal: "]))
+	Expect.that(processing.event_processors()).to_have_size(1)
+	Expect.that(processing.log_processors()).to_have_size(1)
+	Expect.that(processing.metric_processors()).to_have_size(1)
+	Expect.that(exposed_limits).to_not_equal(limits)
+	Expect.that(later_limits).to_not_equal(exposed_limits)
+	Expect.that(exposed_log_limits).to_not_equal(limits)
+	Expect.that(later_log_limits).to_not_equal(exposed_log_limits)
+	Expect.that(exposed_metric_limits).to_not_equal(limits)
+	Expect.that(later_metric_limits).to_not_equal(exposed_metric_limits)
+	Expect.that(processing.event_limits().per_frame()).to_equal(1)
+	Expect.that(processing.log_limits().window_count()).to_equal(3)
+	Expect.that(processing.metric_limits().window_msec()).to_equal(4)
+	Expect.that(exposed_policy).to_not_equal(policy)
+	Expect.that(later_policy).to_not_equal(exposed_policy)
+	Expect.that(processing.redaction_policy().rules()).to_have_size(1)
+	Expect.that(event_result).to_equal(event)
+	Expect.that(log_result).to_equal(event)
+	Expect.that(metric_result).to_equal(metric)
+	Expect.that(filter_result).to_be_true()
+
+
 func test_processing_config_defaults_and_defensively_copies_inputs() -> void:
 	var processors: Array[Callable] = [Callable()]
 	var limits := ObservabilitySignalLimits.new(8, 9, 10, 11)
