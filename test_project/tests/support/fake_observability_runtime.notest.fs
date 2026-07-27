@@ -11,6 +11,8 @@ var unix_msec: int
 var frame: int
 var caller: int
 var main_thread: int
+var monotonic_call_count: int = 0
+var unix_call_count: int = 0
 
 
 func _init(
@@ -28,10 +30,12 @@ func _init(
 
 
 func monotonic_time_msec() -> int:
+	monotonic_call_count += 1
 	return monotonic_msec
 
 
 func unix_time_msec() -> int:
+	unix_call_count += 1
 	return unix_msec
 
 

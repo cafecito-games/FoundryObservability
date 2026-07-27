@@ -100,6 +100,10 @@ var _recursive_drops: int = 0
 var _diagnostic_sequence: int = 0
 var _last_diagnostic: ObservabilityProcessingDiagnostic?
 var _state_mutex: Mutex = Mutex.new()
+var _configured_config: ObservabilityConfig?
+var _claim_token: ObservabilityPipelineClaimToken?
+var _prepared_pristine: bool = false
+var _permanently_frozen: bool = false
 
 
 ## Creates a coordinator with a shared observability runtime.
@@ -109,9 +113,19 @@ func _init(runtime: ObservabilityRuntime) -> void:
 
 
 ## Atomically replaces all processing state after candidate validation succeeds.
+## A successful quiescent configuration installs fresh limiters and diagnostics and is
+## the only operation that establishes a pristine candidate eligible for initial claim.
 func configure(config: ObservabilityConfig? = null) -> int:
 	if config == null:
 		return Error.ERR_INVALID_PARAMETER
+	_state_mutex.lock()
+	if _claim_token != null:
+		_state_mutex.unlock()
+		return Error.ERR_ALREADY_IN_USE
+	if not _active_operations.is_empty() or _processing_depth > 0:
+		_state_mutex.unlock()
+		return Error.ERR_BUSY
+	_state_mutex.unlock()
 	var processing: ObservabilityProcessingConfig = config.processing()
 	if not _valid_sample_rate(processing.event_sample_rate()) \
 			or not _valid_sample_rate(processing.log_sample_rate()) \
@@ -166,7 +180,15 @@ func configure(config: ObservabilityConfig? = null) -> int:
 	var candidate_metric_limiter_mutex: Mutex = Mutex.new()
 
 	_state_mutex.lock()
+	if _claim_token != null:
+		_state_mutex.unlock()
+		return Error.ERR_ALREADY_IN_USE
+	if not _active_operations.is_empty() or _processing_depth > 0:
+		_state_mutex.unlock()
+		return Error.ERR_BUSY
 	_config_generation += 1
+	_operation_sequence = 0
+	_configured_config = config
 	_redactor = candidate_redactor
 	_event_processors = _copy_event_processors(event_processors)
 	_log_processors = _copy_event_processors(log_processors)
@@ -179,10 +201,128 @@ func configure(config: ObservabilityConfig? = null) -> int:
 	_event_limiter_mutex = candidate_event_limiter_mutex
 	_log_limiter_mutex = candidate_log_limiter_mutex
 	_metric_limiter_mutex = candidate_metric_limiter_mutex
+	_active_operations.clear()
+	_processing_depth = 0
 	_recursive_drops = 0
 	_diagnostic_sequence = 0
 	_last_diagnostic = null
 	_pending_provider_results.clear()
+	_prepared_pristine = true
+	_permanently_frozen = false
+	_state_mutex.unlock()
+	return Error.OK
+
+
+## Returns whether this pipeline was prepared from the exact configuration object.
+func is_configured_for(config: ObservabilityConfig) -> bool:
+	if config == null:
+		return false
+	_state_mutex.lock()
+	var matches: bool = _configured_config != null and is_same(_configured_config, config)
+	_state_mutex.unlock()
+	return matches
+
+
+## Atomically seals an untouched prepared pipeline to one opaque session capability.
+func claim(
+		config: ObservabilityConfig,
+		token: ObservabilityPipelineClaimToken?,
+) -> int:
+	if config == null or token == null:
+		return Error.ERR_INVALID_PARAMETER
+	_state_mutex.lock()
+	if _configured_config == null:
+		_state_mutex.unlock()
+		return Error.ERR_UNCONFIGURED
+	if not is_same(_configured_config, config):
+		_state_mutex.unlock()
+		return Error.ERR_INVALID_DATA
+	if _claim_token != null:
+		var matches_existing: bool = is_same(_claim_token, token)
+		_state_mutex.unlock()
+		return Error.OK if matches_existing else Error.ERR_ALREADY_IN_USE
+	if not _active_operations.is_empty() or _processing_depth > 0:
+		_state_mutex.unlock()
+		return Error.ERR_BUSY
+	if not _prepared_pristine \
+			or not _pending_provider_results.is_empty() \
+			or _operation_sequence != 0 \
+			or _recursive_drops != 0 \
+			or _diagnostic_sequence != 0 \
+			or _last_diagnostic != null:
+		_state_mutex.unlock()
+		return Error.ERR_INVALID_DATA
+	_claim_token = token
+	_state_mutex.unlock()
+	return Error.OK
+
+
+## Returns whether the exact opaque capability currently owns this pipeline.
+func is_claimed_by(token: ObservabilityPipelineClaimToken?) -> bool:
+	if token == null:
+		return false
+	_state_mutex.lock()
+	var matches: bool = _claim_token != null and is_same(_claim_token, token)
+	_state_mutex.unlock()
+	return matches
+
+
+## Returns whether publication permanently sealed this pipeline.
+func is_frozen() -> bool:
+	_state_mutex.lock()
+	var frozen: bool = _permanently_frozen
+	_state_mutex.unlock()
+	return frozen
+
+
+## Returns whether publication sealed this pipeline for the exact configuration object.
+func is_frozen_for(config: ObservabilityConfig) -> bool:
+	_state_mutex.lock()
+	var matches: bool = (
+		_permanently_frozen
+		and _configured_config != null
+		and is_same(_configured_config, config)
+	)
+	_state_mutex.unlock()
+	return matches
+
+
+## Permanently freezes a claimed pipeline before its snapshot becomes observable.
+func freeze(token: ObservabilityPipelineClaimToken?) -> int:
+	if token == null:
+		return Error.ERR_INVALID_PARAMETER
+	_state_mutex.lock()
+	if _claim_token == null or not is_same(_claim_token, token):
+		_state_mutex.unlock()
+		return Error.ERR_ALREADY_IN_USE
+	if _permanently_frozen:
+		_state_mutex.unlock()
+		return Error.OK
+	if not _active_operations.is_empty() or _processing_depth > 0:
+		_state_mutex.unlock()
+		return Error.ERR_BUSY
+	if not _prepared_pristine \
+			or not _pending_provider_results.is_empty() \
+			or _operation_sequence != 0 \
+			or _recursive_drops != 0 \
+			or _diagnostic_sequence != 0 \
+			or _last_diagnostic != null:
+		_state_mutex.unlock()
+		return Error.ERR_INVALID_DATA
+	_permanently_frozen = true
+	_state_mutex.unlock()
+	return Error.OK
+
+
+## Releases only an unpublished candidate claimed by the exact opaque capability.
+func release(token: ObservabilityPipelineClaimToken?) -> int:
+	if token == null:
+		return Error.ERR_INVALID_PARAMETER
+	_state_mutex.lock()
+	if _claim_token == null or not is_same(_claim_token, token) or _permanently_frozen:
+		_state_mutex.unlock()
+		return Error.ERR_ALREADY_IN_USE
+	_claim_token = null
 	_state_mutex.unlock()
 	return Error.OK
 
@@ -297,6 +437,12 @@ func record_provider_result(
 		error: int,
 		operation_token: Variant = null,
 ) -> void:
+	_state_mutex.lock()
+	if _claim_token != null and not _permanently_frozen:
+		_state_mutex.unlock()
+		return
+	_prepared_pristine = false
+	_state_mutex.unlock()
 	if not _valid_signal(p_signal):
 		return
 	var owner_id: int = -1
@@ -609,6 +755,11 @@ func _begin_reservation_locked(
 		p_signal: ObservabilitySignal,
 		owner_id: int,
 ) -> ActiveOperation?:
+	## Claimed candidates are immutable until atomic freeze publishes them.
+	if _claim_token != null and not _permanently_frozen:
+		return null
+	## Dirtiness is committed before any processor, redactor, or limiter callback can run.
+	_prepared_pristine = false
 	if _active_operations.has(owner_id):
 		_recursive_drops += 1
 		var recursive_error: int = (

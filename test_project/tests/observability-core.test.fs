@@ -21,6 +21,7 @@ var _recursive_state_result: ObservabilityProcessingResult[Dictionary] = (
 	)
 var _lifecycle_pipeline: ObservabilityProcessingPipeline
 var _processing_runtime: FakeObservabilityRuntime
+var _pipeline_lifecycle_configure_result: int = Error.OK
 var _lifecycle_nested_result: ObservabilityProcessingResult[ObservabilityEvent] = (
 		ObservabilityProcessingResult[ObservabilityEvent].dropped(
 				ObservabilitySignal.EVENT,
@@ -188,8 +189,172 @@ class ShutdownRequestingMemoryProvider extends \
 		return super.capture(event)
 
 
+class ReentrantProviderSessionMemoryProvider extends \
+			"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var session: ObservabilityProviderSession
+	var nested_call_error: int = Error.OK
+	var nested_flush_result: int = Error.OK
+	var request_shutdown: bool = false
+
+	func configure(config: ObservabilityConfig) -> int:
+		if session != null:
+			var nested_call: ObservabilityProviderCall = session.begin_call()
+			nested_call_error = nested_call.error()
+			nested_flush_result = session.flush()
+			if request_shutdown:
+				session.shutdown()
+		return super.configure(config)
+
+
+class MutatingFailureMemoryProvider extends \
+			"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var configure_calls: int = 0
+	var failure_mutations: int = 0
+
+	func configure(config: ObservabilityConfig) -> int:
+		configure_calls += 1
+		if configure_result != Error.OK:
+			failure_mutations += 1
+			return configure_result
+		return super.configure(config)
+
+
+class PipelineClaimProbingMemoryProvider extends \
+			"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var pipeline: ObservabilityProcessingPipeline
+	var configure_calls: int = 0
+	var configure_during_callback_result: int = Error.OK
+
+	func configure(config: ObservabilityConfig) -> int:
+		configure_calls += 1
+		configure_during_callback_result = pipeline.configure(config)
+		return configure_result
+
+
+class ShutdownObservingMemoryProvider extends \
+				"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var session: ObservabilityProviderSession
+	var observed_provider: ObservabilityProvider
+	var observed_generation: int = -1
+	var nested_call_error: int = Error.OK
+	var request_shutdown: bool = false
+
+	func shutdown() -> void:
+		if session != null:
+			var observed: ObservabilityProviderSnapshot = session.snapshot()
+			observed_provider = observed.provider()
+			observed_generation = observed.generation()
+			nested_call_error = session.begin_call().error()
+			if request_shutdown:
+				session.shutdown()
+		super.shutdown()
+
+
+class BoundedTestSemaphore extends RefCounted:
+	const TIMEOUT_MSEC: int = 2000
+
+	static func wait_until_posted(
+			semaphore: Semaphore,
+			timeout_msec: int = TIMEOUT_MSEC,
+	) -> bool:
+		var deadline_msec: int = Time.get_ticks_msec() + timeout_msec
+		while Time.get_ticks_msec() < deadline_msec:
+			if semaphore.try_wait():
+				return true
+			OS.delay_msec(1)
+		return semaphore.try_wait()
+
+
+class BarrierMemoryProvider extends \
+				"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	final var configure_entered: Semaphore = Semaphore.new()
+	final var configure_release: Semaphore = Semaphore.new()
+	final var flush_entered: Semaphore = Semaphore.new()
+	final var flush_release: Semaphore = Semaphore.new()
+	var block_configure: bool = false
+	var block_flush: bool = false
+	var barrier_timed_out: bool = false
+
+	func configure(config: ObservabilityConfig) -> int:
+		if block_configure:
+			configure_entered.post()
+			if not BoundedTestSemaphore.wait_until_posted(configure_release):
+				barrier_timed_out = true
+				return Error.ERR_TIMEOUT
+		return super.configure(config)
+
+	func flush(timeout_msec: int = 2000) -> int:
+		if block_flush:
+			flush_entered.post()
+			if not BoundedTestSemaphore.wait_until_posted(flush_release):
+				barrier_timed_out = true
+				return Error.ERR_TIMEOUT
+		return super.flush(timeout_msec)
+
+
+class BlockingEventProcessor extends RefCounted:
+	final var entered: Semaphore = Semaphore.new()
+	final var release: Semaphore = Semaphore.new()
+	var barrier_timed_out: bool = false
+
+	func process(event: ObservabilityEvent) -> ObservabilityEvent:
+		entered.post()
+		if not BoundedTestSemaphore.wait_until_posted(release):
+			barrier_timed_out = true
+			return event
+		return event
+
+
+class CountingEventProcessor extends RefCounted:
+	var calls: int = 0
+
+	func process(event: ObservabilityEvent) -> ObservabilityEvent:
+		calls += 1
+		return event
+
+
+class DirtyClaimedPipeline extends \
+			"res://addons/FoundryObservability/processing/ObservabilityProcessingPipeline.fs":
+	func force_dirty_after_claim() -> void:
+		_state_mutex.lock()
+		_prepared_pristine = false
+		_state_mutex.unlock()
+
+
+class DirtyingCandidateMemoryProvider extends \
+			"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var pipeline: DirtyClaimedPipeline
+
+	func configure(config: ObservabilityConfig) -> int:
+		pipeline.force_dirty_after_claim()
+		return super.configure(config)
+
+
+class ProviderSessionThreadProbe extends RefCounted:
+	var session: ObservabilityProviderSession
+	var call: ObservabilityProviderCall
+	var provider: ObservabilityProvider
+	var config: ObservabilityConfig
+	var pipeline: ObservabilityProcessingPipeline
+	var replace_result: int = Error.FAILED
+
+	func finish_call() -> void:
+		session.end_call(call)
+
+	func replace_candidate() -> void:
+		replace_result = session.replace(provider, config, pipeline)
+
+
+class PipelineThreadProbe extends RefCounted:
+	var pipeline: ObservabilityProcessingPipeline
+	var result: ObservabilityProcessingResult[ObservabilityEvent]
+
+	func process_event() -> void:
+		result = pipeline.process_event(ObservabilityEvent.new(p_message = "blocked"))
+
+
 class ReconfiguringReservationService extends \
-		"res://addons/FoundryObservability/FoundryObservability.fs":
+			"res://addons/FoundryObservability/FoundryObservability.fs":
 	var replacement_config: ObservabilityConfig
 	var reconfigure_result: int = Error.OK
 	var armed: bool = false
@@ -373,6 +538,1035 @@ func test_system_observability_runtime_has_sane_units() -> void:
 	Expect.that(runtime.process_frame()).to_be_greater_than(-1)
 	Expect.that(runtime.caller_id()).to_be_greater_than(-1)
 	Expect.that(runtime.main_thread_id()).to_be_greater_than(-1)
+
+
+func test_normalizer_resolves_capture_time_once_through_exception_rebuilds() -> void:
+	var runtime := FakeObservabilityRuntime.new(123, 456, 7, 8, 8)
+	var normalizer := ObservabilityNormalizer.new(runtime)
+	var source := ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_message = "failure",
+			p_attributes = {},
+			p_exception = ObservabilityException.new(
+				p_type_name = "Failure",
+				p_message = "nested",
+				p_attributes = {},
+				p_frames = [
+					ObservabilityStackFrame.new(
+						p_function = "run",
+						p_line = 0,
+						p_context_line = "explode()",
+					),
+				],
+			),
+		)
+
+	var result: ObservabilityNormalizationResult[ObservabilityEvent] = (
+			normalizer.normalize_event(source, ObservabilityConfig.new())
+		)
+
+	Expect.that(result.valid()).to_be_true()
+	Expect.that(result.error()).to_equal(Error.OK)
+	Expect.that(result.value().timestamp_msec()).to_equal(456)
+	Expect.that(result.value().engine_ticks_msec()).to_equal(123)
+	Expect.that(result.value().exception().frames()[0].line()).to_equal(-1)
+	Expect.that(result.value().exception().frames()[0].context_line()).to_equal("explode()")
+	Expect.that(source.timestamp_msec()).to_equal(ObservabilityEvent.UNASSIGNED_TIMESTAMP)
+	Expect.that(source.engine_ticks_msec()).to_equal(-1)
+	Expect.that(runtime.monotonic_call_count).to_equal(1)
+	Expect.that(runtime.unix_call_count).to_equal(1)
+
+
+func test_normalizer_converts_existing_engine_ticks_with_one_capture_pair() -> void:
+	var runtime := FakeObservabilityRuntime.new(5000, 1721865600000)
+	var normalizer := ObservabilityNormalizer.new(runtime)
+	var source := ObservabilityEvent.new(
+			p_message = "earlier",
+			p_attributes = {},
+			p_exception = null,
+			p_engine_ticks_msec = 4000,
+		)
+
+	var result: ObservabilityNormalizationResult[ObservabilityEvent] = (
+			normalizer.normalize_event(source, ObservabilityConfig.new())
+		)
+
+	Expect.that(result.valid()).to_be_true()
+	Expect.that(result.value().timestamp_msec()).to_equal(1721865599000)
+	Expect.that(result.value().engine_ticks_msec()).to_equal(4000)
+	Expect.that(runtime.monotonic_call_count).to_equal(1)
+	Expect.that(runtime.unix_call_count).to_equal(1)
+
+
+func test_normalizer_rejects_null_event_before_sampling_capture_time() -> void:
+	var runtime := FakeObservabilityRuntime.new(123, 456)
+	var normalizer := ObservabilityNormalizer.new(runtime)
+	@warning_ignore("unsafe_call_argument")
+	var result: ObservabilityNormalizationResult[ObservabilityEvent] = (
+			normalizer.normalize_event(null, ObservabilityConfig.new())
+		)
+
+	Expect.that(result.valid()).to_be_false()
+	Expect.that(result.value()).to_be_null()
+	Expect.that(result.error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(runtime.monotonic_call_count).to_equal(0)
+	Expect.that(runtime.unix_call_count).to_equal(0)
+
+
+func test_normalizer_rejects_invalid_metric_without_session_state() -> void:
+	var normalizer := ObservabilityNormalizer.new(FakeObservabilityRuntime.new())
+	var result: ObservabilityNormalizationResult[ObservabilityMetric] = (
+			normalizer.gauge("", 1.0, "", {}, ObservabilityConfig.new())
+		)
+
+	Expect.that(result.valid()).to_be_false()
+	Expect.that(result.value()).to_be_null()
+	Expect.that(result.error()).to_equal(Error.ERR_INVALID_PARAMETER)
+
+
+func test_normalizer_builds_typed_metrics_and_merges_owned_attributes() -> void:
+	var normalizer := ObservabilityNormalizer.new(FakeObservabilityRuntime.new())
+	var source_attributes: Dictionary = {"shared": "metric", "round": 3}
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {"build": 42, "shared": "global"},
+		)
+
+	var counter: ObservabilityNormalizationResult[ObservabilityMetric] = (
+			normalizer.counter("match.started", 2, source_attributes, config)
+		)
+	var gauge: ObservabilityNormalizationResult[ObservabilityMetric] = (
+			normalizer.gauge("frame.time", 16.5, "millisecond", {}, config)
+		)
+	var distribution: ObservabilityNormalizationResult[ObservabilityMetric] = (
+			normalizer.distribution("load.time", 2.5, "second", {}, config)
+		)
+	source_attributes["round"] = 99
+
+	Expect.that(counter.valid()).to_be_true()
+	Expect.that(counter.value().type()).to_equal(ObservabilityMetricType.COUNTER)
+	Expect.that(counter.value().attributes()).to_equal({
+			"build": 42,
+			"shared": "metric",
+			"round": 3,
+		})
+	Expect.that(gauge.value().type()).to_equal(ObservabilityMetricType.GAUGE)
+	Expect.that(distribution.value().type()).to_equal(ObservabilityMetricType.DISTRIBUTION)
+
+
+func test_normalizer_validates_feedback_with_typed_results() -> void:
+	var normalizer := ObservabilityNormalizer.new(FakeObservabilityRuntime.new())
+	var feedback := ObservabilityFeedback.new(
+			p_message = "The gate would not open.",
+			p_name = "Mina",
+			p_contact_email = "mina@example.com",
+		)
+
+	var valid: ObservabilityNormalizationResult[ObservabilityFeedback] = (
+			normalizer.normalize_feedback(feedback)
+		)
+	var invalid: ObservabilityNormalizationResult[ObservabilityFeedback] = (
+			normalizer.normalize_feedback(ObservabilityFeedback.new(p_message = " "))
+		)
+
+	Expect.that(valid.valid()).to_be_true()
+	Expect.that(valid.value()).to_equal(feedback)
+	Expect.that(invalid.valid()).to_be_false()
+	Expect.that(invalid.value()).to_be_null()
+	Expect.that(invalid.error()).to_equal(Error.ERR_INVALID_PARAMETER)
+
+
+func test_normalizer_preserves_explicit_time_and_defensive_event_data() -> void:
+	var runtime := FakeObservabilityRuntime.new(900, 1200)
+	var normalizer := ObservabilityNormalizer.new(runtime)
+	var source_attributes: Dictionary = {"nested": {"value": 7}}
+	var event := ObservabilityEvent.new(
+			p_message = "explicit",
+			p_timestamp_msec = 42,
+			p_engine_ticks_msec = 21,
+			p_attributes = source_attributes,
+		)
+	source_attributes["nested"]["value"] = 99
+
+	var normalized := normalizer.normalize_event(event, ObservabilityConfig.new())
+	Expect.that(normalized.valid()).to_be_true()
+	Expect.that(normalized.value().timestamp_msec()).to_equal(42)
+	Expect.that(normalized.value().engine_ticks_msec()).to_equal(21)
+	Expect.that(normalized.value().attributes()).to_equal({"nested": {"value": 7}})
+	var returned_attributes: Dictionary = normalized.value().attributes()
+	returned_attributes["nested"]["value"] = 123
+	Expect.that(normalized.value().attributes()).to_equal({"nested": {"value": 7}})
+	Expect.that(runtime.monotonic_call_count).to_equal(1)
+	Expect.that(runtime.unix_call_count).to_equal(1)
+
+
+func test_normalizer_applies_stack_trace_feature_toggles_and_bounds_context() -> void:
+	var normalizer := ObservabilityNormalizer.new(FakeObservabilityRuntime.new())
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://combat.fs",
+			p_function = "attack",
+			p_line = 12,
+			p_context_line = "deal_damage()",
+			p_pre_context = PackedStringArray(["p0", "p1", "p2", "p3", "p4", "p5"]),
+			p_post_context = PackedStringArray(["n0", "n1", "n2", "n3", "n4", "n5"]),
+			p_variables = {"damage": 7},
+		)
+	var event := ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_timestamp_msec = 100,
+			p_attributes = {},
+			p_exception = ObservabilityException.new(
+				p_type_name = "CombatFailure",
+				p_attributes = {},
+				p_frames = [frame],
+			),
+		)
+	var variables_only_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_traces = ObservabilityStackTraceConfig.new(
+				p_source_context_enabled = false,
+				p_variables_enabled = true,
+			),
+		)
+	var context_only_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_stack_traces = ObservabilityStackTraceConfig.new(
+				p_source_context_enabled = true,
+				p_variables_enabled = false,
+			),
+		)
+
+	var variables_only := normalizer.normalize_event(event, variables_only_config)
+	var variables_frame: ObservabilityStackFrame = variables_only.value().exception().frames()[0]
+	Expect.that(variables_frame.context_line()).to_equal("")
+	Expect.that(variables_frame.pre_context()).to_equal(PackedStringArray())
+	Expect.that(variables_frame.post_context()).to_equal(PackedStringArray())
+	Expect.that(variables_frame.variables()).to_equal({"damage": 7})
+
+	var context_only := normalizer.normalize_event(event, context_only_config)
+	var context_frame: ObservabilityStackFrame = context_only.value().exception().frames()[0]
+	Expect.that(context_frame.context_line()).to_equal("deal_damage()")
+	Expect.that(context_frame.pre_context()).to_equal(
+			PackedStringArray(["p1", "p2", "p3", "p4", "p5"]),
+		)
+	Expect.that(context_frame.post_context()).to_equal(
+			PackedStringArray(["n0", "n1", "n2", "n3", "n4"]),
+		)
+	Expect.that(context_frame.variables()).to_equal({})
+
+
+func test_normalizer_rejects_invalid_global_and_metric_attributes() -> void:
+	var normalizer := ObservabilityNormalizer.new(FakeObservabilityRuntime.new())
+	var metric := ObservabilityMetric.new(
+			p_name = "combat.damage",
+			p_value = 7.0,
+			p_attributes = {"weapon": "sword"},
+		)
+	var invalid_global := normalizer.normalize_metric(
+			metric,
+			ObservabilityConfig.new(p_global_attributes = {"nested": []}),
+		)
+	var invalid_metric := normalizer.normalize_metric(
+			ObservabilityMetric.new(
+				p_name = "combat.damage",
+				p_value = 7.0,
+				p_attributes = {"nested": {}},
+			),
+			ObservabilityConfig.new(),
+		)
+
+	Expect.that(invalid_global.valid()).to_be_false()
+	Expect.that(invalid_global.value()).to_be_null()
+	Expect.that(invalid_global.error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(invalid_metric.valid()).to_be_false()
+	Expect.that(invalid_metric.value()).to_be_null()
+	Expect.that(invalid_metric.error()).to_equal(Error.ERR_INVALID_PARAMETER)
+
+
+func test_normalizer_rejects_control_characters_in_every_feedback_field() -> void:
+	var normalizer := ObservabilityNormalizer.new(FakeObservabilityRuntime.new())
+	var invalid_message := normalizer.normalize_feedback(ObservabilityFeedback.new(
+			p_message = "broken\nmessage",
+		))
+	var invalid_name := normalizer.normalize_feedback(ObservabilityFeedback.new(
+			p_message = "valid",
+			p_name = "Player\tOne",
+		))
+	var invalid_email := normalizer.normalize_feedback(ObservabilityFeedback.new(
+			p_message = "valid",
+			p_contact_email = "player@example.com\n",
+		))
+	var invalid_event := normalizer.normalize_feedback(ObservabilityFeedback.new(
+			p_message = "valid",
+			p_associated_event_id = "event\u007f1",
+		))
+
+	Expect.that(invalid_message.valid()).to_be_false()
+	Expect.that(invalid_name.valid()).to_be_false()
+	Expect.that(invalid_email.valid()).to_be_false()
+	Expect.that(invalid_event.valid()).to_be_false()
+
+
+func test_normalization_result_canonicalizes_invalid_public_states() -> void:
+	var event := ObservabilityEvent.new(p_message = "typed")
+	var success := ObservabilityNormalizationResult[ObservabilityEvent].success(event)
+	var contradictory_success := ObservabilityNormalizationResult[ObservabilityEvent].new(
+			true,
+			event,
+			Error.FAILED,
+		)
+	var contradictory_failure := ObservabilityNormalizationResult[ObservabilityEvent].new(
+			false,
+			event,
+			Error.ERR_INVALID_PARAMETER,
+		)
+	var ok_failure := ObservabilityNormalizationResult[ObservabilityEvent].failure(Error.OK)
+
+	Expect.that(success.valid()).to_be_true()
+	Expect.that(success.value()).to_equal(event)
+	Expect.that(success.error()).to_equal(Error.OK)
+	Expect.that(contradictory_success.valid()).to_be_false()
+	Expect.that(contradictory_success.value()).to_be_null()
+	Expect.that(contradictory_success.error()).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(contradictory_failure.valid()).to_be_false()
+	Expect.that(contradictory_failure.value()).to_be_null()
+	Expect.that(contradictory_failure.error()).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(ok_failure.valid()).to_be_false()
+	Expect.that(ok_failure.value()).to_be_null()
+	Expect.that(ok_failure.error()).to_equal(Error.ERR_INVALID_DATA)
+
+
+func test_provider_call_canonicalizes_invalid_public_states() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	var snapshot := ObservabilityProviderSnapshot.new(
+			MemoryObservabilityProvider.new(),
+			config,
+			pipeline,
+			1,
+		)
+	var missing_snapshot := ObservabilityProviderCall.new(true, null, Error.OK)
+	var rejected_with_snapshot := ObservabilityProviderCall.new(
+			false,
+			snapshot,
+			Error.ERR_BUSY,
+		)
+	var accepted_with_error := ObservabilityProviderCall.new(
+			true,
+			snapshot,
+			Error.ERR_BUSY,
+		)
+	var ok_rejection := ObservabilityProviderCall.rejected(Error.OK)
+
+	for rejected: ObservabilityProviderCall in [
+		missing_snapshot,
+		rejected_with_snapshot,
+		accepted_with_error,
+		ok_rejection,
+	]:
+		Expect.that(rejected.accepted()).to_be_false()
+		Expect.that(rejected.snapshot()).to_be_null()
+		Expect.that(rejected.error()).to_equal(Error.ERR_INVALID_DATA)
+
+
+func test_provider_snapshot_derives_enabled_and_canonicalizes_invalid_state() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	var provider := MemoryObservabilityProvider.new()
+	var unclaimed := ObservabilityProviderSnapshot.new(provider, config, pipeline, 7)
+
+	Expect.that(unclaimed.provider().provider_name()).to_equal(&"null")
+	Expect.that(unclaimed.config().enabled()).to_be_false()
+	Expect.that(unclaimed.pipeline().is_frozen()).to_be_true()
+	Expect.that(unclaimed.generation()).to_equal(0)
+	Expect.that(unclaimed.enabled()).to_be_false()
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+
+	var token := ObservabilityPipelineClaimToken.new()
+	Expect.that(pipeline.claim(config, token)).to_equal(Error.OK)
+	Expect.that(pipeline.freeze(token)).to_equal(Error.OK)
+	var snapshot := ObservabilityProviderSnapshot.new(provider, config, pipeline, 7)
+	Expect.that(snapshot.provider()).to_equal(provider)
+	Expect.that(snapshot.config()).to_equal(config)
+	Expect.that(snapshot.pipeline()).to_equal(pipeline)
+	Expect.that(snapshot.generation()).to_equal(7)
+	Expect.that(snapshot.enabled()).to_be_true()
+	Expect.that(pipeline.configure(ObservabilityConfig.new())).to_equal(
+			Error.ERR_ALREADY_IN_USE,
+		)
+	Expect.that(pipeline.release(token)).to_equal(Error.ERR_ALREADY_IN_USE)
+
+	var mismatched_config := ObservabilityConfig.new()
+	var invalid := ObservabilityProviderSnapshot.new(
+			provider,
+			mismatched_config,
+			pipeline,
+			8,
+		)
+	var null_input := ObservabilityProviderSnapshot.new(null, null, null, 1)
+	Expect.that(invalid.provider().provider_name()).to_equal(&"null")
+	Expect.that(invalid.config().enabled()).to_be_false()
+	Expect.that(invalid.pipeline().is_configured_for(invalid.config())).to_be_true()
+	Expect.that(invalid.pipeline().is_frozen()).to_be_true()
+	Expect.that(invalid.generation()).to_equal(0)
+	Expect.that(invalid.enabled()).to_be_false()
+	Expect.that(null_input.provider().provider_name()).to_equal(&"null")
+	Expect.that(null_input.config().enabled()).to_be_false()
+	Expect.that(null_input.pipeline().is_configured_for(null_input.config())).to_be_true()
+	Expect.that(null_input.pipeline().is_frozen()).to_be_true()
+
+
+func test_provider_session_commits_provider_config_and_pipeline_together() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+	var snapshot: ObservabilityProviderSnapshot = session.snapshot()
+
+	Expect.that(snapshot.provider()).to_equal(provider)
+	Expect.that(snapshot.config()).to_equal(config)
+	Expect.that(snapshot.pipeline()).to_equal(pipeline)
+	Expect.that(snapshot.generation()).to_equal(1)
+	Expect.that(snapshot.enabled()).to_be_true()
+
+
+func test_provider_session_pins_balances_and_releases_provider_calls() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+
+	var call: ObservabilityProviderCall = session.begin_call()
+	Expect.that(call.accepted()).to_be_true()
+	Expect.that(call.error()).to_equal(Error.OK)
+	Expect.that(call.snapshot()).to_equal(session.snapshot())
+	Expect.that(call.provider()).to_equal(provider)
+	Expect.that(call.config()).to_equal(config)
+	Expect.that(call.pipeline()).to_equal(pipeline)
+	Expect.that(call.generation()).to_equal(1)
+	Expect.that(session.in_flight_call_count()).to_equal(1)
+
+	var replacement := MemoryObservabilityProvider.new()
+	Expect.that(session.replace(replacement, config, pipeline)).to_equal(Error.ERR_BUSY)
+	session.finish_call(call, Error.FAILED)
+	session.finish_call(call, Error.FAILED)
+	Expect.that(session.in_flight_call_count()).to_equal(0)
+	Expect.that(session.replace(replacement, config, pipeline)).to_equal(Error.OK)
+	Expect.that(session.snapshot().provider()).to_equal(replacement)
+	Expect.that(session.snapshot().generation()).to_equal(2)
+
+
+func test_provider_call_rejections_carry_errors_without_collaborators() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var disabled_call: ObservabilityProviderCall = session.begin_call()
+
+	Expect.that(disabled_call.accepted()).to_be_false()
+	Expect.that(disabled_call.snapshot()).to_be_null()
+	Expect.that(disabled_call.error()).to_equal(Error.ERR_UNCONFIGURED)
+	session.end_call(disabled_call)
+	Expect.that(session.in_flight_call_count()).to_equal(0)
+
+
+func test_provider_session_rejects_calls_and_flush_during_configuration() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var provider := ReentrantProviderSessionMemoryProvider.new()
+	provider.session = session
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+	Expect.that(provider.nested_call_error).to_equal(Error.ERR_BUSY)
+	Expect.that(provider.nested_flush_result).to_equal(Error.ERR_BUSY)
+	Expect.that(session.snapshot().provider()).to_equal(provider)
+	Expect.that(session.snapshot().generation()).to_equal(1)
+	session.shutdown()
+
+
+func test_provider_session_failed_replacement_preserves_snapshot_and_cleans_candidate() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var active := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(session.replace(active, config, pipeline)).to_equal(Error.OK)
+	var before: ObservabilityProviderSnapshot = session.snapshot()
+	var rejected := MemoryObservabilityProvider.new()
+	rejected.configure_result = Error.FAILED
+
+	Expect.that(session.replace(rejected, config, pipeline)).to_equal(Error.FAILED)
+	Expect.that(session.snapshot()).to_equal(before)
+	Expect.that(session.snapshot().provider()).to_equal(active)
+	Expect.that(session.snapshot().generation()).to_equal(1)
+	Expect.that(active.shutdown_count).to_equal(0)
+	Expect.that(rejected.shutdown_count).to_equal(1)
+	session.shutdown()
+	Expect.that(rejected.shutdown_count).to_equal(1)
+
+
+func test_provider_session_exact_same_provider_replacement_preserves_live_generation() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+	var before: ObservabilityProviderSnapshot = session.snapshot()
+	provider.configure_result = Error.FAILED
+
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+	Expect.that(session.snapshot()).to_equal(before)
+	Expect.that(session.snapshot().generation()).to_equal(1)
+	Expect.that(provider.shutdown_count).to_equal(0)
+	provider.configure_result = Error.OK
+	var call: ObservabilityProviderCall = session.begin_call()
+	Expect.that(call.accepted()).to_be_true()
+	session.end_call(call)
+	session.shutdown()
+
+
+func test_provider_session_flushes_disabled_provider_and_restores_null_on_shutdown() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var provider := MemoryObservabilityProvider.new()
+	provider.flush_result = Error.FAILED
+	var config := ObservabilityConfig.new(p_enabled = false)
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+
+	Expect.that(session.begin_call().error()).to_equal(Error.ERR_UNCONFIGURED)
+	Expect.that(session.flush(321)).to_equal(Error.FAILED)
+	Expect.that(provider.last_flush_timeout_msec).to_equal(321)
+	Expect.that(provider.flush_count).to_equal(1)
+	session.shutdown()
+
+	Expect.that(provider.flush_count).to_equal(2)
+	Expect.that(provider.shutdown_count).to_equal(1)
+	Expect.that(session.snapshot().provider().provider_name()).to_equal(&"null")
+	Expect.that(session.snapshot().generation()).to_equal(2)
+	Expect.that(session.snapshot().enabled()).to_be_false()
+	Expect.that(session.shutdown_requested()).to_be_false()
+
+
+func test_provider_session_defers_shutdown_until_pinned_call_finishes() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+	var call: ObservabilityProviderCall = session.begin_call()
+
+	session.shutdown()
+	Expect.that(session.shutdown_requested()).to_be_true()
+	Expect.that(provider.flush_count).to_equal(0)
+	Expect.that(provider.shutdown_count).to_equal(0)
+	Expect.that(session.begin_call().error()).to_equal(Error.ERR_BUSY)
+	session.end_call(call)
+
+	Expect.that(provider.flush_count).to_equal(1)
+	Expect.that(provider.shutdown_count).to_equal(1)
+	Expect.that(session.in_flight_call_count()).to_equal(0)
+	Expect.that(session.snapshot().provider().provider_name()).to_equal(&"null")
+	Expect.that(session.snapshot().generation()).to_equal(2)
+
+
+func test_provider_session_failed_replacement_honors_reentrant_shutdown_once() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var active := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(session.replace(active, config, pipeline)).to_equal(Error.OK)
+	var rejected := ReentrantProviderSessionMemoryProvider.new()
+	rejected.session = session
+	rejected.request_shutdown = true
+	rejected.configure_result = Error.FAILED
+
+	Expect.that(session.replace(rejected, config, pipeline)).to_equal(Error.FAILED)
+	Expect.that(rejected.shutdown_count).to_equal(1)
+	Expect.that(active.flush_count).to_equal(1)
+	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(session.snapshot().provider().provider_name()).to_equal(&"null")
+	Expect.that(session.snapshot().generation()).to_equal(2)
+	session.shutdown()
+	Expect.that(rejected.shutdown_count).to_equal(1)
+	Expect.that(active.shutdown_count).to_equal(1)
+
+
+func test_provider_session_successful_replacement_honors_reentrant_shutdown_once() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var active := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(session.replace(active, config, pipeline)).to_equal(Error.OK)
+	var replacement := ReentrantProviderSessionMemoryProvider.new()
+	replacement.session = session
+	replacement.request_shutdown = true
+
+	Expect.that(session.replace(replacement, config, pipeline)).to_equal(Error.OK)
+	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(replacement.flush_count).to_equal(1)
+	Expect.that(replacement.shutdown_count).to_equal(1)
+	Expect.that(session.snapshot().provider().provider_name()).to_equal(&"null")
+	Expect.that(session.snapshot().generation()).to_equal(3)
+	session.shutdown()
+	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(replacement.shutdown_count).to_equal(1)
+
+
+func test_provider_session_rejects_pipeline_config_mismatch_before_provider_callback() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var active := MemoryObservabilityProvider.new()
+	var config_a := ObservabilityConfig.new()
+	var active_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(active_pipeline.configure(config_a)).to_equal(Error.OK)
+	Expect.that(session.replace(active, config_a, active_pipeline)).to_equal(Error.OK)
+	var before: ObservabilityProviderSnapshot = session.snapshot()
+	var config_b := ObservabilityConfig.new()
+	var mismatched_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(mismatched_pipeline.configure(config_a)).to_equal(Error.OK)
+	var candidate := ConfigureCountingMemoryProvider.new()
+
+	Expect.that(
+			session.replace(candidate, config_b, mismatched_pipeline)
+		).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(candidate.configure_calls).to_equal(0)
+	Expect.that(candidate.shutdown_count).to_equal(0)
+	Expect.that(session.snapshot()).to_equal(before)
+	Expect.that(session.snapshot().generation()).to_equal(1)
+	Expect.that(active.shutdown_count).to_equal(0)
+
+
+func test_provider_session_rejects_a_previously_processed_candidate_before_provider_callback() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
+	var candidate := ConfigureCountingMemoryProvider.new()
+
+	Expect.that(session.replace(candidate, config, pipeline)).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(candidate.configure_calls).to_equal(0)
+	Expect.that(candidate.shutdown_count).to_equal(0)
+	Expect.that(session.snapshot().generation()).to_equal(0)
+	Expect.that(session.snapshot().provider().provider_name()).to_equal(&"null")
+
+
+func test_provider_session_rejects_active_then_dirty_candidate_without_hanging() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var blocker := BlockingEventProcessor.new()
+	var processor := Callable(blocker, "process") as Callable[[ObservabilityEvent], ObservabilityEvent?]
+	var config := _processing_config([processor])
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	var probe := PipelineThreadProbe.new()
+	probe.pipeline = pipeline
+	var process_callable: Callable[[], void] = func() -> void:
+		probe.process_event()
+	var thread := Thread.new()
+	Expect.that(thread.start(process_callable)).to_equal(Error.OK)
+	var processor_entered: bool = BoundedTestSemaphore.wait_until_posted(blocker.entered)
+	var candidate := ConfigureCountingMemoryProvider.new()
+	var active_result: int = Error.ERR_TIMEOUT
+	if processor_entered:
+		active_result = session.replace(candidate, config, pipeline)
+	blocker.release.post()
+	var process_thread_result: Variant = thread.wait_to_finish()
+
+	Expect.that(processor_entered).to_be_true()
+	Expect.that(process_thread_result).to_be_null()
+	Expect.that(blocker.barrier_timed_out).to_be_false()
+	Expect.that(active_result).to_equal(Error.ERR_BUSY)
+	Expect.that(candidate.configure_calls).to_equal(0)
+	Expect.that(probe.result.is_accepted()).to_be_true()
+	Expect.that(session.replace(candidate, config, pipeline)).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(candidate.configure_calls).to_equal(0)
+
+
+func test_provider_session_seals_committed_pipeline_and_excludes_other_sessions() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	var first_session := ObservabilityProviderSession.new(runtime)
+	var first_provider := MemoryObservabilityProvider.new()
+	Expect.that(first_session.replace(first_provider, config, pipeline)).to_equal(Error.OK)
+	var before: ObservabilityProviderSnapshot = first_session.snapshot()
+	var changed_config := ObservabilityConfig.new()
+
+	Expect.that(pipeline.configure(changed_config)).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(first_session.snapshot()).to_equal(before)
+	var first_call: ObservabilityProviderCall = first_session.begin_call()
+	Expect.that(first_call.accepted()).to_be_true()
+	Expect.that(first_call.pipeline()).to_equal(pipeline)
+	first_session.end_call(first_call)
+
+	var second_session := ObservabilityProviderSession.new(runtime)
+	var second_provider := ConfigureCountingMemoryProvider.new()
+	Expect.that(
+			second_session.replace(second_provider, config, pipeline)
+		).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(second_provider.configure_calls).to_equal(0)
+	Expect.that(second_provider.shutdown_count).to_equal(0)
+
+	first_session.shutdown()
+	Expect.that(first_provider.shutdown_count).to_equal(1)
+	Expect.that(
+			second_session.replace(second_provider, config, pipeline)
+		).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(second_provider.configure_calls).to_equal(0)
+	second_session.shutdown()
+
+
+func test_provider_session_keeps_every_published_snapshot_pipeline_permanently_frozen() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var first_provider := MemoryObservabilityProvider.new()
+	var first_config := ObservabilityConfig.new()
+	var first_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(first_pipeline.configure(first_config)).to_equal(Error.OK)
+	Expect.that(session.replace(first_provider, first_config, first_pipeline)).to_equal(Error.OK)
+	var retained_snapshot: ObservabilityProviderSnapshot = session.snapshot()
+	var retained_call: ObservabilityProviderCall = session.begin_call()
+	Expect.that(retained_call.accepted()).to_be_true()
+	session.end_call(retained_call)
+
+	var second_provider := MemoryObservabilityProvider.new()
+	var second_config := ObservabilityConfig.new()
+	var second_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(second_pipeline.configure(second_config)).to_equal(Error.OK)
+	Expect.that(session.replace(second_provider, second_config, second_pipeline)).to_equal(Error.OK)
+	var forged_token := ObservabilityPipelineClaimToken.new()
+
+	Expect.that(first_pipeline.release(forged_token)).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(first_pipeline.configure(ObservabilityConfig.new())).to_equal(
+			Error.ERR_ALREADY_IN_USE,
+		)
+	Expect.that(retained_snapshot.config()).to_equal(first_config)
+	Expect.that(retained_snapshot.pipeline()).to_equal(first_pipeline)
+	Expect.that(retained_snapshot.generation()).to_equal(1)
+	Expect.that(retained_call.config()).to_equal(first_config)
+	Expect.that(retained_call.pipeline()).to_equal(first_pipeline)
+	Expect.that(retained_call.generation()).to_equal(1)
+
+	session.shutdown()
+	var shutdown_snapshot: ObservabilityProviderSnapshot = session.snapshot()
+	Expect.that(second_pipeline.release(forged_token)).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(second_pipeline.configure(ObservabilityConfig.new())).to_equal(
+			Error.ERR_ALREADY_IN_USE,
+		)
+	Expect.that(shutdown_snapshot.pipeline().release(forged_token)).to_equal(
+			Error.ERR_ALREADY_IN_USE,
+		)
+	Expect.that(shutdown_snapshot.pipeline().configure(ObservabilityConfig.new())).to_equal(
+			Error.ERR_ALREADY_IN_USE,
+		)
+	Expect.that(retained_snapshot.pipeline().is_configured_for(first_config)).to_be_true()
+	Expect.that(first_provider.shutdown_count).to_equal(1)
+	Expect.that(second_provider.shutdown_count).to_equal(1)
+
+
+func test_provider_session_failed_candidate_releases_pipeline_for_reuse() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var active_session := ObservabilityProviderSession.new(runtime)
+	var active := MemoryObservabilityProvider.new()
+	var active_config := ObservabilityConfig.new()
+	var active_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(active_pipeline.configure(active_config)).to_equal(Error.OK)
+	Expect.that(
+			active_session.replace(active, active_config, active_pipeline)
+		).to_equal(Error.OK)
+	var before: ObservabilityProviderSnapshot = active_session.snapshot()
+	var candidate_config := ObservabilityConfig.new()
+	var candidate_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(candidate_pipeline.configure(candidate_config)).to_equal(Error.OK)
+	var rejected := PipelineClaimProbingMemoryProvider.new()
+	rejected.pipeline = candidate_pipeline
+	rejected.configure_result = Error.FAILED
+
+	Expect.that(
+			active_session.replace(rejected, candidate_config, candidate_pipeline)
+		).to_equal(Error.FAILED)
+	Expect.that(rejected.configure_calls).to_equal(1)
+	Expect.that(rejected.configure_during_callback_result).to_equal(
+			Error.ERR_ALREADY_IN_USE,
+		)
+	Expect.that(rejected.shutdown_count).to_equal(1)
+	Expect.that(active_session.snapshot()).to_equal(before)
+	Expect.that(active.shutdown_count).to_equal(0)
+
+	Expect.that(candidate_pipeline.configure(candidate_config)).to_equal(Error.OK)
+	var reuse_session := ObservabilityProviderSession.new(runtime)
+	var reused := ConfigureCountingMemoryProvider.new()
+	Expect.that(
+			reuse_session.replace(reused, candidate_config, candidate_pipeline)
+		).to_equal(Error.OK)
+	Expect.that(reused.configure_calls).to_equal(1)
+	reuse_session.shutdown()
+	active_session.shutdown()
+
+
+func test_provider_session_blocks_candidate_pipeline_mutation_between_claim_and_freeze() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var processor := CountingEventProcessor.new()
+	var event_processor := Callable(processor, "process") as Callable[[ObservabilityEvent], ObservabilityEvent?]
+	var config := _processing_config([event_processor])
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	var provider := BarrierMemoryProvider.new()
+	provider.block_configure = true
+	var probe := ProviderSessionThreadProbe.new()
+	probe.session = session
+	probe.provider = provider
+	probe.config = config
+	probe.pipeline = pipeline
+	var replace_callable: Callable[[], void] = func() -> void:
+		probe.replace_candidate()
+	var thread := Thread.new()
+	Expect.that(thread.start(replace_callable)).to_equal(Error.OK)
+	var configure_entered: bool = BoundedTestSemaphore.wait_until_posted(
+			provider.configure_entered,
+		)
+	var event_result := ObservabilityProcessingResult[ObservabilityEvent].dropped(
+			ObservabilitySignal.EVENT,
+			ObservabilityProcessingReason.STALE_GENERATION,
+		)
+	var state_result := ObservabilityProcessingResult[Dictionary].dropped(
+			ObservabilitySignal.STATE,
+			ObservabilityProcessingReason.STALE_GENERATION,
+		)
+	if configure_entered:
+		event_result = pipeline.process_event(ObservabilityEvent.new(p_message = "blocked"))
+		state_result = pipeline.redact_contexts({"candidate": true})
+		pipeline.record_provider_result(ObservabilitySignal.EVENT, true, Error.OK)
+	provider.configure_release.post()
+	var replace_thread_result: Variant = thread.wait_to_finish()
+
+	Expect.that(configure_entered).to_be_true()
+	Expect.that(replace_thread_result).to_be_null()
+	Expect.that(provider.barrier_timed_out).to_be_false()
+	Expect.that(event_result.is_accepted()).to_be_false()
+	Expect.that(event_result.reason()).to_equal(ObservabilityProcessingReason.RECURSIVE)
+	Expect.that(state_result.is_accepted()).to_be_false()
+	Expect.that(state_result.error()).to_equal(Error.ERR_BUSY)
+	Expect.that(processor.calls).to_equal(0)
+	Expect.that(probe.replace_result).to_equal(Error.OK)
+	Expect.that(session.snapshot().provider()).to_equal(provider)
+	Expect.that(session.snapshot().pipeline()).to_equal(pipeline)
+	Expect.that(session.snapshot().generation()).to_equal(1)
+	session.shutdown()
+
+
+func test_provider_session_rolls_back_candidate_when_atomic_freeze_revalidation_fails() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var active := MemoryObservabilityProvider.new()
+	var active_config := ObservabilityConfig.new()
+	var active_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(active_pipeline.configure(active_config)).to_equal(Error.OK)
+	Expect.that(session.replace(active, active_config, active_pipeline)).to_equal(Error.OK)
+	var before: ObservabilityProviderSnapshot = session.snapshot()
+	var candidate_config := ObservabilityConfig.new()
+	var candidate_pipeline := DirtyClaimedPipeline.new(runtime)
+	Expect.that(candidate_pipeline.configure(candidate_config)).to_equal(Error.OK)
+	var candidate := DirtyingCandidateMemoryProvider.new()
+	candidate.pipeline = candidate_pipeline
+
+	Expect.that(
+			session.replace(candidate, candidate_config, candidate_pipeline)
+		).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(candidate.shutdown_count).to_equal(1)
+	Expect.that(candidate_pipeline.is_frozen()).to_be_false()
+	Expect.that(candidate_pipeline.configure(candidate_config)).to_equal(Error.OK)
+	Expect.that(session.snapshot()).to_equal(before)
+	Expect.that(active.shutdown_count).to_equal(0)
+	session.shutdown()
+
+
+func test_provider_session_same_provider_replacement_is_only_exactly_idempotent() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var provider := MutatingFailureMemoryProvider.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+	var before: ObservabilityProviderSnapshot = session.snapshot()
+	provider.configure_result = Error.FAILED
+
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+	Expect.that(provider.configure_calls).to_equal(1)
+	Expect.that(provider.failure_mutations).to_equal(0)
+	Expect.that(session.snapshot()).to_equal(before)
+
+	var changed_config := ObservabilityConfig.new()
+	var changed_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(changed_pipeline.configure(changed_config)).to_equal(Error.OK)
+	Expect.that(
+			session.replace(provider, changed_config, changed_pipeline)
+		).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(provider.configure_calls).to_equal(1)
+	Expect.that(provider.failure_mutations).to_equal(0)
+	Expect.that(provider.shutdown_count).to_equal(0)
+	Expect.that(session.snapshot()).to_equal(before)
+	session.shutdown()
+
+
+func test_provider_session_commits_before_detached_shutdown_and_defers_reentrant_stop() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var previous := ShutdownObservingMemoryProvider.new()
+	previous.session = session
+	var previous_config := ObservabilityConfig.new()
+	var previous_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(previous_pipeline.configure(previous_config)).to_equal(Error.OK)
+	Expect.that(
+			session.replace(previous, previous_config, previous_pipeline)
+		).to_equal(Error.OK)
+	var replacement := MemoryObservabilityProvider.new()
+	var replacement_config := ObservabilityConfig.new()
+	var replacement_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(replacement_pipeline.configure(replacement_config)).to_equal(Error.OK)
+	previous.request_shutdown = true
+
+	Expect.that(
+			session.replace(replacement, replacement_config, replacement_pipeline)
+		).to_equal(Error.OK)
+	Expect.that(previous.observed_provider).to_equal(replacement)
+	Expect.that(previous.observed_generation).to_equal(2)
+	Expect.that(previous.nested_call_error).to_equal(Error.ERR_BUSY)
+	Expect.that(previous.shutdown_count).to_equal(1)
+	Expect.that(replacement.flush_count).to_equal(1)
+	Expect.that(replacement.shutdown_count).to_equal(1)
+	Expect.that(session.snapshot().provider().provider_name()).to_equal(&"null")
+	Expect.that(session.snapshot().generation()).to_equal(3)
+	Expect.that(session.in_flight_call_count()).to_equal(0)
+	Expect.that(session.shutdown_requested()).to_be_false()
+
+
+func test_provider_session_shutdown_racing_final_end_call_is_exactly_once() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var provider := BarrierMemoryProvider.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+	var call: ObservabilityProviderCall = session.begin_call()
+	Expect.that(call.accepted()).to_be_true()
+	provider.block_flush = true
+	session.shutdown()
+	Expect.that(session.shutdown_requested()).to_be_true()
+
+	var probe := ProviderSessionThreadProbe.new()
+	probe.session = session
+	probe.call = call
+	var finish_callable: Callable[[], void] = func() -> void:
+		probe.finish_call()
+	var thread := Thread.new()
+	Expect.that(thread.start(finish_callable)).to_equal(Error.OK)
+	var flush_entered: bool = BoundedTestSemaphore.wait_until_posted(provider.flush_entered)
+
+	var racing_in_flight_count: int = -1
+	var racing_call_error: int = Error.ERR_TIMEOUT
+	if flush_entered:
+		session.shutdown()
+		racing_in_flight_count = session.in_flight_call_count()
+		racing_call_error = session.begin_call().error()
+	provider.flush_release.post()
+	var finish_result: Variant = thread.wait_to_finish()
+
+	Expect.that(flush_entered).to_be_true()
+	Expect.that(finish_result).to_be_null()
+	Expect.that(provider.barrier_timed_out).to_be_false()
+	Expect.that(racing_in_flight_count).to_equal(0)
+	Expect.that(racing_call_error).to_equal(Error.ERR_BUSY)
+	Expect.that(provider.flush_count).to_equal(1)
+	Expect.that(provider.shutdown_count).to_equal(1)
+	Expect.that(session.in_flight_call_count()).to_equal(0)
+	Expect.that(session.snapshot().provider().provider_name()).to_equal(&"null")
+	Expect.that(session.snapshot().generation()).to_equal(2)
+	Expect.that(session.shutdown_requested()).to_be_false()
+
+
+func test_provider_session_shutdown_racing_replace_is_exactly_once_and_monotonic() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var session := ObservabilityProviderSession.new(runtime)
+	var active := MemoryObservabilityProvider.new()
+	var active_config := ObservabilityConfig.new()
+	var active_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(active_pipeline.configure(active_config)).to_equal(Error.OK)
+	Expect.that(
+			session.replace(active, active_config, active_pipeline)
+		).to_equal(Error.OK)
+	var candidate := BarrierMemoryProvider.new()
+	candidate.block_configure = true
+	var candidate_config := ObservabilityConfig.new()
+	var candidate_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(candidate_pipeline.configure(candidate_config)).to_equal(Error.OK)
+	var probe := ProviderSessionThreadProbe.new()
+	probe.session = session
+	probe.provider = candidate
+	probe.config = candidate_config
+	probe.pipeline = candidate_pipeline
+	var replace_callable: Callable[[], void] = func() -> void:
+		probe.replace_candidate()
+	var thread := Thread.new()
+	Expect.that(thread.start(replace_callable)).to_equal(Error.OK)
+	var configure_entered: bool = BoundedTestSemaphore.wait_until_posted(
+			candidate.configure_entered,
+		)
+
+	var competing := ConfigureCountingMemoryProvider.new()
+	var competing_pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(competing_pipeline.configure(candidate_config)).to_equal(Error.OK)
+	var competing_result: int = Error.ERR_TIMEOUT
+	if configure_entered:
+		Expect.that(session.snapshot().generation()).to_equal(1)
+		session.shutdown()
+		competing_result = session.replace(competing, candidate_config, competing_pipeline)
+	candidate.configure_release.post()
+	var replace_thread_result: Variant = thread.wait_to_finish()
+
+	Expect.that(configure_entered).to_be_true()
+	Expect.that(replace_thread_result).to_be_null()
+	Expect.that(candidate.barrier_timed_out).to_be_false()
+	Expect.that(competing_result).to_equal(Error.ERR_BUSY)
+	Expect.that(competing.configure_calls).to_equal(0)
+	Expect.that(probe.replace_result).to_equal(Error.OK)
+	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(candidate.flush_count).to_equal(1)
+	Expect.that(candidate.shutdown_count).to_equal(1)
+	Expect.that(session.in_flight_call_count()).to_equal(0)
+	Expect.that(session.snapshot().provider().provider_name()).to_equal(&"null")
+	Expect.that(session.snapshot().generation()).to_equal(3)
+	Expect.that(session.shutdown_requested()).to_be_false()
 
 
 func test_levels_are_ordered_and_named() -> void:
@@ -8072,8 +9266,9 @@ func test_processing_pipeline_state_result_survives_later_diagnostic_overwrite()
 	Expect.that(state_result.error()).to_equal(Error.ERR_INVALID_DATA)
 
 
-func test_processing_pipeline_reconfigure_reentry_is_recursive_and_outer_result_is_stale() -> void:
+func test_processing_pipeline_rejects_reconfigure_reentry_until_operation_is_quiescent() -> void:
 	_processing_runtime = _test_runtime(10, 1, 1)
+	_pipeline_lifecycle_configure_result = Error.OK
 	_lifecycle_nested_result = ObservabilityProcessingResult[ObservabilityEvent].dropped(
 			ObservabilitySignal.EVENT,
 			ObservabilityProcessingReason.STALE_GENERATION,
@@ -8085,15 +9280,19 @@ func test_processing_pipeline_reconfigure_reentry_is_recursive_and_outer_result_
 
 	var outer: ObservabilityProcessingResult[ObservabilityEvent] = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
 	Expect.that(_lifecycle_nested_result.is_accepted()).to_be_false()
-	Expect.that(outer.is_accepted()).to_be_false()
+	Expect.that(_pipeline_lifecycle_configure_result).to_equal(Error.ERR_BUSY)
+	Expect.that(outer.is_accepted()).to_be_true()
 	Expect.that(_lifecycle_pipeline.recursive_drop_count()).to_equal(1)
 	Expect.that(_lifecycle_pipeline.last_diagnostic().reason()).to_equal(
 			ObservabilityProcessingReason.RECURSIVE)
+	Expect.that(_lifecycle_pipeline.configure(_processing_config([]))).to_equal(Error.OK)
+	Expect.that(_lifecycle_pipeline.last_diagnostic()).to_be_null()
 	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 
 
-func test_processing_pipeline_suppresses_old_generation_processor_drop_after_reset() -> void:
+func test_processing_pipeline_reconfigures_dirty_state_only_after_operation_finishes() -> void:
 	_processing_runtime = _test_runtime(10, 1, 1)
+	_pipeline_lifecycle_configure_result = Error.OK
 	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(_processing_runtime)
 	Expect.that(_lifecycle_pipeline.configure(_processing_config(
 			[Callable(self, "_processing_reconfigure_and_drop") as Callable[[ObservabilityEvent], ObservabilityEvent?]],
@@ -8101,6 +9300,11 @@ func test_processing_pipeline_suppresses_old_generation_processor_drop_after_res
 
 	Expect.that(_lifecycle_pipeline.process_event(
 			ObservabilityEvent.new()).is_accepted()).to_be_false()
+	Expect.that(_pipeline_lifecycle_configure_result).to_equal(Error.ERR_BUSY)
+	Expect.that(_lifecycle_pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingReason.PROCESSOR,
+		)
+	Expect.that(_lifecycle_pipeline.configure(_processing_config([]))).to_equal(Error.OK)
 	Expect.that(_lifecycle_pipeline.last_diagnostic()).to_be_null()
 	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 
@@ -8292,6 +9496,69 @@ func test_processing_pipeline_configure_is_atomic_and_success_resets_state() -> 
 	Expect.that(pipeline.last_diagnostic()).to_be_null()
 	Expect.that(pipeline.process_event(ObservabilityEvent.new()).is_accepted()).to_be_true()
 	Expect.that(pipeline.configure(null)).to_equal(Error.ERR_INVALID_PARAMETER)
+
+
+func test_processing_pipeline_claim_uses_unforgeable_identity_and_freezes_publication() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
+	var config_a := _processing_config([])
+	var config_b := _processing_config([])
+	var owner_token := ObservabilityPipelineClaimToken.new()
+	var forged_token := ObservabilityPipelineClaimToken.new()
+
+	Expect.that(pipeline.claim(config_a, owner_token)).to_equal(Error.ERR_UNCONFIGURED)
+	Expect.that(pipeline.configure(config_a)).to_equal(Error.OK)
+	Expect.that(pipeline.is_configured_for(config_a)).to_be_true()
+	Expect.that(pipeline.is_configured_for(config_b)).to_be_false()
+	Expect.that(pipeline.claim(config_a, null)).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(pipeline.claim(config_b, owner_token)).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(pipeline.claim(config_a, owner_token)).to_equal(Error.OK)
+	Expect.that(pipeline.is_claimed_by(owner_token)).to_be_true()
+	Expect.that(pipeline.is_claimed_by(forged_token)).to_be_false()
+	Expect.that(pipeline.claim(config_a, owner_token)).to_equal(Error.OK)
+	Expect.that(pipeline.claim(config_a, forged_token)).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(pipeline.configure(config_b)).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(pipeline.release(forged_token)).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(pipeline.is_claimed_by(owner_token)).to_be_true()
+	Expect.that(pipeline.freeze(owner_token)).to_equal(Error.OK)
+	Expect.that(pipeline.release(owner_token)).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(pipeline.is_claimed_by(owner_token)).to_be_true()
+	Expect.that(pipeline.configure(config_b)).to_equal(Error.ERR_ALREADY_IN_USE)
+
+	var reusable := ObservabilityProcessingPipeline.new(_test_runtime())
+	Expect.that(reusable.configure(config_a)).to_equal(Error.OK)
+	Expect.that(reusable.claim(config_a, owner_token)).to_equal(Error.OK)
+	Expect.that(reusable.release(owner_token)).to_equal(Error.OK)
+	Expect.that(reusable.configure(config_b)).to_equal(Error.OK)
+	Expect.that(reusable.is_configured_for(config_a)).to_be_false()
+	Expect.that(reusable.is_configured_for(config_b)).to_be_true()
+
+
+func test_processing_pipeline_freeze_revalidates_pristine_state_atomically() -> void:
+	var pipeline := DirtyClaimedPipeline.new(_test_runtime())
+	var config := _processing_config([])
+	var token := ObservabilityPipelineClaimToken.new()
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(pipeline.claim(config, token)).to_equal(Error.OK)
+
+	pipeline.force_dirty_after_claim()
+
+	Expect.that(pipeline.freeze(token)).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(pipeline.is_frozen()).to_be_false()
+	Expect.that(pipeline.release(token)).to_equal(Error.OK)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+
+
+func test_processing_pipeline_frozen_for_requires_exact_config_identity() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
+	var config_a := _processing_config([])
+	var config_b := _processing_config([])
+	var token := ObservabilityPipelineClaimToken.new()
+	Expect.that(pipeline.configure(config_a)).to_equal(Error.OK)
+	Expect.that(pipeline.claim(config_a, token)).to_equal(Error.OK)
+	Expect.that(pipeline.freeze(token)).to_equal(Error.OK)
+
+	Expect.that(pipeline.is_frozen_for(config_a)).to_be_true()
+	Expect.that(pipeline.is_frozen_for(config_b)).to_be_false()
 
 
 func test_processing_pipeline_configures_structural_rules_and_rejects_matching_payloads() -> void:
@@ -8914,13 +10181,13 @@ func _processing_config(
 
 
 func _processing_reconfigure_and_reenter(event: ObservabilityEvent) -> ObservabilityEvent:
-	_lifecycle_pipeline.configure(_processing_config([]))
+	_pipeline_lifecycle_configure_result = _lifecycle_pipeline.configure(_processing_config([]))
 	_lifecycle_nested_result = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
 	return event
 
 
 func _processing_reconfigure_and_drop(_event: ObservabilityEvent) -> ObservabilityEvent?:
-	_lifecycle_pipeline.configure(_processing_config([]))
+	_pipeline_lifecycle_configure_result = _lifecycle_pipeline.configure(_processing_config([]))
 	return null
 
 

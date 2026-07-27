@@ -46,6 +46,53 @@ reject_content_text() {
 	fi
 }
 
+canonical_fs_signature() {
+	local source_file=$1
+	local function_name=$2
+	awk -v function_name="$function_name" '
+		$0 ~ "^(static )?func " function_name "\\(" {
+			found += 1
+			capturing = 1
+		}
+		capturing {
+			signature = signature " " $0
+			line = $0
+			open_count = gsub(/\(/, "(", line)
+			line = $0
+			close_count = gsub(/\)/, ")", line)
+			depth += open_count - close_count
+			if (depth == 0 && $0 ~ /:$/) {
+				capturing = 0
+			}
+		}
+		END {
+			if (found != 1 || capturing || depth != 0) {
+				exit 1
+			}
+			print signature
+		}
+	' "$source_file" \
+		| sed -E \
+			-e 's/[[:space:]]+/ /g' \
+			-e 's/^ //' \
+			-e 's/ $//' \
+			-e 's/\( /\(/g' \
+			-e 's/ \)/\)/g' \
+			-e 's/ ,/,/g' \
+			-e 's/,\)/)/g'
+}
+
+require_fs_signature() {
+	local source_file=$1
+	local function_name=$2
+	local expected=$3
+	local actual
+	actual=$(canonical_fs_signature "$source_file" "$function_name") \
+		|| fail "${source_file#"$repo_root/"} must declare exactly one complete ${function_name}() signature"
+	[[ "$actual" == "$expected" ]] \
+		|| fail "${source_file#"$repo_root/"} has wrong ${function_name}() signature: $actual"
+}
+
 extract_marked_doc_section() {
 	local relative_path=$1
 	local marker_name=$2
@@ -188,7 +235,13 @@ for typed_processing_resource in \
 	ObservabilityRedactor \
 	ObservabilityValueVisitDecision \
 	ObservabilityValuePolicy \
-	ObservabilityValueWalker; do
+	ObservabilityValueWalker \
+	ObservabilityNormalizationResult \
+	ObservabilityNormalizer \
+	ObservabilityProviderSnapshot \
+	ObservabilityProviderCall \
+	ObservabilityPipelineClaimToken \
+	ObservabilityProviderSession; do
 	[[ -s "$addon/processing/${typed_processing_resource}.fs.uid" ]] \
 		|| fail "${typed_processing_resource}.fs.uid is missing or empty"
 done
@@ -201,8 +254,285 @@ grep -Fxq 'uid://d13prcspipe1' "$addon/processing/ObservabilityProcessingPipelin
 	|| fail "ObservabilityProcessingPipeline.fs.uid has the wrong stable UID"
 require_exact_file \
 	"addons/FoundryObservability/processing/ObservabilityProcessingLease.fs.uid" \
-	$'uid://d14process012\n' \
+	$'uid://d14process008\n' \
 	"processing lease UID contract is missing"
+for typed_processing_uid_contract in \
+	'ObservabilityNormalizer uid://d14process012' \
+	'ObservabilityProviderSnapshot uid://d14process013' \
+	'ObservabilityProviderCall uid://d14process014' \
+	'ObservabilityProviderSession uid://d14process015' \
+	'ObservabilityNormalizationResult uid://d14process016' \
+	'ObservabilityPipelineClaimToken uid://d14process017'; do
+	read -r typed_processing_resource typed_processing_uid <<<"$typed_processing_uid_contract"
+	require_exact_file \
+		"addons/FoundryObservability/processing/${typed_processing_resource}.fs.uid" \
+		"${typed_processing_uid}"$'\n' \
+		"${typed_processing_resource} UID contract is missing"
+done
+duplicate_processing_uid=$(
+	sort "$addon"/processing/*.fs.uid | uniq -d
+)
+[[ -z "$duplicate_processing_uid" ]] \
+	|| fail "processing resource UIDs must be unique: $duplicate_processing_uid"
+normalization_result_source="$addon/processing/ObservabilityNormalizationResult.fs"
+normalizer_source="$addon/processing/ObservabilityNormalizer.fs"
+provider_snapshot_source="$addon/processing/ObservabilityProviderSnapshot.fs"
+provider_call_source="$addon/processing/ObservabilityProviderCall.fs"
+claim_token_source="$addon/processing/ObservabilityPipelineClaimToken.fs"
+provider_session_source="$addon/processing/ObservabilityProviderSession.fs"
+for typed_collaborator_source in \
+	"$normalization_result_source" \
+	"$normalizer_source" \
+	"$provider_snapshot_source" \
+	"$provider_call_source" \
+	"$claim_token_source" \
+	"$provider_session_source"; do
+	rg -q '^namespace foundry\.observability\.processing$' "$typed_collaborator_source" \
+		|| fail "${typed_collaborator_source#"$repo_root/"} must use the processing namespace"
+done
+for final_class_contract in \
+	"$normalization_result_source|final class_name ObservabilityNormalizationResult[T] extends RefCounted" \
+	"$normalizer_source|final class_name ObservabilityNormalizer extends RefCounted" \
+	"$provider_snapshot_source|final class_name ObservabilityProviderSnapshot extends RefCounted" \
+	"$provider_call_source|final class_name ObservabilityProviderCall extends RefCounted" \
+	"$claim_token_source|final class_name ObservabilityPipelineClaimToken extends RefCounted" \
+	"$provider_session_source|final class_name ObservabilityProviderSession extends RefCounted"; do
+	IFS='|' read -r class_source expected_declaration <<<"$final_class_contract"
+	rg -Fxq "$expected_declaration" "$class_source" \
+		|| fail "${class_source#"$repo_root/"} has the wrong final class declaration"
+done
+
+for normalization_field in \
+	'final var _valid: bool' \
+	'final var _value: T?' \
+	'final var _error: int'; do
+	rg -Fxq "$normalization_field" "$normalization_result_source" \
+		|| fail "normalization result is missing exact immutable field: $normalization_field"
+done
+require_fs_signature \
+	"$normalization_result_source" _init \
+	'func _init(p_valid: bool, p_value: T?, p_error: int) -> void:'
+require_fs_signature \
+	"$normalization_result_source" success \
+	'static func success(value: T) -> ObservabilityNormalizationResult[T]:'
+require_fs_signature \
+	"$normalization_result_source" failure \
+	'static func failure(error: int) -> ObservabilityNormalizationResult[T]:'
+require_fs_signature \
+	"$normalization_result_source" is_valid_state \
+	'static func is_valid_state(p_valid: bool, p_value: T?, p_error: int) -> bool:'
+require_fs_signature \
+	"$normalization_result_source" valid \
+	'func valid() -> bool:'
+require_fs_signature \
+	"$normalization_result_source" value \
+	'func value() -> T?:'
+require_fs_signature \
+	"$normalization_result_source" error \
+	'func error() -> int:'
+rg -Fq \
+	'Current Foundry rejects direct generic T-to-T? constructor passage; this internal' \
+	"$normalization_result_source" \
+	|| fail "normalization result must document its narrow generic-nullable analyzer bridge"
+
+require_fs_signature \
+	"$normalizer_source" _init \
+	'func _init(runtime: ObservabilityRuntime) -> void:'
+require_fs_signature \
+	"$normalizer_source" normalize_event \
+	'func normalize_event(event: ObservabilityEvent, config: ObservabilityConfig) -> ObservabilityNormalizationResult[ObservabilityEvent]:'
+require_fs_signature \
+	"$normalizer_source" normalize_metric \
+	'func normalize_metric(metric: ObservabilityMetric, config: ObservabilityConfig) -> ObservabilityNormalizationResult[ObservabilityMetric]:'
+require_fs_signature \
+	"$normalizer_source" normalize_feedback \
+	'func normalize_feedback(feedback: ObservabilityFeedback) -> ObservabilityNormalizationResult[ObservabilityFeedback]:'
+require_fs_signature \
+	"$normalizer_source" counter \
+	'func counter(metric_name: String, value: int, attributes: Dictionary, config: ObservabilityConfig) -> ObservabilityNormalizationResult[ObservabilityMetric]:'
+require_fs_signature \
+	"$normalizer_source" gauge \
+	'func gauge(metric_name: String, value: float, unit: String, attributes: Dictionary, config: ObservabilityConfig) -> ObservabilityNormalizationResult[ObservabilityMetric]:'
+require_fs_signature \
+	"$normalizer_source" distribution \
+	'func distribution(metric_name: String, value: float, unit: String, attributes: Dictionary, config: ObservabilityConfig) -> ObservabilityNormalizationResult[ObservabilityMetric]:'
+rg -Fq 'or _has_control_character(message):' "$normalizer_source" \
+	|| fail "feedback normalization must reject control characters in the required message"
+
+for snapshot_field in \
+	'final var _provider: ObservabilityProvider' \
+	'final var _config: ObservabilityConfig' \
+	'final var _pipeline: ObservabilityProcessingPipeline' \
+	'final var _generation: int' \
+	'final var _enabled: bool'; do
+	rg -Fxq "$snapshot_field" "$provider_snapshot_source" \
+		|| fail "provider snapshot is missing exact immutable field: $snapshot_field"
+done
+require_fs_signature \
+	"$provider_snapshot_source" _init \
+	'func _init(p_provider: ObservabilityProvider?, p_config: ObservabilityConfig?, p_pipeline: ObservabilityProcessingPipeline?, p_generation: int) -> void:'
+require_fs_signature "$provider_snapshot_source" provider \
+	'func provider() -> ObservabilityProvider:'
+require_fs_signature "$provider_snapshot_source" config \
+	'func config() -> ObservabilityConfig:'
+require_fs_signature "$provider_snapshot_source" pipeline \
+	'func pipeline() -> ObservabilityProcessingPipeline:'
+require_fs_signature "$provider_snapshot_source" generation \
+	'func generation() -> int:'
+require_fs_signature "$provider_snapshot_source" enabled \
+	'func enabled() -> bool:'
+rg -Fq '_enabled = p_config.enabled()' "$provider_snapshot_source" \
+	|| fail "provider snapshot enabled state must derive from its exact configuration"
+if rg -n '\bp_enabled[[:space:]]*:' "$provider_snapshot_source"; then
+	fail "provider snapshot must not accept a separately modeled enabled flag"
+fi
+rg -Fq 'canonicalized to a disabled null snapshot' "$provider_snapshot_source" \
+	|| fail "provider snapshot must document canonical invalid construction"
+rg -Fq 'and p_pipeline.is_frozen_for(p_config):' "$provider_snapshot_source" \
+	|| fail "provider snapshot must atomically validate one frozen exact pipeline configuration"
+if rg -n 'p_pipeline\.is_configured_for\(p_config\)|p_pipeline\.is_frozen\(\)' \
+		"$provider_snapshot_source"; then
+	fail "provider snapshot must not split exact-configuration and frozen-state validation"
+fi
+rg -Fq 'var fallback_token: ObservabilityPipelineClaimToken = ObservabilityPipelineClaimToken.new()' \
+	"$provider_snapshot_source" \
+	|| fail "provider snapshot fallback must own an opaque internal freeze token"
+rg -Fq 'result = _pipeline.claim(_config, fallback_token)' "$provider_snapshot_source" \
+	|| fail "provider snapshot fallback pipeline must be claimed before freezing"
+rg -Fq 'result = _pipeline.freeze(fallback_token)' "$provider_snapshot_source" \
+	|| fail "provider snapshot fallback pipeline must be permanently frozen"
+
+for provider_call_field in \
+	'final var _accepted: bool' \
+	'final var _snapshot: ObservabilityProviderSnapshot?' \
+	'final var _error: int'; do
+	rg -Fxq "$provider_call_field" "$provider_call_source" \
+		|| fail "provider call is missing exact immutable field: $provider_call_field"
+done
+require_fs_signature \
+	"$provider_call_source" _init \
+	'func _init(p_accepted: bool, p_snapshot: ObservabilityProviderSnapshot?, p_error: int) -> void:'
+require_fs_signature "$provider_call_source" begin \
+	'static func begin(snapshot: ObservabilityProviderSnapshot) -> ObservabilityProviderCall:'
+require_fs_signature "$provider_call_source" rejected \
+	'static func rejected(error: int) -> ObservabilityProviderCall:'
+require_fs_signature "$provider_call_source" is_valid_state \
+	'static func is_valid_state(p_accepted: bool, p_snapshot: ObservabilityProviderSnapshot?, p_error: int) -> bool:'
+require_fs_signature "$provider_call_source" accepted \
+	'func accepted() -> bool:'
+require_fs_signature "$provider_call_source" snapshot \
+	'func snapshot() -> ObservabilityProviderSnapshot?:'
+require_fs_signature "$provider_call_source" error \
+	'func error() -> int:'
+require_fs_signature "$provider_call_source" provider \
+	'func provider() -> ObservabilityProvider:'
+require_fs_signature "$provider_call_source" config \
+	'func config() -> ObservabilityConfig:'
+require_fs_signature "$provider_call_source" pipeline \
+	'func pipeline() -> ObservabilityProcessingPipeline:'
+require_fs_signature "$provider_call_source" generation \
+	'func generation() -> int:'
+for delegated_call_accessor in provider config pipeline generation; do
+	rg -Fxq "	return _required_snapshot().${delegated_call_accessor}()" \
+		"$provider_call_source" \
+		|| fail "provider call must delegate ${delegated_call_accessor}() through its pinned snapshot"
+done
+rg -Fq 'Rejected provider calls do not expose collaborators.' "$provider_call_source" \
+	|| fail "provider call must reject collaborator access without a pinned snapshot"
+
+require_fs_signature \
+	"$provider_session_source" _init \
+	'func _init(runtime: ObservabilityRuntime) -> void:'
+require_fs_signature "$provider_session_source" snapshot \
+	'func snapshot() -> ObservabilityProviderSnapshot:'
+require_fs_signature "$provider_session_source" replace \
+	'func replace(provider: ObservabilityProvider, config: ObservabilityConfig, pipeline: ObservabilityProcessingPipeline) -> int:'
+require_fs_signature "$provider_session_source" begin_call \
+	'func begin_call() -> ObservabilityProviderCall:'
+require_fs_signature "$provider_session_source" end_call \
+	'func end_call(call: ObservabilityProviderCall) -> void:'
+require_fs_signature "$provider_session_source" finish_call \
+	'func finish_call(call: ObservabilityProviderCall, error: int) -> void:'
+require_fs_signature "$provider_session_source" flush \
+	'func flush(timeout_msec: int = 2000) -> int:'
+require_fs_signature "$provider_session_source" shutdown \
+	'func shutdown() -> void:'
+require_fs_signature "$provider_session_source" shutdown_requested \
+	'func shutdown_requested() -> bool:'
+require_fs_signature "$provider_session_source" in_flight_call_count \
+	'func in_flight_call_count() -> int:'
+rg -Fxq 'final var _mutex: Mutex = Mutex.new()' "$provider_session_source" \
+	|| fail "provider session must own one final mutex"
+rg -Fxq 'final var _active_calls: Dictionary[ObservabilityProviderCall, bool] = {}' \
+	"$provider_session_source" \
+	|| fail "provider session must track balanced calls with exact typed call identity"
+rg -Fxq \
+	'final var _claim_token: ObservabilityPipelineClaimToken = ObservabilityPipelineClaimToken.new()' \
+	"$provider_session_source" \
+	|| fail "provider session must own one private opaque pipeline claim token"
+if rg -n 'get_instance_id|_owner_id|claim\([^,]+,[[:space:]]*[[:digit:]]' \
+	"$provider_session_source"; then
+	fail "provider session pipeline authority must not use forgeable integer identity"
+fi
+rg -Fq 'provider/config/pipeline identity triple is an idempotent replacement.' \
+	"$provider_session_source" \
+	|| fail "provider session must document exact-triple replacement idempotence"
+session_claim_line=$(rg -n '^[[:space:]]*var claim_result: int = pipeline\.claim\(config, _claim_token\)$' \
+	"$provider_session_source" | cut -d: -f1)
+session_configure_line=$(rg -n '^[[:space:]]*var result: int = provider\.configure\(config\)$' \
+	"$provider_session_source" | cut -d: -f1)
+session_commit_line=$(rg -n '^[[:space:]]*_snapshot = ObservabilityProviderSnapshot\.new\($' \
+	"$provider_session_source" | head -n 1 | cut -d: -f1)
+session_detached_shutdown_line=$(rg -n '^[[:space:]]*previous\.provider\(\)\.shutdown\(\)$' \
+	"$provider_session_source" | head -n 1 | cut -d: -f1)
+[[ -n "$session_claim_line" && -n "$session_configure_line" ]] \
+	|| fail "provider session must claim the candidate pipeline and configure the candidate provider"
+(( session_claim_line < session_configure_line )) \
+	|| fail "provider session must claim the candidate pipeline before invoking provider.configure()"
+[[ -n "$session_commit_line" && -n "$session_detached_shutdown_line" ]] \
+	|| fail "provider session must commit a snapshot and shut down the detached provider"
+(( session_commit_line < session_detached_shutdown_line )) \
+	|| fail "provider session must commit the new snapshot before detached-provider shutdown"
+session_ownership_revalidations=$(
+	rg -Fo '_owns_current_pipeline_locked()' "$provider_session_source" | wc -l | tr -d ' '
+)
+(( session_ownership_revalidations >= 7 )) \
+	|| fail "provider session must revalidate opaque ownership across public operations and transitions"
+if rg -n '_release_unpublished_pipeline\\((previous|_snapshot)\\.pipeline\\(\\)\\)' \
+	"$provider_session_source"; then
+	fail "provider session must never release a pipeline from a published snapshot"
+fi
+rg -Fq 'published pipeline remains permanently frozen' "$provider_session_source" \
+	|| fail "provider session must document permanent published-pipeline lifetime"
+session_mutex_field_count=$(
+	rg -c '^(final )?var [^:]+: Mutex' "$provider_session_source"
+)
+(( session_mutex_field_count == 1 )) \
+	|| fail "provider session must not own multiple mutex fields"
+if rg -n '\b(Time|OS)\.' "$normalizer_source" "$provider_session_source"; then
+	fail "normalizer and provider session must use the injected runtime, not Time or OS"
+fi
+if awk '
+	/_mutex\.lock\(\)/ { locked = 1 }
+	/_mutex\.unlock\(\)/ { locked = 0 }
+	locked && /\.(configure|flush|shutdown)\(/ {
+		print FNR ":" $0
+		found = 1
+	}
+	END { exit found ? 1 : 0 }
+' "$provider_session_source"; then
+	:
+else
+	fail "provider callbacks must execute outside the provider-session mutex"
+fi
+if rg -n -- '-> Dictionary|\{[[:space:]]*"valid"' \
+	"$normalization_result_source" \
+	"$normalizer_source" \
+	"$provider_snapshot_source" \
+	"$provider_call_source" \
+	"$provider_session_source"; then
+	fail "typed normalization/session collaborators must not expose dictionary result protocols"
+fi
 for sentry_attachment_resource in \
 	SentryAttachmentRuntimeProbe \
 	SentryBuiltInAttachmentCollector; do
@@ -333,8 +663,31 @@ rg -q '^namespace foundry\.observability\.processing$' \
 	|| fail "processing pipeline must use the processing namespace"
 rg -q '^extends RefCounted$' "$addon/processing/ObservabilityProcessingPipeline.fs" \
 	|| fail "processing pipeline must remain a RefCounted resource"
+require_fs_signature \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" configure \
+	'func configure(config: ObservabilityConfig? = null) -> int:'
+require_fs_signature \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" is_configured_for \
+	'func is_configured_for(config: ObservabilityConfig) -> bool:'
+require_fs_signature \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" claim \
+	'func claim(config: ObservabilityConfig, token: ObservabilityPipelineClaimToken?) -> int:'
+require_fs_signature \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" is_claimed_by \
+	'func is_claimed_by(token: ObservabilityPipelineClaimToken?) -> bool:'
+require_fs_signature \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" is_frozen \
+	'func is_frozen() -> bool:'
+require_fs_signature \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" is_frozen_for \
+	'func is_frozen_for(config: ObservabilityConfig) -> bool:'
+require_fs_signature \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" freeze \
+	'func freeze(token: ObservabilityPipelineClaimToken?) -> int:'
+require_fs_signature \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" release \
+	'func release(token: ObservabilityPipelineClaimToken?) -> int:'
 for pipeline_member in \
-	'func configure(config: ObservabilityConfig? = null) -> int:' \
 	'func process_event(event: ObservabilityEvent) -> ObservabilityProcessingResult[ObservabilityEvent]:' \
 	'func process_metric(metric: ObservabilityMetric) -> ObservabilityProcessingResult[ObservabilityMetric]:' \
 	'func redact_contexts(contexts: Dictionary) -> ObservabilityProcessingResult[Dictionary]:' \
@@ -359,10 +712,63 @@ for typed_pipeline_state in \
 	'var _log_processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]] = []' \
 	'var _metric_processors: Array[Callable[[ObservabilityMetric], ObservabilityMetric?]] = []' \
 	'var _has_metric_filter: bool = false' \
-	'var _metric_filter: Callable[[ObservabilityMetric], bool]?'; do
+	'var _metric_filter: Callable[[ObservabilityMetric], bool]?' \
+	'var _configured_config: ObservabilityConfig?' \
+	'var _claim_token: ObservabilityPipelineClaimToken?' \
+	'var _prepared_pristine: bool = false' \
+	'var _permanently_frozen: bool = false'; do
 	rg -Fq "$typed_pipeline_state" "$addon/processing/ObservabilityProcessingPipeline.fs" \
 		|| fail "processing pipeline is missing exact typed state: $typed_pipeline_state"
 done
+rg -Fq 'is_same(_configured_config, config)' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline configuration identity must use exact object identity"
+pipeline_claim_guards=$(
+	rg -c '^[[:space:]]*if _claim_token != null:$' \
+		"$addon/processing/ObservabilityProcessingPipeline.fs"
+)
+(( pipeline_claim_guards == 3 )) \
+	|| fail "processing pipeline must guard both configure commits and idempotent claim"
+if rg -n 'func (claim|release|is_claimed_by|freeze)\([^)]*(owner_id: int|token: int)' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs"; then
+	fail "processing pipeline ownership APIs must use only the opaque typed claim token"
+fi
+rg -Fq 'is_same(_claim_token, token)' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline ownership must compare exact opaque token identity"
+rg -Fq '_prepared_pristine = false' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline reservation attempts must invalidate pristine preparation"
+rg -Fq 'Dirtiness is committed before any processor, redactor, or limiter callback can run.' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must document pre-callback dirtiness publication"
+rg -Fq 'only operation that establishes a pristine candidate eligible for initial claim.' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must document its transactional pristine-reset invariant"
+rg -Fq 'or _operation_sequence != 0' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline claim must validate reset operation state"
+rg -Fq 'or _last_diagnostic != null:' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline claim must validate pristine diagnostic state"
+rg -Fq 'or _permanently_frozen:' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must reject release after publication freeze"
+claimed_candidate_mutation_guards=$(
+	rg -c '^[[:space:]]*if _claim_token != null and not _permanently_frozen:$' \
+		"$addon/processing/ObservabilityProcessingPipeline.fs"
+)
+(( claimed_candidate_mutation_guards == 2 )) \
+	|| fail "claimed-unfrozen candidates must reject reservations and provider-result mutation"
+freeze_pristine_checks=$(
+	rg -Fc 'if not _prepared_pristine \' \
+		"$addon/processing/ObservabilityProcessingPipeline.fs"
+)
+(( freeze_pristine_checks == 2 )) \
+	|| fail "both initial claim and irreversible freeze must validate pristine state"
+rg -Fq 'Claimed candidates are immutable until atomic freeze publishes them.' \
+	"$addon/processing/ObservabilityProcessingPipeline.fs" \
+	|| fail "processing pipeline must document claimed-candidate mutation exclusion"
 rg -Fq 'final var _has_metric_filter: bool' \
 	"$addon/ObservabilityProcessingConfig.fs" \
 	|| fail "processing config must retain typed nullable Callable presence"
@@ -415,6 +821,14 @@ if rg -n '(_recursive_state_result|state_result)\["(accepted|valid|value|signal|
 	"$repo_root/test_project/tests/observability-core.test.fs"; then
 	fail "processing tests must use typed state result accessors"
 fi
+if rg -n 'Semaphore.*|\.wait\(\)' \
+	"$repo_root/test_project/tests/observability-core.test.fs" \
+	| rg '\.wait\(\)'; then
+	fail "processing concurrency tests must not use unbounded semaphore waits"
+fi
+rg -Fq 'semaphore.try_wait()' \
+	"$repo_root/test_project/tests/observability-core.test.fs" \
+	|| fail "processing concurrency tests must poll semaphore barriers with a deadline"
 if rg -q '^func _(_rejected|rule_index|int_value)\(' \
 	"$addon/processing/ObservabilityProcessingPipeline.fs"; then
 	fail "processing pipeline must not retain weak dictionary result/snapshot helpers"

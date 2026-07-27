@@ -379,7 +379,13 @@ for typed_processing_resource in \
 	ObservabilityRedactor \
 	ObservabilitySignalLimiter \
 	ObservabilityProcessingPipeline \
-	ObservabilityProcessingLease; do
+	ObservabilityProcessingLease \
+	ObservabilityNormalizationResult \
+	ObservabilityNormalizer \
+	ObservabilityProviderSnapshot \
+	ObservabilityProviderCall \
+	ObservabilityPipelineClaimToken \
+	ObservabilityProviderSession; do
 	resource_path="addons/FoundryObservability/processing/${typed_processing_resource}.fs"
 	grep -qx "$resource_path" <<<"$listing" \
 		|| fail "package is missing $resource_path"
