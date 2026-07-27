@@ -205,12 +205,20 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 	|| fail "ObservabilityAttachmentsProvider.fs is missing"
 [[ -f "$addon/foundrylib/FoundryLibObservabilitySink.fs" ]] || fail "FoundryLib observability sink is missing"
 [[ -f "$sentry_addon/SentryObservabilityProvider.fs" ]] || fail "Sentry provider is missing"
-[[ -f "$sentry_addon/SentryRuntimeContextProbe.fs" ]] \
-	|| fail "Sentry runtime context probe is missing"
+[[ -f "$sentry_addon/SentryRuntimeSnapshot.fs" ]] \
+	|| fail "Sentry runtime snapshot is missing"
+[[ -f "$sentry_addon/SentryRuntimeContextSource.fs" ]] \
+	|| fail "Sentry runtime context source trait is missing"
+[[ -f "$sentry_addon/SystemSentryRuntimeContextSource.fs" ]] \
+	|| fail "System Sentry runtime context source is missing"
 [[ -f "$sentry_addon/SentryRuntimeContextCollector.fs" ]] \
 	|| fail "Sentry runtime context collector is missing"
-[[ -f "$sentry_addon/SentryAttachmentRuntimeProbe.fs" ]] \
-	|| fail "Sentry attachment runtime probe is missing"
+[[ -f "$sentry_addon/SentryAttachmentSource.fs" ]] \
+	|| fail "Sentry attachment source trait is missing"
+[[ -f "$sentry_addon/SystemSentryAttachmentSource.fs" ]] \
+	|| fail "System Sentry attachment source is missing"
+[[ -f "$sentry_addon/SentryAttachmentCollection.fs" ]] \
+	|| fail "Sentry attachment collection is missing"
 [[ -f "$sentry_addon/SentryBuiltInAttachmentCollector.fs" ]] \
 	|| fail "Sentry built-in attachment collector is missing"
 for attachment_resource in \
@@ -842,14 +850,180 @@ if rg -n '\[[[:space:]]*"(valid|provider|config|pipeline|generation|accepted|val
 	fail "facade must not index magic-key result or session dictionaries"
 fi
 for sentry_attachment_resource in \
-	SentryAttachmentRuntimeProbe \
+	SentryAttachmentSource \
+	SystemSentryAttachmentSource \
+	SentryAttachmentCollection \
 	SentryBuiltInAttachmentCollector; do
 	[[ -s "$sentry_addon/${sentry_attachment_resource}.fs.uid" ]] \
 		|| fail "${sentry_attachment_resource}.fs.uid is missing or empty"
 done
-rg -q '^class_name SentryAttachmentRuntimeProbe$' \
-	"$sentry_addon/SentryAttachmentRuntimeProbe.fs" \
-	|| fail "Sentry attachment runtime probe declaration is missing"
+for sentry_runtime_resource in \
+	SentryRuntimeSnapshot \
+	SentryRuntimeContextSource \
+	SystemSentryRuntimeContextSource \
+	SentryRuntimeContextCollector; do
+	[[ -s "$sentry_addon/${sentry_runtime_resource}.fs.uid" ]] \
+		|| fail "${sentry_runtime_resource}.fs.uid is missing or empty"
+done
+rg -q '^trait_name SentryRuntimeContextSource$' \
+	"$sentry_addon/SentryRuntimeContextSource.fs" \
+	|| fail "Sentry runtime context source trait declaration is missing"
+rg -q '^abstract func stable_snapshot\(\) -> SentryRuntimeSnapshot$' \
+	"$sentry_addon/SentryRuntimeContextSource.fs" \
+	|| fail "Sentry runtime context source must expose stable_snapshot()"
+rg -q '^abstract func volatile_snapshot\(\) -> SentryRuntimeSnapshot$' \
+	"$sentry_addon/SentryRuntimeContextSource.fs" \
+	|| fail "Sentry runtime context source must expose volatile_snapshot()"
+rg -q '^abstract func privacy_snapshot\(\) -> SentryRuntimeSnapshot\.Privacy$' \
+	"$sentry_addon/SentryRuntimeContextSource.fs" \
+	|| fail "Sentry runtime context source must expose privacy_snapshot()"
+rg -q '^trait_name SentryAttachmentSource$' \
+	"$sentry_addon/SentryAttachmentSource.fs" \
+	|| fail "Sentry attachment source trait declaration is missing"
+for signature in \
+	'abstract func is_main_thread() -> bool' \
+	'abstract func is_headless() -> bool' \
+	'abstract func frames_drawn() -> int' \
+	'abstract func scene_root() -> Node?' \
+	'abstract func screenshot_png() -> PackedByteArray' \
+	'abstract func game_log_path() -> String'; do
+	grep -Fqx "$signature" "$sentry_addon/SentryAttachmentSource.fs" \
+		|| fail "Sentry attachment source is missing: ${signature}"
+done
+if rg -n '_probe: Object|_probe\.call\(' \
+		"$sentry_addon/SentryRuntimeContextCollector.fs" \
+		"$sentry_addon/SentryBuiltInAttachmentCollector.fs"; then
+	fail "Sentry collectors retain dynamic probes"
+fi
+if [[ -e "$sentry_addon/SentryRuntimeContextProbe.fs" ]] \
+		|| [[ -e "$sentry_addon/SentryRuntimeContextProbe.fs.uid" ]] \
+		|| [[ -e "$sentry_addon/SentryAttachmentRuntimeProbe.fs" ]] \
+		|| [[ -e "$sentry_addon/SentryAttachmentRuntimeProbe.fs.uid" ]]; then
+	fail "legacy Sentry probe resources remain"
+fi
+if rg -n 'SentryRuntimeContextProbe|SentryAttachmentRuntimeProbe' \
+		"$sentry_addon" \
+		"$project_dir/tests/observability-sentry.test.fs"; then
+	fail "legacy Sentry probe types remain in source or tests"
+fi
+grep -Fqx 'func _init(p_source: SentryRuntimeContextSource) -> void:' \
+	"$sentry_addon/SentryRuntimeContextCollector.fs" \
+	|| fail "Sentry runtime context collector constructor must be typed"
+grep -Fqx 'func _init(p_source: SentryAttachmentSource) -> void:' \
+	"$sentry_addon/SentryBuiltInAttachmentCollector.fs" \
+	|| fail "Sentry attachment collector constructor must be typed"
+grep -Fqx 'func collect(event: ObservabilityEvent?, config: ObservabilityConfig) -> SentryAttachmentCollection:' \
+	"$sentry_addon/SentryBuiltInAttachmentCollector.fs" \
+	|| fail "Sentry attachment collector result must be typed"
+rg -q '^final class_name SentryRuntimeSnapshot$' \
+	"$sentry_addon/SentryRuntimeSnapshot.fs" \
+	|| fail "Sentry runtime snapshot must be final"
+for component in Application EngineRuntime Device Display Gpu Runtime Privacy; do
+	rg -q "^final class ${component} extends RefCounted:$" \
+		"$sentry_addon/SentryRuntimeSnapshot.fs" \
+		|| fail "Sentry runtime snapshot component must be final: ${component}"
+done
+for field in \
+	'platform_name: String' \
+	'application: Application' \
+	'engine: EngineRuntime' \
+	'device: Device' \
+	'display: Display' \
+	'gpu: Gpu' \
+	'runtime: Runtime' \
+	'privacy: Privacy' \
+	'free_storage: int'; do
+	grep -Fqx "final var ${field}" "$sentry_addon/SentryRuntimeSnapshot.fs" \
+		|| fail "Sentry runtime snapshot field is missing: ${field}"
+done
+for field in \
+	'name: String' \
+	'version: String' \
+	'start_time: String' \
+	'architecture: String' \
+	'version_commit: String' \
+	'editor: bool' \
+	'debug_build: bool' \
+	'headless: bool' \
+	'dedicated_server: bool' \
+	'model: String' \
+	'processor_name: String' \
+	'processor_count: int' \
+	'physical_memory: int' \
+	'free_memory: int' \
+	'usable_memory: int' \
+	'server: String' \
+	'screen_count: int' \
+	'touchscreen_available: bool' \
+	'primary_width_pixels: int' \
+	'primary_height_pixels: int' \
+	'primary_dpi: int' \
+	'primary_refresh_rate: float' \
+	'primary_orientation: String' \
+	'vendor_name: String' \
+	'api_version: String' \
+	'device_type: String' \
+	'driver_name: String' \
+	'driver_version: String' \
+	'rendering_method: String' \
+	'sandboxed: bool' \
+	'userfs_persistent: bool' \
+	'unique_identifier: String' \
+	'locale: String' \
+	'timezone: String'; do
+	grep -Fqx "	final var ${field}" "$sentry_addon/SentryRuntimeSnapshot.fs" \
+		|| fail "Sentry runtime snapshot component field is missing: ${field}"
+done
+rg -q '^uses SentryRuntimeContextSource$' \
+	"$sentry_addon/SystemSentryRuntimeContextSource.fs" \
+	|| fail "system runtime context source must use its typed trait"
+system_stable_snapshot=$(
+	sed -n '/^func stable_snapshot()/,/^func volatile_snapshot()/p' \
+		"$sentry_addon/SystemSentryRuntimeContextSource.fs"
+)
+if rg -n 'OS\.get_unique_id|OS\.get_locale|Time\.get_time_zone_from_system' \
+		<<<"$system_stable_snapshot"; then
+	fail "stable Sentry snapshot must not acquire privacy values"
+fi
+system_privacy_snapshot=$(
+	sed -n '/^func privacy_snapshot()/,/^func _free_storage()/p' \
+		"$sentry_addon/SystemSentryRuntimeContextSource.fs"
+)
+for privacy_read in \
+	'OS.get_unique_id()' \
+	'OS.get_locale()' \
+	'Time.get_time_zone_from_system()'; do
+	grep -Fq "$privacy_read" <<<"$system_privacy_snapshot" \
+		|| fail "privacy snapshot is missing opt-in read: ${privacy_read}"
+done
+collector_privacy_branch=$(
+	sed -n '/if send_default_pii:/,/return device/p' \
+		"$sentry_addon/SentryRuntimeContextCollector.fs"
+)
+grep -Fq '_source.privacy_snapshot()' <<<"$collector_privacy_branch" \
+	|| fail "Sentry collector must acquire privacy only inside the opt-in branch"
+rg -q '^uses SentryAttachmentSource$' \
+	"$sentry_addon/SystemSentryAttachmentSource.fs" \
+	|| fail "system attachment source must use its typed trait"
+if rg -n '\.call\(' \
+		"$sentry_addon/SystemSentryRuntimeContextSource.fs" \
+		"$sentry_addon/SystemSentryAttachmentSource.fs" \
+		"$sentry_addon/SentryRuntimeContextCollector.fs" \
+		"$sentry_addon/SentryBuiltInAttachmentCollector.fs"; then
+	fail "typed Sentry sources and collectors retain dynamic calls"
+fi
+grep -Fqx 'final var _attachments: Array[Dictionary]' \
+	"$sentry_addon/SentryAttachmentCollection.fs" \
+	|| fail "Sentry attachment collection must own typed attachments"
+grep -Fqx 'final var _failures: Array[ObservabilityAttachmentFailure]' \
+	"$sentry_addon/SentryAttachmentCollection.fs" \
+	|| fail "Sentry attachment collection must own typed failures"
+grep -Fqx 'func attachments() -> Array[Dictionary]:' \
+	"$sentry_addon/SentryAttachmentCollection.fs" \
+	|| fail "Sentry attachment collection accessor must be typed"
+grep -Fqx 'func failures() -> Array[ObservabilityAttachmentFailure]:' \
+	"$sentry_addon/SentryAttachmentCollection.fs" \
+	|| fail "Sentry attachment failure accessor must be typed"
 rg -q '^class_name SentryBuiltInAttachmentCollector$' \
 	"$sentry_addon/SentryBuiltInAttachmentCollector.fs" \
 	|| fail "Sentry built-in attachment collector declaration is missing"

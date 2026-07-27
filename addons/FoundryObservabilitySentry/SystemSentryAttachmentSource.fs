@@ -1,8 +1,9 @@
 namespace foundry.observability.sentry
 
-## Narrow engine seam used by the built-in diagnostic attachment collector.
-class_name SentryAttachmentRuntimeProbe
+## Reads engine-owned attachment data from Godot runtime services.
+final class_name SystemSentryAttachmentSource
 extends RefCounted
+uses SentryAttachmentSource
 
 
 func is_main_thread() -> bool:
@@ -17,15 +18,19 @@ func frames_drawn() -> int:
 	return Engine.get_frames_drawn()
 
 
-func main_scene_tree() -> SceneTree?:
-	return Engine.get_main_loop() as SceneTree
+func scene_root() -> Node?:
+	var tree: SceneTree? = Engine.get_main_loop() as SceneTree
+	if tree == null:
+		return null
+	return tree.root
 
 
 func screenshot_png() -> PackedByteArray:
-	var tree: SceneTree? = main_scene_tree()
-	if tree == null or tree.root == null:
+	var root: Node? = scene_root()
+	if root == null or not (root is Viewport):
 		return PackedByteArray()
-	var texture: ViewportTexture = tree.root.get_texture()
+	var viewport: Viewport = root
+	var texture: ViewportTexture = viewport.get_texture()
 	if texture == null:
 		return PackedByteArray()
 	var image: Image = texture.get_image()

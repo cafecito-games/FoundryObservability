@@ -33,27 +33,29 @@ var _native_attachment_payloads: Array[Dictionary] = []
 var _attachment_config: ObservabilityConfig
 
 
-## Creates a provider with an optional bridge seam used by deterministic tests.
+## Creates a provider with optional native and typed runtime seams for deterministic tests.
 func _init(
 		p_bridge: Object? = null,
-		p_runtime_context_probe: Object? = null,
-		p_attachment_runtime_probe: Object? = null,
+		p_runtime_context_source: SentryRuntimeContextSource? = null,
+		p_attachment_source: SentryAttachmentSource? = null,
 ) -> void:
 	_bridge = p_bridge
-	var runtime_context_probe: Object = (
-			p_runtime_context_probe
-			if p_runtime_context_probe != null
-			else SentryRuntimeContextProbe.new()
-		)
-	_context_collector = SentryRuntimeContextCollector.new(runtime_context_probe)
-	var attachment_runtime_probe: Object = (
-			p_attachment_runtime_probe
-			if p_attachment_runtime_probe != null
-			else SentryAttachmentRuntimeProbe.new()
-		)
-	_attachment_collector = SentryBuiltInAttachmentCollector.new(
-			attachment_runtime_probe,
-		)
+	if p_runtime_context_source != null:
+		_context_collector = SentryRuntimeContextCollector.new(
+				p_runtime_context_source,
+			)
+	else:
+		_context_collector = SentryRuntimeContextCollector.new(
+				SystemSentryRuntimeContextSource.new(),
+			)
+	if p_attachment_source != null:
+		_attachment_collector = SentryBuiltInAttachmentCollector.new(
+				p_attachment_source,
+			)
+	else:
+		_attachment_collector = SentryBuiltInAttachmentCollector.new(
+				SystemSentryAttachmentSource.new(),
+			)
 	_attachment_config = _attachment_config_from(ObservabilityConfig.new(
 			p_enabled = false,
 			p_global_attributes = {},
@@ -207,11 +209,11 @@ func configure(config: ObservabilityConfig) -> int:
 	var candidate_persistent_builtins: Array[Dictionary] = []
 	var candidate_persistent_failures: Array[ObservabilityAttachmentFailure] = []
 	if config.enabled() and bridge.has_method("replaceAttachments"):
-		var built_in_result: Dictionary = _attachment_collector.collect(
+		var built_in_result: SentryAttachmentCollection = _attachment_collector.collect(
 				null,
 				candidate_attachment_config,
 			)
-		for attachment: Dictionary in built_in_result["attachments"]:
+		for attachment: Dictionary in built_in_result.attachments():
 			if attachment.get("persistent", false) == true:
 				var persistent: Dictionary = attachment.duplicate(true)
 				persistent.erase("persistent")
@@ -756,13 +758,13 @@ func _capture_local_attachments(event: ObservabilityEvent) -> Array:
 				"content_type": attachment.content_type(),
 				"category": String(attachment.category()),
 			})
-	var built_ins: Dictionary = _attachment_collector.collect(
+	var built_ins: SentryAttachmentCollection = _attachment_collector.collect(
 			event,
 			_attachment_config,
 		)
-	for failure: ObservabilityAttachmentFailure in built_ins["failures"]:
+	for failure: ObservabilityAttachmentFailure in built_ins.failures():
 		_last_attachment_failures.append(failure.duplicate())
-	for payload: Dictionary in built_ins["attachments"]:
+	for payload: Dictionary in built_ins.attachments():
 		var candidate_payload: Dictionary = payload.duplicate(true)
 		candidate_payload.erase("persistent")
 		var redacted_payload: ObservabilityRedactionResult[Dictionary] = (

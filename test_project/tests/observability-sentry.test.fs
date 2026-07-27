@@ -9,7 +9,9 @@ extends RefCounted
 uses Test
 
 
-class FakeRuntimeContextProbe extends RefCounted:
+class FakeRuntimeContextSource extends RefCounted:
+	uses SentryRuntimeContextSource
+
 	var platform: String = "macOS"
 	var app_name: String = "Oakhaven"
 	var app_version: String = "1.2.3"
@@ -31,85 +33,95 @@ class FakeRuntimeContextProbe extends RefCounted:
 	var display_refresh_rate: float = 120.0
 	var volatile_orientation: String = "landscape"
 	var gpu_name: String = "Apple M4"
+	var privacy_call_count: int = 0
 	var unique_identifier: String = "private-device-id"
 	var locale: String = "en_US"
 	var timezone: String = "America/New_York"
 
-	func platform_name() -> String:
-		return platform
+	func stable_snapshot() -> SentryRuntimeSnapshot:
+		return _snapshot(false)
 
-	func application_values() -> Dictionary:
-		return {
-				"name": app_name,
-				"version": app_version,
-				"start_time": "2026-07-25T12:00:00Z",
-				"architecture": "arm64",
-			}
-
-	func engine_values() -> Dictionary:
-		return {
-				"version": "4.5.stable",
-				"version_commit": "abc123",
-				"architecture": "arm64",
-				"editor": engine_editor,
-				"debug_build": engine_debug_build,
-				"headless": engine_headless,
-				"dedicated_server": engine_dedicated_server,
-			}
-
-	func device_values() -> Dictionary:
-		return {
-				"model": device_model,
-				"processor_name": "Apple M4",
-				"processor_count": processor_count,
-			}
-
-	func memory_values() -> Dictionary:
+	func volatile_snapshot() -> SentryRuntimeSnapshot:
 		memory_call_count += 1
-		return {
-				"physical": memory_size,
-				"free": volatile_free_memory,
-				"available": volatile_usable_memory,
-			}
+		return _snapshot(true)
 
-	func free_storage() -> int:
-		return volatile_free_storage
+	func privacy_snapshot() -> SentryRuntimeSnapshot.Privacy:
+		privacy_call_count += 1
+		return SentryRuntimeSnapshot.Privacy.new(
+				unique_identifier,
+				locale,
+				timezone,
+			)
 
-	func display_values() -> Dictionary:
-		return {
-				"server": "macOS",
-				"screen_count": display_screen_count,
-				"touchscreen_available": false,
-				"primary_width_pixels": display_width,
-				"primary_height_pixels": display_height,
-				"primary_dpi": display_dpi,
-				"primary_refresh_rate": display_refresh_rate,
-				"primary_orientation": volatile_orientation,
-			}
-
-	func primary_orientation() -> String:
-		return volatile_orientation
-
-	func gpu_values() -> Dictionary:
-		return {
-				"name": gpu_name,
-				"vendor_name": "Apple",
-				"api_version": "Metal 3",
-				"device_type": "integrated_gpu",
-				"driver_name": "Metal",
-				"driver_version": "1",
-				"rendering_method": "gl_compatibility",
-			}
-
-	func runtime_values() -> Dictionary:
-		return {"sandboxed": true, "userfs_persistent": true}
-
-	func privacy_values() -> Dictionary:
-		return {
-				"unique_identifier": unique_identifier,
-				"locale": locale,
-				"timezone": timezone,
-			}
+	func _snapshot(volatile: bool) -> SentryRuntimeSnapshot:
+		var physical_memory: int = memory_size if platform != "iOS" else -1
+		var free_memory: int = volatile_free_memory if platform != "iOS" else -1
+		var usable_memory: int = volatile_usable_memory if platform != "iOS" else -1
+		if volatile:
+			return SentryRuntimeSnapshot.new(
+					platform,
+					SentryRuntimeSnapshot.Application.new(),
+					SentryRuntimeSnapshot.EngineRuntime.new(),
+					SentryRuntimeSnapshot.Device.new(
+						p_free_memory = free_memory,
+						p_usable_memory = usable_memory,
+					),
+					SentryRuntimeSnapshot.Display.new(
+						p_primary_orientation = volatile_orientation,
+					),
+					SentryRuntimeSnapshot.Gpu.new(),
+					SentryRuntimeSnapshot.Runtime.new(),
+					SentryRuntimeSnapshot.Privacy.new(),
+					volatile_free_storage,
+				)
+		return SentryRuntimeSnapshot.new(
+				platform,
+				SentryRuntimeSnapshot.Application.new(
+					app_name,
+					app_version,
+					"2026-07-25T12:00:00Z",
+					"arm64",
+				),
+				SentryRuntimeSnapshot.EngineRuntime.new(
+					"4.5.stable",
+					"abc123",
+					"arm64",
+					engine_editor,
+					engine_debug_build,
+					engine_headless,
+					engine_dedicated_server,
+				),
+				SentryRuntimeSnapshot.Device.new(
+					device_model,
+					"Apple M4",
+					processor_count,
+					physical_memory,
+					free_memory,
+					usable_memory,
+				),
+				SentryRuntimeSnapshot.Display.new(
+					"macOS",
+					display_screen_count,
+					false,
+					display_width,
+					display_height,
+					display_dpi,
+					display_refresh_rate,
+					volatile_orientation,
+				),
+				SentryRuntimeSnapshot.Gpu.new(
+					gpu_name,
+					"Apple",
+					"Metal 3",
+					"integrated_gpu",
+					"Metal",
+					"1",
+					"gl_compatibility",
+				),
+				SentryRuntimeSnapshot.Runtime.new(true, true),
+				SentryRuntimeSnapshot.Privacy.new(),
+				volatile_free_storage,
+			)
 
 
 class CountingBreadcrumblessSentryBridge extends \
@@ -173,13 +185,15 @@ class ScopeOnlySentryBridge extends \
 		return true
 
 
-class FakeAttachmentRuntimeProbe extends RefCounted:
+class FakeAttachmentSource extends RefCounted:
+	uses SentryAttachmentSource
+
 	var main_thread: bool = true
 	var headless: bool = false
 	var frame: int = 1
 	var screenshot: PackedByteArray = PackedByteArray([1, 2, 3])
 	var screenshot_calls: int = 0
-	var tree: Object? = null
+	var tree: Node? = null
 	var game_log: String = ""
 
 	func is_main_thread() -> bool:
@@ -191,7 +205,7 @@ class FakeAttachmentRuntimeProbe extends RefCounted:
 	func frames_drawn() -> int:
 		return frame
 
-	func main_scene_tree() -> Object?:
+	func scene_root() -> Node?:
 		return tree
 
 	func screenshot_png() -> PackedByteArray:
@@ -202,21 +216,218 @@ class FakeAttachmentRuntimeProbe extends RefCounted:
 		return game_log
 
 
-class FakeAttachmentSceneTree extends RefCounted:
-	var root: Node
-
-	func _init(p_root: Node) -> void:
-		root = p_root
-
-
 class ReplaceOnlySentryBridge extends \
 		"res://tests/support/breadcrumbless_sentry_bridge.notest.fs":
 	func replaceAttachments(_payloads: Array) -> bool:
 		return true
 
 
+func test_sentry_attachment_collection_isolates_inputs_and_accessor_outputs() -> void:
+	var payload_bytes: PackedByteArray = PackedByteArray([1, 2, 3])
+	var payload: Dictionary = {
+		"bytes": payload_bytes,
+		"metadata": {"labels": ["diagnostic"]},
+	}
+	var failure := ObservabilityAttachmentFailure.new(
+			"built-in:screenshot",
+			"screenshot.png",
+			ObservabilityAttachmentFailure.PLATFORM_UNAVAILABLE,
+			Error.ERR_UNAVAILABLE,
+		)
+	var attachments: Array[Dictionary] = [payload]
+	var failures: Array[ObservabilityAttachmentFailure] = [failure]
+	var collection := SentryAttachmentCollection.new(attachments, failures)
+
+	payload_bytes[0] = 9
+	payload["metadata"]["labels"][0] = "mutated-input"
+	attachments.clear()
+	failures.clear()
+	var first_attachments: Array[Dictionary] = collection.attachments()
+	var first_failures: Array[ObservabilityAttachmentFailure] = collection.failures()
+	Expect.that(first_attachments[0]["bytes"]).to_equal(PackedByteArray([1, 2, 3]))
+	Expect.that(first_attachments[0]["metadata"]["labels"]).to_equal(["diagnostic"])
+	Expect.that(first_failures).to_have_size(1)
+	Expect.that(first_failures[0]).to_not_equal(failure)
+	var first_failure: ObservabilityAttachmentFailure = first_failures[0]
+
+	var exposed_bytes: PackedByteArray = first_attachments[0]["bytes"]
+	exposed_bytes[1] = 8
+	first_attachments[0]["metadata"]["labels"][0] = "mutated-output"
+	first_attachments.clear()
+	first_failures.clear()
+	var second_attachments: Array[Dictionary] = collection.attachments()
+	var second_failures: Array[ObservabilityAttachmentFailure] = collection.failures()
+	Expect.that(second_attachments[0]["bytes"]).to_equal(PackedByteArray([1, 2, 3]))
+	Expect.that(second_attachments[0]["metadata"]["labels"]).to_equal(["diagnostic"])
+	Expect.that(second_failures).to_have_size(1)
+	Expect.that(second_failures[0]).to_not_equal(failure)
+	Expect.that(second_failures[0]).to_not_equal(first_failure)
+
+
+func test_sentry_runtime_snapshot_defaults_construct_fresh_empty_components() -> void:
+	var first := SentryRuntimeSnapshot.new()
+	var second := SentryRuntimeSnapshot.new()
+
+	Expect.that(first.application).to_not_equal(second.application)
+	Expect.that(first.engine).to_not_equal(second.engine)
+	Expect.that(first.device).to_not_equal(second.device)
+	Expect.that(first.display).to_not_equal(second.display)
+	Expect.that(first.gpu).to_not_equal(second.gpu)
+	Expect.that(first.runtime).to_not_equal(second.runtime)
+	Expect.that(first.privacy).to_not_equal(second.privacy)
+	Expect.that(first.platform_name).to_equal("")
+	Expect.that(first.device.physical_memory).to_equal(-1)
+	Expect.that(first.device.free_memory).to_equal(-1)
+	Expect.that(first.device.usable_memory).to_equal(-1)
+	Expect.that(first.free_storage).to_equal(-1)
+
+
+func test_sentry_runtime_snapshot_positional_constructors_map_every_field() -> void:
+	var application := SentryRuntimeSnapshot.Application.new(
+			"app-name",
+			"app-version",
+			"app-start",
+			"app-architecture",
+		)
+	var engine := SentryRuntimeSnapshot.EngineRuntime.new(
+			"engine-version",
+			"engine-commit",
+			"engine-architecture",
+			true,
+			false,
+			true,
+			false,
+		)
+	var device := SentryRuntimeSnapshot.Device.new(
+			"device-model",
+			"processor-name",
+			31,
+			3201,
+			3202,
+			3203,
+		)
+	var display := SentryRuntimeSnapshot.Display.new(
+			"display-server",
+			41,
+			true,
+			4201,
+			4202,
+			4203,
+			42.04,
+			"display-orientation",
+		)
+	var gpu := SentryRuntimeSnapshot.Gpu.new(
+			"gpu-name",
+			"gpu-vendor",
+			"gpu-api",
+			"gpu-device-type",
+			"gpu-driver",
+			"gpu-driver-version",
+			"gpu-rendering-method",
+		)
+	var runtime := SentryRuntimeSnapshot.Runtime.new(true, false)
+	var privacy := SentryRuntimeSnapshot.Privacy.new(
+			"privacy-id",
+			"privacy-locale",
+			"privacy-timezone",
+		)
+	var snapshot := SentryRuntimeSnapshot.new(
+			"platform-name",
+			application,
+			engine,
+			device,
+			display,
+			gpu,
+			runtime,
+			privacy,
+			8101,
+		)
+
+	Expect.that([
+		snapshot.platform_name,
+		snapshot.application.name,
+		snapshot.application.version,
+		snapshot.application.start_time,
+		snapshot.application.architecture,
+		snapshot.engine.version,
+		snapshot.engine.version_commit,
+		snapshot.engine.architecture,
+		snapshot.engine.editor,
+		snapshot.engine.debug_build,
+		snapshot.engine.headless,
+		snapshot.engine.dedicated_server,
+		snapshot.device.model,
+		snapshot.device.processor_name,
+		snapshot.device.processor_count,
+		snapshot.device.physical_memory,
+		snapshot.device.free_memory,
+		snapshot.device.usable_memory,
+		snapshot.display.server,
+		snapshot.display.screen_count,
+		snapshot.display.touchscreen_available,
+		snapshot.display.primary_width_pixels,
+		snapshot.display.primary_height_pixels,
+		snapshot.display.primary_dpi,
+		snapshot.display.primary_refresh_rate,
+		snapshot.display.primary_orientation,
+		snapshot.gpu.name,
+		snapshot.gpu.vendor_name,
+		snapshot.gpu.api_version,
+		snapshot.gpu.device_type,
+		snapshot.gpu.driver_name,
+		snapshot.gpu.driver_version,
+		snapshot.gpu.rendering_method,
+		snapshot.runtime.sandboxed,
+		snapshot.runtime.userfs_persistent,
+		snapshot.privacy.unique_identifier,
+		snapshot.privacy.locale,
+		snapshot.privacy.timezone,
+		snapshot.free_storage,
+	]).to_equal([
+		"platform-name",
+		"app-name",
+		"app-version",
+		"app-start",
+		"app-architecture",
+		"engine-version",
+		"engine-commit",
+		"engine-architecture",
+		true,
+		false,
+		true,
+		false,
+		"device-model",
+		"processor-name",
+		31,
+		3201,
+		3202,
+		3203,
+		"display-server",
+		41,
+		true,
+		4201,
+		4202,
+		4203,
+		42.04,
+		"display-orientation",
+		"gpu-name",
+		"gpu-vendor",
+		"gpu-api",
+		"gpu-device-type",
+		"gpu-driver",
+		"gpu-driver-version",
+		"gpu-rendering-method",
+		true,
+		false,
+		"privacy-id",
+		"privacy-locale",
+		"privacy-timezone",
+		8101,
+	])
+
+
 func test_runtime_context_collector_builds_stable_context_without_pii() -> void:
-	var probe := FakeRuntimeContextProbe.new()
+	var probe := FakeRuntimeContextSource.new()
 	var collector := SentryRuntimeContextCollector.new(probe)
 
 	var stable: Dictionary = collector.stable_contexts("production", false)
@@ -233,10 +444,11 @@ func test_runtime_context_collector_builds_stable_context_without_pii() -> void:
 	Expect.that(device.has("unique_identifier")).to_be_false()
 	Expect.that(device.has("locale")).to_be_false()
 	Expect.that(device.has("timezone")).to_be_false()
+	Expect.that(probe.privacy_call_count).to_equal(0)
 
 
 func test_runtime_context_collector_includes_identifying_values_only_when_opted_in() -> void:
-	var probe := FakeRuntimeContextProbe.new()
+	var probe := FakeRuntimeContextSource.new()
 	var collector := SentryRuntimeContextCollector.new(probe)
 
 	var stable: Dictionary = collector.stable_contexts("production", true)
@@ -246,10 +458,11 @@ func test_runtime_context_collector_includes_identifying_values_only_when_opted_
 		)
 	Expect.that(stable["foundry_device"]["locale"]).to_equal("en_US")
 	Expect.that(stable["foundry_device"]["timezone"]).to_equal("America/New_York")
+	Expect.that(probe.privacy_call_count).to_equal(1)
 
 
-func test_runtime_context_collector_skips_memory_api_on_ios() -> void:
-	var probe := FakeRuntimeContextProbe.new()
+func test_runtime_context_collector_omits_memory_values_on_ios() -> void:
+	var probe := FakeRuntimeContextSource.new()
 	probe.platform = "iOS"
 	var collector := SentryRuntimeContextCollector.new(probe)
 
@@ -258,14 +471,14 @@ func test_runtime_context_collector_skips_memory_api_on_ios() -> void:
 	var stable_device: Dictionary = stable["foundry_device"]
 	var volatile_device: Dictionary = volatile["foundry_device"]
 
-	Expect.that(probe.memory_call_count).to_equal(0)
+	Expect.that(probe.memory_call_count).to_equal(1)
 	Expect.that(stable_device.has("memory_size")).to_be_false()
 	Expect.that(stable_device.has("free_memory")).to_be_false()
 	Expect.that(volatile_device.has("free_memory")).to_be_false()
 
 
 func test_runtime_context_collector_refreshes_volatile_values_without_mutating_stable() -> void:
-	var probe := FakeRuntimeContextProbe.new()
+	var probe := FakeRuntimeContextSource.new()
 	var collector := SentryRuntimeContextCollector.new(probe)
 	var stable: Dictionary = collector.stable_contexts("production", false)
 
@@ -284,7 +497,7 @@ func test_runtime_context_collector_refreshes_volatile_values_without_mutating_s
 
 
 func test_runtime_context_collector_classifies_runtime_modes_by_precedence() -> void:
-	var probe := FakeRuntimeContextProbe.new()
+	var probe := FakeRuntimeContextSource.new()
 	var collector := SentryRuntimeContextCollector.new(probe)
 
 	probe.engine_headless = true
@@ -310,7 +523,7 @@ func test_runtime_context_collector_classifies_runtime_modes_by_precedence() -> 
 
 
 func test_runtime_context_collector_omits_invalid_and_unsupported_values() -> void:
-	var probe := FakeRuntimeContextProbe.new()
+	var probe := FakeRuntimeContextSource.new()
 	probe.app_version = ""
 	probe.device_model = "GenericDevice"
 	probe.processor_count = 0
@@ -349,21 +562,25 @@ func test_runtime_context_collector_omits_invalid_and_unsupported_values() -> vo
 
 func test_provider_forwards_stable_and_capture_time_runtime_context() -> void:
 	var bridge := FakeSentryBridge.new()
-	var probe := FakeRuntimeContextProbe.new()
+	var probe := FakeRuntimeContextSource.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = probe,
+			p_runtime_context_source = probe,
 		)
 	var config := ObservabilityConfig.new(
 		p_environment = "production",
 		p_global_attributes = {},
-		p_provider_options = {"dsn": "https://public@example/1"},
+		p_provider_options = {
+			"dsn": "https://public@example/1",
+			"send_default_pii": true,
+		},
 	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(
 			bridge.configured_payload["stable_contexts"]["foundry_app"]["name"],
 		).to_equal("Oakhaven")
+	Expect.that(probe.privacy_call_count).to_equal(1)
 
 	probe.volatile_free_memory = 777
 	var event := ObservabilityEvent.new(
@@ -377,15 +594,16 @@ func test_provider_forwards_stable_and_capture_time_runtime_context() -> void:
 	Expect.that(bridge.captured_payloads[0]["attributes"]).to_equal(
 			{"explicit": "preserved"},
 		)
+	Expect.that(probe.privacy_call_count).to_equal(1)
 	provider.shutdown()
 
 
 func test_provider_redacts_stable_and_volatile_runtime_contexts_across_sessions() -> void:
 	var bridge := FakeSentryBridge.new()
-	var probe := FakeRuntimeContextProbe.new()
+	var probe := FakeRuntimeContextSource.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = probe,
+			p_runtime_context_source = probe,
 		)
 	var original_policy := ObservabilityRedactionPolicy.new([
 		ObservabilityRedactionRule.replace_text(
@@ -515,12 +733,12 @@ func test_provider_redacts_stable_and_volatile_runtime_contexts_across_sessions(
 
 func test_provider_redacts_stable_and_volatile_runtime_contexts_once_each() -> void:
 	var bridge := FakeSentryBridge.new()
-	var probe := FakeRuntimeContextProbe.new()
+	var probe := FakeRuntimeContextSource.new()
 	probe.app_name = "a"
 	probe.volatile_orientation = "a"
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = probe,
+			p_runtime_context_source = probe,
 		)
 	Expect.that(provider.configure(ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -570,7 +788,7 @@ func test_provider_redacts_global_attributes_before_native_config_and_capture_pa
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var raw_global_attributes: Dictionary = {
 		"build": 42,
@@ -639,10 +857,10 @@ func test_provider_redacts_global_attributes_before_native_config_and_capture_pa
 
 func test_invalid_global_attribute_redaction_preserves_committed_session_and_policy() -> void:
 	var bridge := FakeSentryBridge.new()
-	var probe := FakeRuntimeContextProbe.new()
+	var probe := FakeRuntimeContextSource.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = probe,
+			p_runtime_context_source = probe,
 		)
 	var initial_policy := ObservabilityRedactionPolicy.new([
 		ObservabilityRedactionRule.sensitive_key("password"),
@@ -767,10 +985,10 @@ func test_failed_session_reset_never_retains_raw_or_candidate_global_attributes(
 
 func test_provider_failed_reconfigure_preserves_last_stable_runtime_context() -> void:
 	var bridge := ScopeOnlySentryBridge.new()
-	var probe := FakeRuntimeContextProbe.new()
+	var probe := FakeRuntimeContextSource.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = probe,
+			p_runtime_context_source = probe,
 		)
 	var initial_config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -800,7 +1018,7 @@ func test_provider_disabled_configuration_and_shutdown_do_not_capture_stale_cont
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var enabled_config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -1179,7 +1397,7 @@ func test_reconfigure_scope_reset_is_atomic_across_success_and_failure() -> void
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -1329,7 +1547,7 @@ func test_equivalent_config_scope_reset_failure_restores_scope_and_breadcrumbs()
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {"build": {"number": 42}},
@@ -1380,7 +1598,7 @@ func test_scope_reset_rollback_configure_failure_fails_closed_and_can_recover() 
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -1441,7 +1659,7 @@ func test_scope_reset_retained_scope_reapply_failure_fails_closed() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -1495,7 +1713,7 @@ func test_failed_configure_scope_resync_failure_fails_closed_with_original_error
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -1950,7 +2168,7 @@ func test_identical_successful_configure_clears_only_the_live_breadcrumb_trail()
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -2035,7 +2253,7 @@ func test_equivalent_failed_configure_preserves_breadcrumb_trail_and_scope() -> 
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -2069,7 +2287,7 @@ func test_initial_mutating_malformed_configure_result_fails_closed() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	bridge.configure_result = "activated"
 	bridge.malformed_configure_mutates_session = true
@@ -2102,7 +2320,7 @@ func test_changed_mutating_malformed_configure_result_fails_closed_and_can_recov
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -2153,7 +2371,7 @@ func test_equivalent_reconfigure_clear_rejection_restores_scope_and_trail() -> v
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
 		p_global_attributes = {
@@ -2202,7 +2420,7 @@ func test_changed_config_false_clear_result_fails_closed_and_can_recover() -> vo
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -2246,7 +2464,7 @@ func test_equivalent_config_malformed_clear_result_fails_closed_and_can_recover(
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var config := ObservabilityConfig.new(
 		p_environment = "production",
@@ -2287,7 +2505,7 @@ func test_nested_config_change_is_not_equivalent_for_clear_recovery() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = bridge,
-			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
+			p_runtime_context_source = FakeRuntimeContextSource.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
 		p_global_attributes = {"build": {"number": 42}},
@@ -2668,11 +2886,11 @@ func test_provider_redacts_persistent_and_capture_local_builtin_attachment_metad
 	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
 	file.store_string("game output")
 	file.close()
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	probe.game_log = path
 	var root := Node.new()
 	root.name = "Root"
-	probe.tree = FakeAttachmentSceneTree.new(root)
+	probe.tree = root
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -2739,10 +2957,10 @@ func test_provider_redacts_persistent_and_capture_local_builtin_attachment_metad
 
 
 func test_invalid_redacted_builtin_attachment_is_omitted_without_dropping_event() -> void:
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	var root := Node.new()
 	root.name = "Root"
-	probe.tree = FakeAttachmentSceneTree.new(root)
+	probe.tree = root
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -2792,11 +3010,11 @@ func test_invalid_persistent_builtin_redaction_survives_configure_and_combines()
 	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
 	file.store_string("game output")
 	file.close()
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	probe.game_log = path
 	var root := Node.new()
 	root.name = "Root"
-	probe.tree = FakeAttachmentSceneTree.new(root)
+	probe.tree = root
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	var config := ObservabilityConfig.new(
@@ -3145,14 +3363,14 @@ func test_attachment_restore_rejection_fails_closed() -> void:
 
 
 func test_built_in_attachment_collection_is_independent_cached_and_bounded() -> void:
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	var root := Node.new()
 	root.name = "Root"
 	for index: int in range(SentryBuiltInAttachmentCollector.MAX_SCENE_NODES + 20):
 		var child := Node.new()
 		child.name = "Child%s" % index
 		root.add_child(child)
-	probe.tree = FakeAttachmentSceneTree.new(root)
+	probe.tree = root
 	var collector := SentryBuiltInAttachmentCollector.new(probe)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -3167,12 +3385,18 @@ func test_built_in_attachment_collection_is_independent_cached_and_bounded() -> 
 		),
 	)
 
-	var first: Dictionary = collector.collect(ObservabilityEvent.new(), config)
-	var second: Dictionary = collector.collect(ObservabilityEvent.new(), config)
-	Expect.that(first["attachments"]).to_have_size(2)
-	Expect.that(second["attachments"]).to_have_size(2)
+	var first: SentryAttachmentCollection = collector.collect(
+			ObservabilityEvent.new(),
+			config,
+		)
+	var second: SentryAttachmentCollection = collector.collect(
+			ObservabilityEvent.new(),
+			config,
+		)
+	Expect.that(first.attachments()).to_have_size(2)
+	Expect.that(second.attachments()).to_have_size(2)
 	Expect.that(probe.screenshot_calls).to_equal(1)
-	var hierarchy_payload: Dictionary = first["attachments"][1]
+	var hierarchy_payload: Dictionary = first.attachments()[1]
 	var hierarchy_bytes: PackedByteArray = hierarchy_payload["bytes"]
 	var hierarchy: Dictionary = JSON.parse_string(hierarchy_bytes.get_string_from_utf8())
 	var hierarchy_children: Array = hierarchy["children"]
@@ -3182,22 +3406,28 @@ func test_built_in_attachment_collection_is_independent_cached_and_bounded() -> 
 
 	probe.frame += 1
 	probe.main_thread = false
-	var skipped: Dictionary = collector.collect(ObservabilityEvent.new(), config)
-	Expect.that(skipped["attachments"]).to_have_size(0)
-	Expect.that(skipped["failures"]).to_have_size(2)
+	var skipped: SentryAttachmentCollection = collector.collect(
+			ObservabilityEvent.new(),
+			config,
+		)
+	Expect.that(skipped.attachments()).to_have_size(0)
+	Expect.that(skipped.failures()).to_have_size(2)
 	probe.main_thread = true
 	probe.headless = true
-	var headless: Dictionary = collector.collect(ObservabilityEvent.new(), config)
-	Expect.that(headless["attachments"]).to_have_size(1)
-	Expect.that(headless["failures"]).to_have_size(1)
+	var headless: SentryAttachmentCollection = collector.collect(
+			ObservabilityEvent.new(),
+			config,
+		)
+	Expect.that(headless.attachments()).to_have_size(1)
+	Expect.that(headless.failures()).to_have_size(1)
 	root.free()
 
 
 func test_built_in_attachment_toggles_and_size_limits_are_independent() -> void:
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	var root := Node.new()
 	root.name = "Root"
-	probe.tree = FakeAttachmentSceneTree.new(root)
+	probe.tree = root
 	var collector := SentryBuiltInAttachmentCollector.new(probe)
 	var screenshot_config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -3209,12 +3439,12 @@ func test_built_in_attachment_toggles_and_size_limits_are_independent() -> void:
 			p_attach_screenshot = true,
 		),
 	)
-	var screenshot_only: Dictionary = collector.collect(
+	var screenshot_only: SentryAttachmentCollection = collector.collect(
 			ObservabilityEvent.new(),
 			screenshot_config,
 		)
-	Expect.that(screenshot_only["attachments"]).to_have_size(1)
-	Expect.that(screenshot_only["attachments"][0]["filename"]).to_equal(
+	Expect.that(screenshot_only.attachments()).to_have_size(1)
+	Expect.that(screenshot_only.attachments()[0]["filename"]).to_equal(
 			"screenshot.png",
 		)
 
@@ -3228,12 +3458,12 @@ func test_built_in_attachment_toggles_and_size_limits_are_independent() -> void:
 			p_attach_scene_tree = true,
 		),
 	)
-	var scene_only: Dictionary = collector.collect(
+	var scene_only: SentryAttachmentCollection = collector.collect(
 			ObservabilityEvent.new(),
 			scene_config,
 		)
-	Expect.that(scene_only["attachments"]).to_have_size(1)
-	Expect.that(scene_only["attachments"][0]["filename"]).to_equal(
+	Expect.that(scene_only.attachments()).to_have_size(1)
+	Expect.that(scene_only.attachments()[0]["filename"]).to_equal(
 			"view-hierarchy.json",
 		)
 
@@ -3248,19 +3478,19 @@ func test_built_in_attachment_toggles_and_size_limits_are_independent() -> void:
 			p_attach_screenshot = true,
 		),
 	)
-	var oversized: Dictionary = collector.collect(
+	var oversized: SentryAttachmentCollection = collector.collect(
 			ObservabilityEvent.new(),
 			oversized_config,
 		)
-	Expect.that(oversized["attachments"]).to_have_size(0)
-	Expect.that(oversized["failures"]).to_have_size(1)
-	var failure: ObservabilityAttachmentFailure = oversized["failures"][0]
+	Expect.that(oversized.attachments()).to_have_size(0)
+	Expect.that(oversized.failures()).to_have_size(1)
+	var failure: ObservabilityAttachmentFailure = oversized.failures()[0]
 	Expect.that(failure.reason()).to_equal(ObservabilityAttachmentFailure.OVERSIZED)
 	root.free()
 
 
 func test_scene_hierarchy_respects_maximum_depth() -> void:
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	var root := Node.new()
 	root.name = "Depth0"
 	var parent: Node = root
@@ -3269,7 +3499,7 @@ func test_scene_hierarchy_respects_maximum_depth() -> void:
 		child.name = "Depth%s" % (depth + 1)
 		parent.add_child(child)
 		parent = child
-	probe.tree = FakeAttachmentSceneTree.new(root)
+	probe.tree = root
 	var collector := SentryBuiltInAttachmentCollector.new(probe)
 	var config := ObservabilityConfig.new(
 		p_global_attributes = {},
@@ -3283,8 +3513,11 @@ func test_scene_hierarchy_respects_maximum_depth() -> void:
 		),
 	)
 
-	var result: Dictionary = collector.collect(ObservabilityEvent.new(), config)
-	var hierarchy_payload: Dictionary = result["attachments"][0]
+	var result: SentryAttachmentCollection = collector.collect(
+			ObservabilityEvent.new(),
+			config,
+		)
+	var hierarchy_payload: Dictionary = result.attachments()[0]
 	var hierarchy_bytes: PackedByteArray = hierarchy_payload["bytes"]
 	var cursor: Dictionary = JSON.parse_string(hierarchy_bytes.get_string_from_utf8())
 	var captured_depth: int = 0
@@ -3310,10 +3543,10 @@ func test_zero_attachment_limit_disables_every_sentry_delivery_path() -> void:
 			FileAccess.WRITE,
 		)
 	game_file.close()
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	var root := Node.new()
 	root.name = "Root"
-	probe.tree = FakeAttachmentSceneTree.new(root)
+	probe.tree = root
 	probe.game_log = "user://sentry-zero-game.log"
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
@@ -3366,7 +3599,7 @@ func test_game_log_path_is_registered_lazily_before_the_file_exists() -> void:
 	var absolute_path: String = ProjectSettings.globalize_path(path)
 	if FileAccess.file_exists(absolute_path):
 		DirAccess.remove_absolute(absolute_path)
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	probe.game_log = path
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -3394,7 +3627,7 @@ func test_game_log_path_is_registered_lazily_before_the_file_exists() -> void:
 
 
 func test_empty_or_disabled_game_log_path_reports_missing_file() -> void:
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	probe.game_log = ""
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
@@ -3427,7 +3660,7 @@ func test_missing_configured_game_log_is_preflighted_at_event_time() -> void:
 	var absolute_path: String = ProjectSettings.globalize_path(path)
 	if FileAccess.file_exists(absolute_path):
 		DirAccess.remove_absolute(absolute_path)
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	probe.game_log = path
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
@@ -3459,7 +3692,7 @@ func test_user_clear_preserves_configured_game_log_attachment() -> void:
 	var file: FileAccess = FileAccess.open("user://sentry-game.log", FileAccess.WRITE)
 	file.store_string("game output")
 	file.close()
-	var probe := FakeAttachmentRuntimeProbe.new()
+	var probe := FakeAttachmentSource.new()
 	probe.game_log = "user://sentry-game.log"
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(
