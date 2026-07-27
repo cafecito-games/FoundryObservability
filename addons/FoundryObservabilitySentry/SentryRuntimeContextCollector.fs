@@ -74,8 +74,12 @@ func volatile_contexts() -> Dictionary:
 
 
 func contexts_for_capture(stable: Dictionary) -> Dictionary:
+	return merge_contexts(stable, volatile_contexts())
+
+
+## Merges isolated context snapshots with volatile fields taking precedence.
+func merge_contexts(stable: Dictionary, volatile: Dictionary) -> Dictionary:
 	var merged: Dictionary = stable.duplicate(true)
-	var volatile: Dictionary = volatile_contexts()
 	for context_key: Variant in volatile.keys():
 		if not (context_key is String) or not (volatile[context_key] is Dictionary):
 			continue

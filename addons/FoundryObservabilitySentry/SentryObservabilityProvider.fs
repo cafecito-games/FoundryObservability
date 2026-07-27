@@ -14,6 +14,7 @@ const DEFAULT_MAX_ATTACHMENT_BYTES: int = 20 * 1024 * 1024
 var _bridge: Object? = null
 var _context_collector: SentryRuntimeContextCollector
 var _attachment_collector: SentryBuiltInAttachmentCollector
+var _redactor: ObservabilityRedactor = ObservabilityRedactor.new()
 var _stable_contexts: Dictionary = {}
 var _scope: ObservabilityScope = ObservabilityScope.new()
 var _user: ObservabilityUser? = null
@@ -26,6 +27,7 @@ var _attachments: Dictionary = {}
 var _attachment_sequence: int = 0
 var _last_attachment_failures: Array[ObservabilityAttachmentFailure] = []
 var _persistent_builtin_attachments: Array[Dictionary] = []
+var _persistent_builtin_attachment_failures: Array[ObservabilityAttachmentFailure] = []
 var _native_attachment_payloads: Array[Dictionary] = []
 var _attachment_config: ObservabilityConfig
 
@@ -81,6 +83,11 @@ func configure(config: ObservabilityConfig) -> int:
 	var dsn: String = str(options.get("dsn", ""))
 	if config.enabled and dsn.is_empty():
 		return Error.FAILED
+	var candidate_redactor: ObservabilityRedactor = ObservabilityRedactor.new(
+			config.redaction_policy(),
+		)
+	if not candidate_redactor.is_valid():
+		return Error.ERR_INVALID_DATA
 
 	var bridge: Object? = _resolve_bridge()
 	if config.enabled and bridge == null:
@@ -89,6 +96,7 @@ func configure(config: ObservabilityConfig) -> int:
 		if config.enabled or _enabled:
 			return Error.ERR_UNAVAILABLE
 		_enabled = false
+		_redactor = ObservabilityRedactor.new()
 		_stable_contexts = {}
 		_scope = ObservabilityScope.new()
 		_user = null
@@ -117,6 +125,7 @@ func configure(config: ObservabilityConfig) -> int:
 
 	if bridge == null:
 		_enabled = false
+		_redactor = ObservabilityRedactor.new()
 		_stable_contexts = {}
 		_scope = ObservabilityScope.new()
 		_user = null
@@ -135,13 +144,39 @@ func configure(config: ObservabilityConfig) -> int:
 				config.environment,
 				send_default_pii,
 			)
+		var stable_result: Dictionary = candidate_redactor.redact_contexts(
+				candidate_stable_contexts,
+			)
+		if not stable_result.get("valid", false) \
+				or not (stable_result.get("value") is Dictionary):
+			return Error.ERR_INVALID_DATA
+		@warning_ignore("unsafe_cast")
+		candidate_stable_contexts = stable_result["value"] as Dictionary
+	var candidate_global_attributes: Dictionary = {}
+	var global_attributes_result: Dictionary = candidate_redactor.redact_contexts({
+		"global_attributes": config.global_attributes(),
+	})
+	if not global_attributes_result.get("valid", false) \
+			or not (global_attributes_result.get("value") is Dictionary):
+		return Error.ERR_INVALID_DATA
+	@warning_ignore("unsafe_cast")
+	var candidate_contexts: Dictionary = (
+			global_attributes_result["value"] as Dictionary
+		)
+	if not candidate_contexts.has("global_attributes") \
+			or not (candidate_contexts["global_attributes"] is Dictionary):
+		return Error.ERR_INVALID_DATA
+	@warning_ignore("unsafe_cast")
+	candidate_global_attributes = (
+			candidate_contexts["global_attributes"] as Dictionary
+		).duplicate(true)
 	var payload: Dictionary = {
 			"enabled": config.enabled,
 			"dsn": dsn,
 			"environment": config.environment,
 			"release": config.release,
 			"dist": config.dist,
-			"global_attributes": config.global_attributes(),
+			"global_attributes": candidate_global_attributes,
 			"provider_options": options,
 			"logs_enabled": config.logs_enabled,
 			"log_minimum_level": config.log_minimum_level,
@@ -169,6 +204,7 @@ func configure(config: ObservabilityConfig) -> int:
 	var retained_native_attachments: Array = _native_attachment_payloads.duplicate(true)
 	var candidate_attachment_config: ObservabilityConfig = _attachment_config_from(config)
 	var candidate_persistent_builtins: Array[Dictionary] = []
+	var candidate_persistent_failures: Array[ObservabilityAttachmentFailure] = []
 	if config.enabled and bridge.has_method("replaceAttachments"):
 		var built_in_result: Dictionary = _attachment_collector.collect(
 				null,
@@ -178,7 +214,19 @@ func configure(config: ObservabilityConfig) -> int:
 			if attachment.get("persistent", false) == true:
 				var persistent: Dictionary = attachment.duplicate(true)
 				persistent.erase("persistent")
-				candidate_persistent_builtins.append(persistent)
+				var redacted_attachment: Dictionary = (
+						candidate_redactor.redact_attachment_payload(persistent)
+					)
+				if not redacted_attachment.get("valid", false) \
+						or not (redacted_attachment.get("value") is Dictionary):
+					candidate_persistent_failures.append(
+							_redacted_attachment_failure(attachment),
+						)
+					continue
+				@warning_ignore("unsafe_cast")
+				candidate_persistent_builtins.append(
+						redacted_attachment["value"] as Dictionary,
+					)
 	var candidate_matches_committed_config: bool = (
 			_has_last_config_payload
 			and _config_payloads_are_equivalent(candidate_config_payload)
@@ -257,12 +305,18 @@ func configure(config: ObservabilityConfig) -> int:
 				_fail_closed(bridge)
 			return Error.FAILED
 	_enabled = config.enabled
+	_redactor = candidate_redactor
 	_stable_contexts = candidate_stable_contexts
 	_scope = ObservabilityScope.new()
 	_user = null
 	_attachments = {}
-	_last_attachment_failures.clear()
 	_persistent_builtin_attachments = candidate_persistent_builtins.duplicate(true)
+	_persistent_builtin_attachment_failures = _copy_attachment_failures(
+			candidate_persistent_failures,
+		)
+	_last_attachment_failures = _copy_attachment_failures(
+			_persistent_builtin_attachment_failures,
+		)
 	_native_attachment_payloads = candidate_persistent_builtins.duplicate(true)
 	_attachment_config = candidate_attachment_config
 	_last_config_payload = candidate_config_payload.duplicate(true)
@@ -294,9 +348,20 @@ func capture(event: ObservabilityEvent) -> String:
 			"engine_ticks_msec": event.engine_ticks_msec(),
 			"attributes": event.attributes(),
 		}
-	var contexts: Dictionary = _context_collector.contexts_for_capture(_stable_contexts)
-	if not contexts.is_empty():
-		payload["contexts"] = contexts
+	var volatile_result: Dictionary = _redactor.redact_contexts(
+			_context_collector.volatile_contexts(),
+		)
+	if not volatile_result.get("valid", false) \
+			or not (volatile_result.get("value") is Dictionary):
+		return ""
+	@warning_ignore("unsafe_cast")
+	var redacted_volatile: Dictionary = volatile_result["value"] as Dictionary
+	var redacted_contexts: Dictionary = _context_collector.merge_contexts(
+			_stable_contexts,
+			redacted_volatile,
+		)
+	if not redacted_contexts.is_empty():
+		payload["contexts"] = redacted_contexts
 	if event_scope != null and not event_scope.is_empty():
 		payload["scope"] = _scope_payload(event_scope, null)
 	var exception: ObservabilityException? = event.exception()
@@ -321,7 +386,7 @@ func capture(event: ObservabilityEvent) -> String:
 		if not bridge.has_method(method):
 			return ""
 	else:
-		_last_attachment_failures.clear()
+		_reset_attachment_failures_for_capture()
 		var capture_attachments: Array = _capture_local_attachments(event)
 		if not capture_attachments.is_empty():
 			payload["attachments"] = capture_attachments
@@ -581,6 +646,7 @@ func shutdown() -> void:
 		return
 	_shutdown = true
 	_enabled = false
+	_redactor = ObservabilityRedactor.new()
 	_stable_contexts = {}
 	_scope = ObservabilityScope.new()
 	_user = null
@@ -700,10 +766,21 @@ func _capture_local_attachments(event: ObservabilityEvent) -> Array:
 	for failure: ObservabilityAttachmentFailure in built_ins["failures"]:
 		_last_attachment_failures.append(failure.duplicate())
 	for payload: Dictionary in built_ins["attachments"]:
+		var candidate_payload: Dictionary = payload.duplicate(true)
+		candidate_payload.erase("persistent")
+		var redacted_payload: Dictionary = _redactor.redact_attachment_payload(
+				candidate_payload,
+			)
+		if not redacted_payload.get("valid", false) \
+				or not (redacted_payload.get("value") is Dictionary):
+			_append_attachment_failure_once(
+					_redacted_attachment_failure(payload),
+				)
+			continue
 		if payload.get("persistent", false) == true:
 			continue
-		var capture_payload: Dictionary = payload.duplicate(true)
-		capture_payload.erase("persistent")
+		@warning_ignore("unsafe_cast")
+		var capture_payload: Dictionary = redacted_payload["value"] as Dictionary
 		local.append(capture_payload)
 	return local
 
@@ -774,6 +851,52 @@ func _append_attachment_failure(
 			reason,
 			error,
 		))
+
+
+func _redacted_attachment_failure(
+		payload: Dictionary,
+) -> ObservabilityAttachmentFailure:
+	var filename: String = str(payload.get("filename", ""))
+	var handle: String = "built-in:attachment"
+	if payload.get("persistent", false) == true:
+		handle = "built-in:game-log"
+	elif filename == "screenshot.png":
+		handle = "built-in:screenshot"
+	elif filename == "view-hierarchy.json":
+		handle = "built-in:scene-tree"
+	return ObservabilityAttachmentFailure.new(
+			handle,
+			filename,
+			ObservabilityAttachmentFailure.REDACTED,
+			Error.ERR_INVALID_DATA,
+		)
+
+
+func _reset_attachment_failures_for_capture() -> void:
+	_last_attachment_failures = _copy_attachment_failures(
+			_persistent_builtin_attachment_failures,
+		)
+
+
+func _append_attachment_failure_once(
+		failure: ObservabilityAttachmentFailure,
+) -> void:
+	for existing: ObservabilityAttachmentFailure in _last_attachment_failures:
+		if existing.handle() == failure.handle() \
+				and existing.filename() == failure.filename() \
+				and existing.reason() == failure.reason() \
+				and existing.error() == failure.error():
+			return
+	_last_attachment_failures.append(failure.duplicate())
+
+
+func _copy_attachment_failures(
+		source: Array[ObservabilityAttachmentFailure],
+) -> Array[ObservabilityAttachmentFailure]:
+	var copied: Array[ObservabilityAttachmentFailure] = []
+	for failure: ObservabilityAttachmentFailure in source:
+		copied.append(failure.duplicate())
+	return copied
 
 
 func _attachment_config_from(config: ObservabilityConfig) -> ObservabilityConfig:
@@ -879,6 +1002,7 @@ func _config_payloads_are_equivalent(candidate_config_payload: Dictionary) -> bo
 func _fail_closed(bridge: Object) -> void:
 	bridge.call("shutdown", _owner)
 	_enabled = false
+	_redactor = ObservabilityRedactor.new()
 	_stable_contexts = {}
 	_scope = ObservabilityScope.new()
 	_user = null
@@ -891,6 +1015,7 @@ func _clear_attachment_state() -> void:
 	_attachments = {}
 	_last_attachment_failures.clear()
 	_persistent_builtin_attachments = []
+	_persistent_builtin_attachment_failures = []
 	_native_attachment_payloads = []
 	_attachment_config = _attachment_config_from(ObservabilityConfig.new(
 			p_enabled = false,

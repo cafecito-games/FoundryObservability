@@ -196,10 +196,12 @@ code may reconfigure or replace the active provider, and automatic startup does
 not lock it. Calling `initialize_from_project_settings()` later explicitly
 reapplies the project-settings configuration.
 
-`shutdown()` is idempotent and restores the disabled null-provider state. It
-does not erase the latest startup status. A later successful
-`initialize_from_project_settings()` reuses the cached startup provider and
-starts reporting again.
+Calling `shutdown()` closes admission immediately through the shutdown-request latch.
+If provider or configuration work is active, the void call returns before flush, provider shutdown, and the disabled null-state commit; teardown completes after that work drains.
+With no active work, the same call completes teardown directly. Repeated calls
+are safe. Shutdown does not erase the latest startup status. A later successful
+`initialize_from_project_settings()` intentionally reuses the cached startup
+provider and starts reporting again.
 
 ## Public API index
 
@@ -225,6 +227,10 @@ Value types:
 - ObservabilityMetric
 - ObservabilityAttachment
 - ObservabilityAttachmentFailure
+- ObservabilitySignalLimits
+- ObservabilityRedactionRule
+- ObservabilityRedactionPolicy
+- ObservabilityProcessingDiagnostic
 - ObservabilityStartupStatus: stable project-settings startup result constants; see the [startup status table](#skip-decisions-and-results).
 
 Optional provider capabilities:
@@ -351,6 +357,15 @@ ObservabilityConfig.new(
 		p_attach_game_log: bool = false,
 		p_attach_screenshot: bool = false,
 		p_attach_scene_tree: bool = false,
+		p_event_sample_rate: float = 1.0,
+		p_log_sample_rate: float = 1.0,
+		p_event_processors: Array[Callable] = [],
+		p_log_processors: Array[Callable] = [],
+		p_metric_processors: Array[Callable] = [],
+		p_event_limits: ObservabilitySignalLimits? = null,
+		p_log_limits: ObservabilitySignalLimits? = null,
+		p_metric_limits: ObservabilitySignalLimits? = null,
+		p_redaction_policy: ObservabilityRedactionPolicy? = null,
 )
 ~~~
 
@@ -364,18 +379,18 @@ Public fields:
 | dist | String | Optional distribution variant |
 | logs_enabled | bool | Whether structured logs are accepted; enabled by default |
 | log_minimum_level | int | Lowest structured-log severity accepted; TRACE by default |
-| log_rate_limit_per_second | int | Maximum accepted logs per monotonic engine-tick second; zero means unlimited |
+| log_rate_limit_per_second | int | Compatibility maximum accepted logs per monotonic engine-tick second, evaluated after the log signal limits; zero disables this limit |
 | metrics_enabled | bool | Whether custom metrics are accepted; enabled by default |
 | metric_sample_rate | float | Deterministic accepted fraction from 0.0 through 1.0 |
-| metric_filter | Callable | Optional predicate receiving each normalized metric before sampling |
+| metric_filter | Callable | Optional predicate receiving each normalized, pre-redacted metric before metric processors |
 | automatic_capture_enabled | bool | Whether successful enabled configuration installs the automatic engine logger |
 | automatic_event_mask | int | Categories routed to exception events |
 | automatic_breadcrumb_mask | int | Categories routed to breadcrumbs |
 | automatic_log_mask | int | Categories routed to structured logs |
-| automatic_events_per_frame | int | Maximum automatic exception events per processed frame; zero is unlimited |
-| automatic_repeated_error_window_msec | int | Duplicate-suppression window; zero disables suppression |
-| automatic_event_throttle_count | int | Maximum automatic exception events in the sliding window; zero is unlimited |
-| automatic_event_throttle_window_msec | int | Sliding-window duration; zero disables that limit |
+| automatic_events_per_frame | int | Compatibility per-frame event limit used when `p_event_limits` is absent; zero disables it |
+| automatic_repeated_error_window_msec | int | Compatibility repeated-identity event window used when `p_event_limits` is absent; zero disables it |
+| automatic_event_throttle_count | int | Compatibility event sliding-window count used when `p_event_limits` is absent; zero disables it |
+| automatic_event_throttle_window_msec | int | Compatibility event sliding-window duration used when `p_event_limits` is absent; zero disables it |
 | stack_trace_source_context_enabled | bool | Retain bounded stack-frame source context; enabled by default |
 | stack_trace_variables_enabled | bool | Retain a bounded, type-filtered copy of stack-frame variables; disabled by default and requires explicit opt-in |
 | application_hang_detection_enabled | bool | Enable native main-thread hang detection on macOS and iOS; enabled by default |
@@ -388,6 +403,8 @@ Public fields:
 | attach_game_log | bool | Include the current game log when supported; disabled by default |
 | attach_screenshot | bool | Include a capture-time screenshot when supported; disabled by default |
 | attach_scene_tree | bool | Include a bounded capture-time scene-tree snapshot when supported; disabled by default |
+| event_sample_rate | float | Deterministic retained fraction for ordinary and automatic events; defaults to 1.0 |
+| log_sample_rate | float | Deterministic retained fraction for structured logs; defaults to 1.0 |
 
 Accessors:
 
@@ -395,28 +412,319 @@ Accessors:
 func global_attributes() -> Dictionary
 func provider_options() -> Dictionary
 func automatic_message_filter_prefixes() -> PackedStringArray
+func event_processors() -> Array[Callable]
+func log_processors() -> Array[Callable]
+func metric_processors() -> Array[Callable]
+func event_limits() -> ObservabilitySignalLimits
+func log_limits() -> ObservabilitySignalLimits
+func metric_limits() -> ObservabilitySignalLimits
+func redaction_policy() -> ObservabilityRedactionPolicy
 ~~~
 
 Dictionary accessors return deep copies. global_attributes are shared metadata
-for a provider integration. provider_options are opaque to the core and are
-passed to provider implementations through the config object.
+for a provider integration. The Sentry provider redacts its candidate copy
+before native configuration, using the canonical
+`contexts/global_attributes/...` path described below; the caller's config is
+not modified. provider_options are opaque to the core and are passed to
+provider implementations through the config object.
 automatic_message_filter_prefixes returns a copied list of ordinary output
 prefixes excluded from automatic capture.
 
 Structured logs are enabled by default independently of messages and
-exceptions. The core applies log_minimum_level and log_rate_limit_per_second
-before dispatch. The rate limit uses each record's monotonic
-engine_ticks_msec in a fixed one-second window; a zero limit is unlimited. A
+exceptions. The core applies `log_minimum_level` before entering the log
+pipeline. `log_rate_limit_per_second` remains a compatibility limit evaluated
+after the log signal's per-frame, repeated, and sliding limits. It uses the
+pipeline's monotonic clock in a fixed one-second window; zero disables it. A
 disabled log configuration or a record below the configured level returns an
-empty ID without calling the provider.
+empty ID without calling the provider or replacing the latest processing
+diagnostic.
 
 Metrics are independently enabled by default. metric_sample_rate must be finite
 and between 0.0 and 1.0 inclusive; invalid configuration returns
 Error.ERR_INVALID_PARAMETER without replacing the active provider. A valid
-metric_filter must return bool. Returning false drops the metric normally;
-returning another type stores Error.ERR_INVALID_PARAMETER. Filtering happens
-before deterministic accumulator-based sampling, and the sampling sequence
-resets on successful configuration and shutdown.
+metric_filter must return bool. It receives the normalized, pre-redacted
+metric before the ordered metric processor array. Returning false produces the
+same normal `processor` drop as a processor returning null; returning another
+type produces `invalid_processor_result` and stores Error.ERR_INVALID_DATA.
+
+### Provider-neutral signal processing
+
+Events, structured logs, and metrics enter one provider-neutral policy boundary
+before provider delivery. The core processing and admission order is:
+
+~~~
+Core admission: normalize → pre-redact → processors → post-redact → validate → sample → signal limit
+Event/log dispatch after admission: accepted replacement → final timestamp and exception normalization → provider
+~~~
+
+The service initially resolves the input event/log timestamp and applies the
+active exception-frame policy before pipeline entry. The normalized candidate
+is structurally checked before callbacks run. The validation shown after
+post-redaction checks the final reconstructed processor replacement. Sampling
+and signal limits then admit that replacement and commit capacity.
+
+`ObservabilityProcessingPipeline` ends at admission. The service takes the
+accepted event/log replacement and normalizes it once more before provider
+dispatch. Final event/log normalization resolves a replacement timestamp and reapplies the active exception frame, source-context, and variable policy.
+An explicit replacement timestamp is preserved; an unassigned timestamp is
+resolved from the capture's wall-clock/monotonic pair. Final exception
+normalization drops null or unusable frames, normalizes nonpositive line
+numbers, enforces the source-context opt-in and five-line bounds, and enforces
+the variable opt-in and bounded supported-value copy. Metrics do not have this
+extra service stage: the validated admitted metric replacement is dispatched
+directly. Provider acceptance is recorded only after dispatch. An explicit
+processor drop, sampling drop, or limit drop never calls the provider.
+
+Each processor receives an immutable signal DTO and returns either an immutable replacement of the exact same signal type or `null` to drop it.
+Processors run in array order, and each accepted replacement becomes the next
+processor's input. Event processors receive non-log `ObservabilityEvent`
+instances. Log processors receive `ObservabilityEvent` instances whose kind is
+`log`; changing between log and non-log kinds is invalid. Metric processors
+receive `ObservabilityMetric`. Returning the original immutable object is
+valid. A wrong type, invalid DTO, or wrong event kind fails closed as
+`invalid_processor_result`. FoundryScript callable failures cannot be caught as
+language exceptions, so a failure that yields `null` has the same closed
+delivery result as an intentional drop. The pipeline does not print callable
+errors or payloads.
+
+The legacy `metric_filter` runs on the pre-redacted normalized metric before
+`metric_processors`. Ordinary event processors never receive logs, and all
+Foundry-originated automatic and explicit events use the same event pipeline.
+Provider-owned state redaction uses the same policy but does not run signal
+processors, sampling, or signal limits.
+
+#### ObservabilitySignalLimits
+
+One immutable limit group has this constructor and copied accessors:
+
+~~~
+ObservabilitySignalLimits.new(
+		p_per_frame: int = 0,
+		p_repeated_window_msec: int = 0,
+		p_window_count: int = 0,
+		p_window_msec: int = 0,
+)
+
+func per_frame() -> int
+func repeated_window_msec() -> int
+func window_count() -> int
+func window_msec() -> int
+func duplicate() -> ObservabilitySignalLimits
+~~~
+
+Negative values normalize to zero. Zero disables the corresponding limit. The
+sliding window is enabled only when both `window_count` and `window_msec` are
+positive.
+
+Events, structured logs, and metrics have independent sampling accumulators and independent `ObservabilitySignalLimits` groups.
+The default event group is 5 accepted events per processed frame, one accepted
+matching event per 1,000 milliseconds, and 20 accepted events per 10,000
+milliseconds. It applies to manual and automatic events. These defaults come
+from the four legacy `automatic_*` fields when `p_event_limits` is absent; an
+explicit `p_event_limits` wins. Log and metric limit groups are disabled by
+default. `log_rate_limit_per_second` remains an additional disabled-by-default
+legacy log-only limit, so no signal can consume another signal's capacity.
+
+Limits are evaluated in this order:
+
+1. `per_frame`: accepts at most the configured number in one processed frame.
+2. `repeated`: suppresses a matching identity whose last accepted time is
+   younger than `repeated_window_msec`.
+3. `window`: accepts at most `window_count` values during `window_msec`.
+4. `legacy_log_window`: accepts at most `log_rate_limit_per_second` logs in the
+   monotonic one-second bucket.
+
+The limiter commits capacity only when every enabled limit accepts. Event
+identity uses kind, source, level, message, and exception identity; log
+identity uses source, level, and message; metric identity uses type, name, and
+unit. Attributes are excluded. Repeated identity state stores SHA-256 digests,
+not payload text, and is bounded to 1,024 entries per signal. Provider
+rejection does not roll back already committed limit capacity.
+
+Every sample rate must be finite and within `0.0` through `1.0`. Each otherwise
+eligible signal adds its configured rate to a deterministic accumulator. A
+value is sampled out while the accumulator is below one; reaching one accepts
+the value and subtracts one. Thus `0.25` accepts every fourth otherwise
+eligible value, `0.0` accepts none, and `1.0` accepts all. Sampling runs after
+processors and redaction but before limits, and each signal has its own
+accumulator.
+
+#### Redaction rules and policy
+
+`ObservabilityRedactionPolicy` is an immutable ordered set of defensively copied
+rules:
+
+~~~
+ObservabilityRedactionPolicy.new(
+		p_rules: Array[ObservabilityRedactionRule] = [],
+)
+
+func rules() -> Array[ObservabilityRedactionRule]
+func duplicate() -> ObservabilityRedactionPolicy
+func is_valid() -> bool
+~~~
+
+`ObservabilityRedactionRule` supports these factories and accessors:
+
+~~~
+static func remove_field(p_path: PackedStringArray) -> ObservabilityRedactionRule
+static func replace_value(p_path: PackedStringArray, p_replacement: Variant) -> ObservabilityRedactionRule
+static func replace_text(p_path: PackedStringArray, p_pattern: String = "", p_replacement: String = "[REDACTED]") -> ObservabilityRedactionRule
+static func sensitive_key(key: String, p_replacement: String = "[REDACTED]") -> ObservabilityRedactionRule
+
+func path() -> PackedStringArray
+func action() -> int
+func pattern() -> String
+func replacement() -> Variant
+func duplicate() -> ObservabilityRedactionRule
+func is_valid() -> bool
+~~~
+
+Actions are `REMOVE_FIELD`, `REPLACE_VALUE`, and `REPLACE_TEXT`. Paths are
+nonempty and match case-insensitive exact segments. `*` matches exactly one
+segment; `**` matches zero or more. `sensitive_key("password")` is equivalent
+to a whole-string replacement at `["**", "password"]`. An empty
+`REPLACE_TEXT` pattern replaces the complete matched string; a nonempty pattern
+is compiled as `RegEx` and replaces every match. `REPLACE_VALUE` requires the
+replacement to have the same runtime type as the matched value.
+`REMOVE_FIELD` removes dictionary entries and optional reconstructed fields;
+removing a required typed field makes that payload invalid.
+
+Rules run in declaration order across the complete rebuilt tree. Each rule sees
+the prior rule's complete result: an earlier child rule does not run again
+inside a later parent replacement, while a later child rule does inspect an
+earlier parent replacement. Removal ends traversal for that dictionary field
+for its rule and leaves it absent to later rules unless a later ancestor
+replacement recreates it. Each rule pass independently enforces the
+64-container-depth and 10,000-value traversal bounds. Invalid paths, actions,
+regular expressions, cyclic replacements, or policies reject configuration.
+At runtime, incompatible wildcard matches, cyclic source containers, excessive
+depth, excessive traversal, or a result that cannot reconstruct the typed DTO
+fail closed as `redaction_failed`.
+
+Redaction runs once before processors so callbacks cannot inspect configured
+sensitive fields, and again afterward so a replacement cannot reintroduce
+them. Canonical roots and their typed fields are:
+
+| Root | Foundry-owned fields |
+| --- | --- |
+| `event` | kind, level, message, source, timestamp_msec, attributes, exception, engine_ticks_msec, and local scope |
+| `log` | the same event shape, for structured logs |
+| `metric` | type, name, value, unit, and attributes |
+| `contexts` | provider-owned named context dictionaries; Sentry configuration global attributes are nested at `contexts/global_attributes/...` |
+| `user` | application_user_id, display_name, and contact_email |
+| `breadcrumbs` | message, level, category, timestamp_msec, attributes, and type |
+| `attachments` | outbound filename, content_type, and category |
+
+Event exception fields, stack-frame source context and variables, and
+event-local scope tags and contexts are nested beneath `event` or `log`.
+Dictionary and array children use their key or numeric index as the next path
+segment.
+
+An attachment's path is a private local source used to load bytes; it is not an
+outbound metadata field and is not a redaction path. Redaction rebuilds only
+the outbound filename, content type, and category while preserving that private
+source internally. If user attachment metadata becomes invalid, the state
+operation fails closed. If Sentry-created built-in attachment metadata becomes
+invalid after the core boundary, that attachment is omitted and reported with
+the `redacted` attachment-failure reason; an otherwise accepted event may
+continue.
+
+#### Processing diagnostics
+
+The service exposes:
+
+~~~
+func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?
+~~~
+
+It returns an isolated snapshot of the latest published processing outcome, or
+`null` when the active pipeline has not published one. Accessors are:
+
+~~~
+func sequence() -> int
+func processing_signal() -> StringName
+func outcome() -> StringName
+func reason() -> StringName
+func processor_index() -> int
+func rule_index() -> int
+func limit_kind() -> StringName
+func error() -> int
+func duplicate() -> ObservabilityProcessingDiagnostic
+~~~
+
+`processing_signal()` is named this way because `signal` is a reserved
+FoundryScript keyword. Signals are `event`, `log`, `metric`, and `state`;
+outcomes are `accepted` and `dropped`. Successful provider delivery publishes
+`accepted`, an empty reason, and `Error.OK`. State is published for redaction
+failures or recursive provider-state mutation; successful state changes do not
+replace the diagnostic.
+
+Drop reasons map to errors as follows:
+
+| Reason | Diagnostic error | `last_error()` behavior |
+| --- | --- | --- |
+| `processor` | `Error.OK` | Expected policy drop; remains `Error.OK` |
+| `sampled` | `Error.OK` | Expected policy drop; remains `Error.OK` |
+| `rate_limited` | `Error.OK` | Expected policy drop; remains `Error.OK` |
+| `recursive` | `Error.OK` for event/log/metric; `Error.ERR_BUSY` for state | Signal recursion is an expected drop; recursive state mutation reports busy |
+| `invalid_processor_result` | `Error.ERR_INVALID_DATA` | Stores `Error.ERR_INVALID_DATA` |
+| `redaction_failed` | `Error.ERR_INVALID_DATA` | Stores `Error.ERR_INVALID_DATA` |
+| `invalid_payload` | `Error.ERR_INVALID_DATA` | Stores `Error.ERR_INVALID_DATA` |
+| `provider_rejected` | Provider/effective non-OK error, or `Error.FAILED` when none was supplied | Stores the effective provider error |
+
+For `rate_limited`, `limit_kind()` is `per_frame`, `repeated`, `window`, or
+`legacy_log_window`. Other drops use an empty limit kind.
+`processor_index()` and `rule_index()` identify only the configured array
+position; they are `-1` when not applicable. Sequence numbers are local,
+monotonic within one configured pipeline, and reset after successful
+configuration.
+
+Diagnostics never retain payload objects, messages, attribute keys or values, context names, user fields, attachment paths or filenames, callable error strings, processor identities, or redaction patterns.
+Disabled calls and severity/capability gates that never enter a signal pipeline
+preserve the prior diagnostic, matching the existing disabled no-op behavior
+of `last_error()`.
+
+#### Recursion, lifecycle, and privacy boundaries
+
+The pipeline rejects same-owner recursive entry before another redactor,
+processor, sampler, limiter, or provider call. Production ownership is the
+current caller thread. Independent owners may process concurrently, while each
+signal's mutable admission state is serialized. The provider-call reservation
+separately prevents provider diagnostics from feeding the automatic engine
+logger back into capture. Automatic destinations remain independent: an event
+drop does not suppress its breadcrumb or log, and a later successful
+destination does not erase an earlier provider failure from the callback's
+final `last_error()`.
+
+Configuration validates a complete candidate pipeline before committing it.
+Invalid sample rates return `Error.ERR_INVALID_PARAMETER`; invalid processors,
+metric predicates, limits, or redaction policies return
+`Error.ERR_INVALID_DATA`. A failed candidate preserves the active core pipeline,
+its sampling and limit state, and its latest diagnostic. A successful
+configuration atomically installs a new generation and resets processors,
+recursion tracking, sampling accumulators, all limit state, and diagnostics.
+Calls already processed by an older generation cannot cross into the new
+provider generation. Configuration attempted during an active provider call
+returns `Error.ERR_BUSY`. Calling `shutdown()` closes admission immediately through the shutdown-request latch.
+If provider or configuration work is active, the void call returns before flush, provider shutdown, and the disabled null-state commit; teardown completes after that work drains.
+Completion clears processing state and callables and installs a disabled
+pipeline. A later intentional successful `configure()` can start a new
+generation.
+
+The service applies the policy to Foundry-owned global contexts, explicit user
+fields, breadcrumbs, attachment metadata, event-local scope, events, logs, and
+metrics. `SentryObservabilityProvider` also commits the shared redactor for
+Foundry-owned data it creates after the core boundary: stable and volatile
+Foundry runtime contexts and built-in game-log, screenshot, or scene-tree
+attachment metadata. Stable runtime-context redaction failure rejects Sentry
+configuration; volatile context failure rejects that provider capture.
+
+This policy is not a replacement for native SDK privacy controls. It does not
+process SDK-owned native crash, hang, ANR, device, operating-system, network,
+request, or integration data that did not originate in FoundryObservability.
+Configure those fields with the native provider's privacy options, including
+`send_default_pii` where applicable.
 
 ### Automatic engine capture
 
@@ -459,20 +767,20 @@ backtraces. These fields use `error.*` attribute names. Exception events also
 carry a printable stack trace; every automatic record includes
 `observability.origin = "auto.log.foundry"` and uses source
 `foundry.engine`. Ordinary output includes its error-stream flag.
-Automatic throttling uses the diagnostic's monotonic engine tick. Exception
-events and structured logs pass that value as `engine_ticks_msec`, allowing the
-core capture boundary to derive the Unix occurrence timestamp. Breadcrumbs
-retain the engine tick in their provider-neutral `timestamp_msec`; native
-Sentry breadcrumbs use wall-clock receipt time.
+Exception events and structured logs pass the diagnostic's monotonic engine
+tick as `engine_ticks_msec`, allowing the core capture boundary to derive the
+Unix occurrence timestamp. Breadcrumbs retain the engine tick in their
+provider-neutral `timestamp_msec`; native Sentry breadcrumbs use wall-clock
+receipt time.
 
-Duplicate identity is `(message, file, line, diagnostic type)`. A duplicate
-inside automatic_repeated_error_window_msec is suppressed from every
-destination. The identity table is bounded and periodically cleared.
-automatic_events_per_frame and the sliding
-automatic_event_throttle_count/automatic_event_throttle_window_msec pair limit
-only exception events; breadcrumbs and automatic structured logs still flow.
-All non-negative limit values are accepted, zero disables the corresponding
-limit, and successful reconfiguration resets accumulated limit state.
+Automatic exception events use the same event sampler and event limits as
+manual events. The default repeated identity includes the final event kind,
+source, level, message, and exception type, message, and stack trace. The
+default per-frame and sliding settings therefore limit all events, not only
+automatic ones. Breadcrumbs remain a separate provider-state destination.
+Automatic structured logs use the independent log processor, sampler, and log
+limits, so an event drop does not suppress either of those destinations.
+Successful reconfiguration resets every accumulated processing state.
 
 Provider calls are guarded so an error emitted by provider configuration,
 capture, flush, or shutdown cannot recursively enter automatic capture.
@@ -498,10 +806,13 @@ variables are disabled by default. They may contain credentials, tokens, PII,
 or game state. Acquiring, inspecting, and copying stack locals can also be
 expensive and increase capture latency and memory use. Producers must check
 `stack_trace_variables_enabled` before acquiring locals, and only acquire them
-when it is explicitly enabled. This is type filtering and bounding, not content
-redaction: supported strings are forwarded verbatim, and callers must review
-both source context and variables before capture. When enabled, the core and
-native bridges retain only a bounded, type-filtered copy of supported values:
+when it is explicitly enabled. Without an explicit redaction policy this is
+type filtering and bounding, not content redaction: supported strings are
+forwarded verbatim, and callers must review both source context and variables
+before capture. A policy may target source or variable values under the
+`event.exception.frames` and `log.exception.frames` paths. When variables are
+enabled, the core and native bridges retain only a bounded, type-filtered copy
+of supported values:
 booleans, finite numbers, strings, arrays, and string-keyed dictionaries, up to
 eight nested containers and 256 examined items per frame. Unsupported values,
 nonfinite numbers, non-string keys, and cycles are omitted.
@@ -530,13 +841,17 @@ func message() -> String
 func stack_trace() -> String
 func attributes() -> Dictionary
 func frames() -> Array[ObservabilityStackFrame]
+func duplicate() -> ObservabilityException
 ~~~
 
-attributes are deep-copied on construction and access. The constructor copies
-the containing frame array and `frames()` returns a copy, so callers cannot
-replace stored entries through either array. `stack_trace()` remains the
-supported formatted-string fallback: structured frames are additive and never
-synthesize or overwrite it. The core does not interpret the type or formatted
+Every exception field is final after construction. attributes are deep-copied
+on construction and access. The constructor copies the containing frame array,
+`frames()` returns another array copy, and `duplicate()` returns a distinct
+exception with its own attribute and frame containers. The immutable
+ObservabilityStackFrame values may be shared between those isolated arrays.
+`stack_trace()` remains the supported formatted-string fallback: structured
+frames are additive and never synthesize or overwrite it. The core does not
+interpret the type or formatted
 stack string; providers decide how to map them.
 
 ## ObservabilityStackFrame
@@ -645,13 +960,15 @@ func exception() -> ObservabilityException?
 func scope() -> ObservabilityScope?
 ~~~
 
-attributes are deep-copied on construction and access. exception is optional and
-is returned as the original payload object. The optional scope parameter was
-appended to preserve every legacy positional constructor call. It is duplicated
-on construction, and `scope()` returns another duplicate, so later caller
-mutation cannot alter a queued or captured event. Every event field is final
-after construction; timestamp resolution creates a new normalized event rather
-than mutating the caller's event.
+attributes are deep-copied on construction and access. exception is optional;
+the event snapshots it on construction, and `exception()` returns a fresh
+duplicate, so later mutation of either the caller's payload or an accessor
+result cannot alter a queued, processed, or captured event. The optional scope
+parameter was appended to preserve every legacy positional constructor call.
+It is duplicated on construction, and `scope()` returns another duplicate, so
+later caller mutation cannot alter a queued or captured event. Every event
+field is final after construction; timestamp resolution creates a new
+normalized event rather than mutating the caller's event.
 
 ## ObservabilityUser
 
@@ -991,6 +1308,7 @@ abstract func is_enabled() -> bool
 abstract func is_available() -> bool
 abstract func provider_name() -> StringName
 abstract func last_error() -> int
+abstract func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?
 abstract func add_attachment(attachment: ObservabilityAttachment) -> String
 abstract func remove_attachment(handle: String) -> bool
 abstract func clear_attachments() -> bool
@@ -1091,6 +1409,7 @@ func is_enabled() -> bool
 func is_available() -> bool
 func provider_name() -> StringName
 func last_error() -> int
+func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?
 ~~~
 
 Before configuration, the service is disabled, unavailable, reports provider
@@ -1100,6 +1419,8 @@ is_enabled reflects config.enabled. is_available delegates to the active
 provider. provider_name delegates to the active provider and returns null when
 no provider is active. last_error returns the latest stored configuration,
 capture, or flush error. A successful provider configuration clears the error.
+`last_processing_diagnostic()` returns the isolated processing snapshot
+described above and does not change `last_error()`.
 
 ### capture_event
 
@@ -1323,10 +1644,12 @@ func capture_distribution(
 ) -> bool
 ~~~
 
-capture_metric validates, normalizes, filters, samples, and dispatches one
-custom metric. The convenience methods construct the corresponding
-ObservabilityMetric. A true result means the active provider accepted the
-metric into its local SDK or store; it does not guarantee remote delivery.
+`capture_metric()` follows the shared processing section: pre-redaction, the legacy filter, ordered metric processors, post-redaction, validation, deterministic metric sampling, metric signal limits, and provider dispatch.
+Before that shared path, the service validates and normalizes the input metric
+and merges valid global and per-metric attributes. The convenience methods
+construct the corresponding `ObservabilityMetric`. A true result means the
+active provider accepted the processed replacement into its local SDK or
+store; it does not guarantee remote delivery.
 
 Metric names must contain 1 through 200 characters, have no leading or trailing
 whitespace, and contain no control characters. Values must be finite. Counters
@@ -1364,11 +1687,23 @@ FoundryObservability.capture_distribution(
 )
 ~~~
 
-When metrics or the whole service are disabled, a metric filtered out, or a
-metric dropped by sampling, capture returns false without treating the drop as
-a provider failure. Providers own batching, transport, offline retry, and
-delivery. flush() forwards the timeout to the active provider so its SDK can
-attempt delivery.
+Invalid input returns false with `Error.ERR_INVALID_PARAMETER` before entering
+the processing pipeline. A valid metric submitted while the service or metrics
+are disabled returns false without changing the prior processing diagnostic or
+error. A missing metric provider capability returns false with
+`Error.ERR_UNAVAILABLE`.
+
+Once processing begins, a false legacy filter result or processor `null`
+publishes `processor`; deterministic sampling publishes `sampled`; and a metric
+limit publishes `rate_limited`. A same-owner recursive metric capture publishes
+`recursive`. Those expected false results leave `last_error()` at `Error.OK`.
+Invalid processor results, redaction failures, or invalid final payloads return
+false and store `Error.ERR_INVALID_DATA`. A false or malformed provider result
+publishes `provider_rejected` and stores `Error.FAILED`. See
+[Provider-neutral signal processing](#provider-neutral-signal-processing) for
+the complete diagnostic fields and reason table. Providers own batching,
+transport, offline retry, and delivery. `flush()` forwards the timeout to the
+active provider so its SDK can attempt delivery.
 
 ### capture_exception
 
@@ -1440,11 +1775,16 @@ value. With no active provider, it returns Error.OK.
 func shutdown() -> void
 ~~~
 
-shutdown is idempotent. The first call flushes, shuts down the active provider,
-restores the NullObservabilityProvider, restores a disabled config, and resets
-last_error() to Error.OK. Provider shutdown clears live global scope, explicit
-user, and breadcrumbs. Later calls do nothing. The autoload also calls shutdown
-from _exit_tree.
+Calling `shutdown()` closes admission immediately through the shutdown-request latch.
+If provider or configuration work is active, the void call returns before flush, provider shutdown, and the disabled null-state commit; teardown completes after that work drains.
+When no provider or configuration work is active, the call performs the
+bounded flush and provider shutdown before it returns, then installs
+`NullObservabilityProvider`, a disabled config, a fresh disabled processing
+pipeline, and `Error.OK`. Provider shutdown clears live global scope, explicit
+user, breadcrumbs, and attachment handles. Repeated calls are safe after
+teardown. The autoload also calls `shutdown()` from `_exit_tree`. A later
+intentional successful `configure()` or project-settings initialization can
+start a fresh session.
 
 ## Built-in providers
 
@@ -1585,6 +1925,7 @@ The stable reasons are:
 | `oversized` | The attachment exceeds the per-attachment limit, or delivery is disabled by a zero limit |
 | `platform_unavailable` | The active platform cannot collect or deliver the requested attachment |
 | `provider_rejected` | The provider or native SDK rejected attachment preparation |
+| `redacted` | Configured redaction made provider-created attachment metadata unsafe or invalid, so that attachment was omitted |
 
 Returned failure DTOs are defensive copies.
 
@@ -1821,8 +2162,12 @@ pre-configuration gap is outside the addon's capture boundary and cannot be
 recovered later.
 
 The native startup configuration includes `release`, `environment`, `dist`,
-and scalar global attributes. Global attributes are installed under the
-`foundry.global_attributes` context before capture begins. Apple enables the
+and scalar global attributes. Before native configuration, the Sentry provider
+applies the committed redaction policy to a candidate context shaped as
+`contexts/global_attributes/...`; an invalid result rejects configuration
+without committing it. Only the redacted snapshot is installed under the
+`foundry.global_attributes` context before capture begins and reused by native
+events, structured logs, breadcrumbs, and crash handling. Apple enables the
 Sentry crash handler. Android enables its uncaught-exception handler, NDK
 integration, and native scope synchronization. Sentry persists fatal crash data
 in-process and sends the previous launch report after the next launch starts
@@ -1874,7 +2219,8 @@ against a non-production Sentry project and disposable test data.
 Enabled `SentryObservabilityProvider` configuration automatically enriches
 macOS, iOS, and Android Sentry data with provider-private runtime
 contexts. This does not add fields or methods to the provider-neutral API and
-does not modify caller-supplied event attributes or global attributes.
+does not modify caller-supplied event attributes or global-attribute
+containers; the provider transmits only its redacted global-attribute snapshot.
 
 The addon uses six custom context names:
 

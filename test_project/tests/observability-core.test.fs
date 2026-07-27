@@ -8,6 +8,38 @@ class_name ObservabilityCoreTests
 extends RefCounted
 uses Test
 
+var _processing_order: Array[String] = []
+var _processing_filter_values: Array[String] = []
+var _processing_clock_calls: int = 0
+var _processing_frame_calls: int = 0
+var _recursive_pipeline: ObservabilityProcessingPipeline
+var _recursive_state_result: Dictionary = {}
+var _lifecycle_pipeline: ObservabilityProcessingPipeline
+var _processing_owner_id: int = 1
+var _lifecycle_nested_result: Dictionary = {}
+var _overlap_nested_result: Dictionary = {}
+var _overlap_recursive_result: Dictionary = {}
+var _overlap_stage: int = 0
+var _service_event_processor_calls: int = 0
+var _service_processing_clock_msec: int = 0
+var _service_processing_frame_index: int = 0
+var _service_processing_clock_calls: int = 0
+var _service_processing_frame_calls: int = 0
+var _service_lifecycle_service: FoundryObservability
+var _service_lifecycle_provider: ObservabilityProvider
+var _service_lifecycle_config: ObservabilityConfig
+var _service_lifecycle_configure_result: int = Error.OK
+var _state_reentry_service: FoundryObservability
+var _state_reentry_result: bool = true
+var _state_reentry_error: int = Error.OK
+var _state_reentry_signal: StringName = &""
+var _state_reentry_reason: StringName = &""
+var _state_reentry_diagnostic_error: int = Error.OK
+var _automatic_nested_service: FoundryObservability
+var _automatic_nested_capture_result: String = ""
+var _automatic_nested_reason: StringName = &""
+var _processor_exception_snapshot: Dictionary = {}
+
 class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/ObservabilityStackFrame.fs":
 	var public_variables_calls: int = 0
 
@@ -27,6 +59,103 @@ class VariableCaptureProbeFrame extends "res://addons/FoundryObservability/Obser
 	func variables() -> Dictionary:
 		public_variables_calls += 1
 		return {"public accessor": true}
+
+
+class MutableProcessingCallbacks extends Node:
+	func process_event(event: ObservabilityEvent) -> ObservabilityEvent:
+		return event
+
+	func filter_metric(_metric: ObservabilityMetric) -> bool:
+		return true
+
+
+class ConfigureCountingMemoryProvider extends \
+		"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var configure_calls: int = 0
+
+	func configure(config: ObservabilityConfig) -> int:
+		configure_calls += 1
+		return super.configure(config)
+
+
+class ReconfiguringCaptureMemoryProvider extends \
+		"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var service: FoundryObservability
+	var replacement_provider: ObservabilityProvider
+	var replacement_config: ObservabilityConfig
+	var reconfigure_result: int = Error.OK
+	var reconfigure_on_capture: bool = true
+
+	func capture(event: ObservabilityEvent) -> String:
+		if reconfigure_on_capture:
+			reconfigure_on_capture = false
+			reconfigure_result = service.configure(
+					replacement_provider,
+					replacement_config,
+				)
+		return super.capture(event)
+
+
+class ReentrantConfigureMemoryProvider extends \
+		"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var service: FoundryObservability
+	var nested_flush_result: int = Error.OK
+	var request_shutdown: bool = false
+
+	func configure(config: ObservabilityConfig) -> int:
+		var result: int = super.configure(config)
+		if service != null:
+			if request_shutdown:
+				service.shutdown()
+			else:
+				nested_flush_result = service.flush()
+		return result
+
+
+class ShutdownRequestingMemoryProvider extends \
+		"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var service: FoundryObservability
+	var request_count: int = 0
+
+	func capture(event: ObservabilityEvent) -> String:
+		request_count += 1
+		service.shutdown()
+		return super.capture(event)
+
+
+class ReconfiguringReservationService extends \
+		"res://addons/FoundryObservability/FoundryObservability.fs":
+	var replacement_config: ObservabilityConfig
+	var reconfigure_result: int = Error.OK
+	var armed: bool = false
+
+	func _try_begin_pinned_provider_call(
+			provider: ObservabilityProvider,
+			pipeline: ObservabilityProcessingPipeline,
+			generation: int,
+	) -> bool:
+		_reconfigure_before_reservation(provider)
+		return super._try_begin_pinned_provider_call(provider, pipeline, generation)
+
+	func _reconfigure_before_reservation(provider: ObservabilityProvider) -> void:
+		if not armed:
+			return
+		armed = false
+		reconfigure_result = configure(provider, replacement_config)
+
+
+class ShutdownDuringCandidatePreparationService extends \
+		"res://addons/FoundryObservability/FoundryObservability.fs":
+	var shutdown_during_preparation: bool = false
+
+	func _configure_candidate_pipeline(
+			pipeline: ObservabilityProcessingPipeline,
+			config: ObservabilityConfig,
+	) -> int:
+		if shutdown_during_preparation:
+			shutdown_during_preparation = false
+			shutdown()
+		return pipeline.configure(config)
 
 
 class RecordingScopeProvider extends RefCounted:
@@ -675,9 +804,94 @@ func test_exception_and_event_copy_attributes() -> void:
 			"request_id": "abc", "nested": {"attempt": 1}
 		})
 	Expect.that(event.kind()).to_equal(&"exception")
-	Expect.that(event.exception()).to_equal(exception)
+	Expect.that(event.exception()).to_not_equal(exception)
 	Expect.that(event.timestamp_msec()).to_equal(1234)
 	Expect.that(event.attributes()).to_equal({"scene": "battle"})
+
+
+func test_event_snapshots_original_exception_before_processing_and_capture() -> void:
+	var frame := ObservabilityStackFrame.new(
+			p_file = "res://stable.fs",
+			p_function = "run",
+		)
+	var original_exception := ObservabilityException.new(
+			p_type_name = "StableError",
+			p_message = "stable message",
+			p_stack_trace = "stable stack",
+			p_attributes = {"nested": {"attempt": 1}},
+			p_frames = [frame],
+		)
+	var event := ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_level = ObservabilityLevel.ERROR,
+			p_message = "stable message",
+			p_source = &"game",
+			p_timestamp_msec = 1234,
+			p_attributes = {},
+			p_exception = original_exception,
+		)
+
+	original_exception._attributes["nested"]["attempt"] = 2
+	original_exception._attributes["original_only"] = true
+	original_exception._frames.clear()
+
+	var expected: Dictionary = {
+		"type_name": "StableError",
+		"message": "stable message",
+		"stack_trace": "stable stack",
+		"attributes": {"nested": {"attempt": 1}},
+		"frame_files": ["res://stable.fs"],
+	}
+	Expect.that(_exception_snapshot(event)).to_equal(expected)
+
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	_processor_exception_snapshot = {}
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_record_exception_snapshot")],
+		))).to_equal(Error.OK)
+	Expect.that(service.capture_event(event)).to_equal("memory:1")
+	Expect.that(_processor_exception_snapshot).to_equal(expected)
+	Expect.that(_exception_snapshot(provider.events()[0])).to_equal(expected)
+	service.shutdown()
+
+
+func test_event_exception_accessor_returns_isolated_duplicates() -> void:
+	var exception := ObservabilityException.new(
+			p_type_name = "AccessorError",
+			p_message = "stable",
+			p_attributes = {"nested": {"attempt": 1}},
+			p_frames = [ObservabilityStackFrame.new(p_file = "res://accessor.fs")],
+		)
+	var event := ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_attributes = {},
+			p_exception = exception,
+		)
+	var exposed_exception: ObservabilityException = event.exception()
+	var exposed_attributes: Dictionary = exposed_exception.attributes()
+	var exposed_frames: Array[ObservabilityStackFrame] = exposed_exception.frames()
+
+	exposed_attributes["nested"]["attempt"] = 2
+	exposed_frames.clear()
+	exposed_exception._attributes["nested"]["attempt"] = 3
+	exposed_exception._attributes["accessor_only"] = true
+	exposed_exception._frames.clear()
+
+	var expected: Dictionary = {
+		"type_name": "AccessorError",
+		"message": "stable",
+		"stack_trace": "",
+		"attributes": {"nested": {"attempt": 1}},
+		"frame_files": ["res://accessor.fs"],
+	}
+	Expect.that(_exception_snapshot(event)).to_equal(expected)
+	Expect.that(event.exception()).to_not_equal(exposed_exception)
+	Expect.that(event.exception()).to_not_equal(event.exception())
 
 
 func test_stack_frame_and_exception_defensively_copy_structured_data() -> void:
@@ -1372,6 +1586,1141 @@ func test_config_copies_attributes_and_options() -> void:
 	Expect.that(config.provider_options()).to_equal({"provider_key": "value"})
 
 
+func test_processing_signal_limits_normalize_negative_values() -> void:
+	var limits := ObservabilitySignalLimits.new(-1, -2, -3, -4)
+	var copied: ObservabilitySignalLimits = limits.duplicate()
+
+	Expect.that(limits.per_frame()).to_equal(0)
+	Expect.that(limits.repeated_window_msec()).to_equal(0)
+	Expect.that(limits.window_count()).to_equal(0)
+	Expect.that(limits.window_msec()).to_equal(0)
+	Expect.that(copied).to_not_equal(limits)
+	Expect.that(copied.per_frame()).to_equal(0)
+
+
+func test_signal_limiter_samples_before_consuming_frame_capacity() -> void:
+	var limiter := ObservabilitySignalLimiter.new(
+			0.25, ObservabilitySignalLimits.new(1, 0, 0, 0))
+
+	for index: int in range(3):
+		Expect.that(limiter.admit("sample-%s" % index, index, 1)).to_equal({
+				"accepted": false, "reason": &"sampled", "limit_kind": &"",
+		})
+	Expect.that(limiter.admit("sample-3", 3, 1)).to_equal({
+			"accepted": true, "reason": &"", "limit_kind": &"",
+	})
+	Expect.that(limiter.admit("sample-4", 4, 1)).to_equal({
+			"accepted": false, "reason": &"sampled", "limit_kind": &"",
+	})
+
+
+func test_signal_limiter_stably_samples_decimal_rates() -> void:
+	var tenth := ObservabilitySignalLimiter.new(0.1)
+	for index: int in range(9):
+		Expect.that(tenth.admit("tenth-%s" % index, index, index)["accepted"]).to_be_false()
+	Expect.that(tenth.admit("tenth-9", 9, 9)["accepted"]).to_be_true()
+
+	var fixed_run := ObservabilitySignalLimiter.new(0.1)
+	var accepted: int = 0
+	for index: int in range(1000):
+		if fixed_run.admit("fixed-%s" % index, index, index)["accepted"]:
+			accepted += 1
+	Expect.that(accepted).to_equal(100)
+
+
+func test_signal_limiter_skips_identity_state_when_repetition_is_disabled() -> void:
+	var limiter := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(0, 0, 0, 0))
+	for index: int in range(1025):
+		Expect.that(limiter.admit("untracked-%s" % index, index, index)["accepted"]).to_be_true()
+
+	Expect.that(limiter._identity_records).to_equal({})
+	Expect.that(limiter._identity_sequence).to_equal(0)
+
+
+func test_signal_limiter_combines_limits_at_expiry_boundaries() -> void:
+	var limiter := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(2, 100, 2, 1000))
+
+	Expect.that(limiter.admit("a", 0, 1)["accepted"]).to_be_true()
+	Expect.that(limiter.admit("a", 1, 1)).to_equal({
+			"accepted": false, "reason": &"rate_limited", "limit_kind": &"repeated",
+	})
+	Expect.that(limiter.admit("b", 2, 1)["accepted"]).to_be_true()
+	Expect.that(limiter.admit("c", 3, 1)).to_equal({
+			"accepted": false, "reason": &"rate_limited", "limit_kind": &"per_frame",
+	})
+	Expect.that(limiter.admit("c", 4, 2)).to_equal({
+			"accepted": false, "reason": &"rate_limited", "limit_kind": &"window",
+	})
+	Expect.that(limiter.admit("c", 1001, 2)["accepted"]).to_be_true()
+
+
+func test_signal_limiter_bounds_hashed_identities_and_resets_every_mode() -> void:
+	var limits := ObservabilitySignalLimits.new(0, 100000, 0, 0)
+	var limiter := ObservabilitySignalLimiter.new(1.0, limits)
+	for index: int in range(1025):
+		Expect.that(limiter.admit("identity-%s" % index, index, index)["accepted"]).to_be_true()
+	Expect.that(limiter.admit("identity-0", 2000, 2000)["accepted"]).to_be_true()
+	Expect.that(limiter.admit("identity-1024", 2001, 2001)).to_equal({
+			"accepted": false, "reason": &"rate_limited", "limit_kind": &"repeated",
+	})
+	limiter.reset()
+	Expect.that(limiter.admit("identity-1024", 2002, 2002)["accepted"]).to_be_true()
+	var resettable := ObservabilitySignalLimiter.new(
+			0.5, ObservabilitySignalLimits.new(1, 1000, 1, 1000), 1)
+	Expect.that(resettable.admit("reset", 0, 1)["reason"]).to_equal(&"sampled")
+	Expect.that(resettable.admit("reset", 0, 1)["accepted"]).to_be_true()
+	resettable.reset()
+	Expect.that(resettable._sample_compensation).to_equal(0.0)
+	Expect.that(resettable.admit("reset", 0, 1)["reason"]).to_equal(&"sampled")
+	Expect.that(resettable.admit("reset", 0, 1)["accepted"]).to_be_true()
+
+
+func test_signal_limiter_defensively_copies_committed_limits() -> void:
+	var source := ObservabilitySignalLimits.new(7, 8, 9, 10)
+	var limiter := ObservabilitySignalLimiter.new(1.0, source)
+
+	Expect.that(limiter._limits).to_not_equal(source)
+	Expect.that(limiter._limits.per_frame()).to_equal(7)
+	Expect.that(limiter._limits.repeated_window_msec()).to_equal(8)
+	Expect.that(limiter._limits.window_count()).to_equal(9)
+	Expect.that(limiter._limits.window_msec()).to_equal(10)
+
+
+func test_signal_limiter_rejections_do_not_reserve_any_other_limit() -> void:
+	var legacy := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(1, 0, 0, 0), 1)
+	Expect.that(legacy.admit("first", 0, 1)["accepted"]).to_be_true()
+	Expect.that(legacy.admit("legacy-drop", 500, 2)).to_equal({
+			"accepted": false, "reason": &"rate_limited", "limit_kind": &"legacy_log_window",
+	})
+	Expect.that(legacy.admit("next-second", 1000, 2)["accepted"]).to_be_true()
+
+	var repeated := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(1, 1000, 0, 0))
+	Expect.that(repeated.admit("a", 0, 1)["accepted"]).to_be_true()
+	Expect.that(repeated.admit("a", 1, 2)["limit_kind"]).to_equal(&"repeated")
+	Expect.that(repeated.admit("b", 2, 2)["accepted"]).to_be_true()
+
+	var window := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(1, 0, 1, 1000))
+	Expect.that(window.admit("a", 0, 1)["accepted"]).to_be_true()
+	Expect.that(window.admit("b", 1, 2)["limit_kind"]).to_equal(&"window")
+	Expect.that(window.admit("c", 2, 2)["limit_kind"]).to_equal(&"window")
+	Expect.that(window.admit("d", 1000, 2)["accepted"]).to_be_true()
+	var repeated_boundary := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(0, 100, 0, 0))
+	Expect.that(repeated_boundary.admit("boundary", 0, 1)["accepted"]).to_be_true()
+	Expect.that(repeated_boundary.admit("boundary", 99, 2)["limit_kind"]).to_equal(&"repeated")
+	Expect.that(repeated_boundary.admit("boundary", 100, 3)["accepted"]).to_be_true()
+
+
+func test_signal_limiter_normalizes_samples_and_handles_backward_inputs() -> void:
+	var disabled := ObservabilitySignalLimiter.new(0.0)
+	Expect.that(disabled.admit("never", 0, 0)).to_equal({
+			"accepted": false, "reason": &"sampled", "limit_kind": &"",
+	})
+	var clamped := ObservabilitySignalLimiter.new(2.0)
+	Expect.that(clamped.admit("always", 0, 0)["accepted"]).to_be_true()
+	var negative := ObservabilitySignalLimiter.new(-1.0)
+	Expect.that(negative.admit("never", 0, 0)["accepted"]).to_be_false()
+	var legacy_disabled := ObservabilitySignalLimiter.new(1.0, null, -1)
+	Expect.that(legacy_disabled.admit("first", 0, 0)["accepted"]).to_be_true()
+	Expect.that(legacy_disabled.admit("second", 1, 1)["accepted"]).to_be_true()
+	var backward := ObservabilitySignalLimiter.new(
+			1.0, ObservabilitySignalLimits.new(1, 100, 1, 100))
+	Expect.that(backward.admit("first", 100, 4)["accepted"]).to_be_true()
+	Expect.that(backward.admit("next", 50, 3)["limit_kind"]).to_equal(&"window")
+	Expect.that(backward.admit("next", 51, 3)["limit_kind"]).to_equal(&"window")
+
+
+func test_redaction_rules_copy_paths_and_structured_replacements() -> void:
+	var path := PackedStringArray(["request", "password"])
+	var replacement := {"status": "redacted", "nested": {"keep": false}}
+	var rule := ObservabilityRedactionRule.replace_value(path, replacement)
+	path[1] = "changed"
+	replacement["status"] = "changed"
+	var exposed_replacement: Dictionary = rule.replacement()
+	exposed_replacement["status"] = "exposed change"
+
+	Expect.that(rule.path()).to_equal(PackedStringArray(["request", "password"]))
+	Expect.that(rule.action()).to_equal(ObservabilityRedactionRule.REPLACE_VALUE)
+	Expect.that(rule.replacement()).to_equal({
+			"status": "redacted", "nested": {"keep": false},
+	})
+	Expect.that(rule.is_valid()).to_be_true()
+	Expect.that(ObservabilityRedactionRule.remove_field(
+			PackedStringArray()).is_valid()).to_be_false()
+	Expect.that(ObservabilityRedactionRule.new(
+			PackedStringArray(["message"]), 99).is_valid()).to_be_false()
+	Expect.that(ObservabilityRedactionRule.new(
+			PackedStringArray(["message"]),
+			ObservabilityRedactionRule.REPLACE_TEXT,
+			"[",
+			"replacement",
+	).is_valid()).to_be_false()
+	Expect.that(ObservabilityRedactionRule.new(
+			PackedStringArray(["message"]),
+			ObservabilityRedactionRule.REPLACE_TEXT,
+			"",
+			42,
+	).is_valid()).to_be_false()
+	Expect.that(ObservabilityRedactionRule.sensitive_key("token").path()).to_equal(
+			PackedStringArray(["**", "token"]))
+
+
+func test_redaction_rules_copy_packed_replacements() -> void:
+	var path := PackedStringArray(["payload"])
+	var source := PackedStringArray(["secret"])
+	var rule := ObservabilityRedactionRule.replace_value(path, source)
+	source[0] = "changed"
+	var exposed: PackedStringArray = rule.replacement()
+	exposed[0] = "exposed change"
+
+	Expect.that(rule.replacement()).to_equal(PackedStringArray(["secret"]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedByteArray([1, 2])).replacement()).to_equal(PackedByteArray([1, 2]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedInt32Array([3, 4])).replacement()).to_equal(PackedInt32Array([3, 4]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedInt64Array([5, 6])).replacement()).to_equal(PackedInt64Array([5, 6]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedFloat32Array([7.0, 8.0])).replacement()).to_equal(
+			PackedFloat32Array([7.0, 8.0]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedFloat64Array([9.0, 10.0])).replacement()).to_equal(
+			PackedFloat64Array([9.0, 10.0]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedVector2Array([Vector2(1.0, 2.0)])).replacement()).to_equal(
+			PackedVector2Array([Vector2(1.0, 2.0)]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedVector3Array([Vector3(3.0, 4.0, 5.0)])).replacement()).to_equal(
+			PackedVector3Array([Vector3(3.0, 4.0, 5.0)]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedVector4Array([Vector4(6.0, 7.0, 8.0, 9.0)])).replacement()).to_equal(
+			PackedVector4Array([Vector4(6.0, 7.0, 8.0, 9.0)]))
+	Expect.that(ObservabilityRedactionRule.replace_value(
+			path, PackedColorArray([Color(0.1, 0.2, 0.3, 0.4)])).replacement()).to_equal(
+			PackedColorArray([Color(0.1, 0.2, 0.3, 0.4)]))
+
+
+func test_redaction_rules_copy_nested_packed_replacements() -> void:
+	var path := PackedStringArray(["payload"])
+	var dictionary_source := {"packed": PackedStringArray(["dictionary secret"])}
+	var dictionary_rule := ObservabilityRedactionRule.replace_value(path, dictionary_source)
+	var dictionary_input_packed: PackedStringArray = dictionary_source["packed"]
+	dictionary_input_packed[0] = "changed input"
+	var dictionary_exposed: Dictionary = dictionary_rule.replacement()
+	var dictionary_exposed_packed: PackedStringArray = dictionary_exposed["packed"]
+	dictionary_exposed_packed[0] = "changed output"
+
+	var array_source: Array = [PackedStringArray(["array secret"])]
+	var array_rule := ObservabilityRedactionRule.replace_value(path, array_source)
+	var array_input_packed: PackedStringArray = array_source[0]
+	array_input_packed[0] = "changed input"
+	var array_exposed: Array = array_rule.replacement()
+	var array_exposed_packed: PackedStringArray = array_exposed[0]
+	array_exposed_packed[0] = "changed output"
+
+	Expect.that(dictionary_rule.replacement()).to_equal({
+			"packed": PackedStringArray(["dictionary secret"]),
+	})
+	Expect.that(array_rule.replacement()).to_equal([
+			PackedStringArray(["array secret"]),
+	])
+
+
+func test_redaction_rules_reject_cyclic_replacements_without_retaining_payloads() -> void:
+	var path := PackedStringArray(["payload"])
+	var self_cycle: Dictionary = {}
+	self_cycle["self"] = self_cycle
+	var self_rule := ObservabilityRedactionRule.replace_value(path, self_cycle)
+	self_cycle["later"] = "source mutation"
+
+	var first: Array = []
+	var second: Dictionary = {"first": first}
+	first.append(second)
+	var mutual_rule := ObservabilityRedactionRule.replace_value(path, first)
+	second["later"] = "source mutation"
+
+	Expect.that(self_rule.is_valid()).to_be_false()
+	Expect.that(self_rule.replacement()).to_be_null()
+	Expect.that(self_rule.duplicate().is_valid()).to_be_false()
+	Expect.that(self_rule.duplicate().replacement()).to_be_null()
+	Expect.that(mutual_rule.is_valid()).to_be_false()
+	Expect.that(mutual_rule.replacement()).to_be_null()
+	Expect.that(mutual_rule.duplicate().is_valid()).to_be_false()
+	Expect.that(mutual_rule.duplicate().replacement()).to_be_null()
+
+
+func test_redaction_rules_allow_repeated_acyclic_replacement_containers() -> void:
+	var path := PackedStringArray(["payload"])
+	var shared := {"packed": PackedStringArray(["secret"])}
+	var source: Array = [shared, shared]
+	var rule := ObservabilityRedactionRule.replace_value(path, source)
+	var source_packed: PackedStringArray = shared["packed"]
+	source_packed[0] = "changed"
+
+	Expect.that(rule.is_valid()).to_be_true()
+	Expect.that(rule.replacement()).to_equal([
+			{"packed": PackedStringArray(["secret"])},
+			{"packed": PackedStringArray(["secret"])},
+	])
+
+
+func test_redaction_policy_copies_ordered_rules() -> void:
+	var rules: Array[ObservabilityRedactionRule] = [
+			ObservabilityRedactionRule.remove_field(PackedStringArray(["secret"])),
+	]
+	var policy := ObservabilityRedactionPolicy.new(rules)
+	rules.clear()
+	var exposed: Array[ObservabilityRedactionRule] = policy.rules()
+	exposed.clear()
+	var copied: ObservabilityRedactionPolicy = policy.duplicate()
+
+	Expect.that(policy.rules()).to_have_size(1)
+	Expect.that(policy.rules()[0].path()).to_equal(PackedStringArray(["secret"]))
+	Expect.that(policy.is_valid()).to_be_true()
+	Expect.that(copied).to_not_equal(policy)
+	Expect.that(copied.rules()).to_have_size(1)
+
+
+func test_redaction_policy_keeps_null_rules_invalid_without_crashing() -> void:
+	var malformed: Array[ObservabilityRedactionRule] = [null]
+	var policy := ObservabilityRedactionPolicy.new(malformed)
+	var copied: ObservabilityRedactionPolicy = policy.duplicate()
+
+	Expect.that(policy.rules()).to_have_size(1)
+	Expect.that(policy.rules()[0]).to_be_null()
+	Expect.that(policy.is_valid()).to_be_false()
+	Expect.that(copied.rules()).to_have_size(1)
+	Expect.that(copied.rules()[0]).to_be_null()
+	Expect.that(copied.is_valid()).to_be_false()
+
+
+func test_redactor_applies_recursive_keys_paths_and_text_patterns() -> void:
+	var source_attributes: Dictionary = {
+		"password": "secret",
+		"nested": {"PASSWORD": "second"},
+		"delete_me": "gone",
+	}
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.sensitive_key("password"),
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["event", "attributes", "delete_me"]),
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["event", "**"]),
+				"[0-9]{3}-[0-9]{2}-[0-9]{4}",
+				"[ssn]",
+			),
+	])
+	var redactor := ObservabilityRedactor.new(policy)
+	var source := ObservabilityEvent.new(
+			p_message = "customer 123-45-6789 and 987-65-4321",
+			p_attributes = source_attributes,
+		)
+	var result: Dictionary = redactor.redact_event(source, &"event")
+
+	Expect.that(result["valid"]).to_be_true()
+	var event: ObservabilityEvent = result["value"]
+	Expect.that(event).to_not_equal(source)
+	Expect.that(event.message()).to_equal("customer [ssn] and [ssn]")
+	Expect.that(event.attributes()["password"]).to_equal("[REDACTED]")
+	Expect.that(event.attributes()["nested"]["PASSWORD"]).to_equal("[REDACTED]")
+	Expect.that(event.attributes().has("delete_me")).to_be_false()
+	Expect.that(source.message()).to_equal("customer 123-45-6789 and 987-65-4321")
+	Expect.that(source.attributes()).to_equal(source_attributes)
+
+
+func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["**"]),
+				"secret",
+				"safe",
+			),
+	])
+	var redactor := ObservabilityRedactor.new(policy)
+	var frame := ObservabilityStackFrame.new(
+			"secret.fs",
+			"secret_function",
+			7,
+			"secret-language",
+			true,
+			"secret context",
+			PackedStringArray(["secret pre"]),
+			PackedStringArray(["secret post"]),
+			{"secret_variable": "secret"},
+		)
+	var exception := ObservabilityException.new(
+			"secret-type",
+			"secret exception",
+			"secret stack",
+			{"detail": "secret"},
+			[frame],
+		)
+	var scope := ObservabilityScope.new()
+	Expect.that(scope.set_tag("secret-tag", "secret")).to_be_true()
+	Expect.that(scope.set_context("secret-context", {"detail": "secret"})).to_be_true()
+	var source_event := ObservabilityEvent.new(
+			&"secret-kind",
+			ObservabilityLevel.ERROR,
+			"secret event",
+			&"secret-source",
+			10,
+			{"token": "secret"},
+			exception,
+			11,
+			scope,
+		)
+	var event_result: Dictionary = redactor.redact_event(source_event, &"log")
+	Expect.that(event_result["valid"]).to_be_true()
+	var event: ObservabilityEvent = event_result["value"]
+	Expect.that(event.kind()).to_equal(&"safe-kind")
+	Expect.that(event.message()).to_equal("safe event")
+	Expect.that(event.source()).to_equal(&"safe-source")
+	Expect.that(event.attributes()["token"]).to_equal("safe")
+	Expect.that(event.exception().type_name()).to_equal("safe-type")
+	Expect.that(event.exception().message()).to_equal("safe exception")
+	Expect.that(event.exception().stack_trace()).to_equal("safe stack")
+	Expect.that(event.exception().attributes()["detail"]).to_equal("safe")
+	var rebuilt_frame: ObservabilityStackFrame = event.exception().frames()[0]
+	Expect.that(rebuilt_frame.file()).to_equal("safe.fs")
+	Expect.that(rebuilt_frame.function()).to_equal("safe_function")
+	Expect.that(rebuilt_frame.language()).to_equal("safe-language")
+	Expect.that(rebuilt_frame.context_line()).to_equal("safe context")
+	Expect.that(rebuilt_frame.pre_context()).to_equal(PackedStringArray(["safe pre"]))
+	Expect.that(rebuilt_frame.post_context()).to_equal(PackedStringArray(["safe post"]))
+	Expect.that(rebuilt_frame.variables()["secret_variable"]).to_equal("safe")
+	Expect.that(event.scope().tags()).to_equal({"secret-tag": "safe"})
+	Expect.that(event.scope().contexts()).to_equal({
+			"secret-context": {"detail": "safe"},
+		})
+	Expect.that(source_event.message()).to_equal("secret event")
+	Expect.that(frame.file()).to_equal("secret.fs")
+	Expect.that(scope.tags()).to_equal({"secret-tag": "secret"})
+
+	var metric_result: Dictionary = redactor.redact_metric(ObservabilityMetric.new(
+			ObservabilityMetricType.GAUGE,
+			"secret.metric",
+			1.0,
+			"secret-unit",
+			{"token": "secret"},
+	))
+	Expect.that(metric_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var metric: ObservabilityMetric = metric_result["value"] as ObservabilityMetric
+	Expect.that(metric.name()).to_equal("safe.metric")
+	Expect.that(metric.unit()).to_equal("safe-unit")
+	Expect.that(metric.attributes()["token"]).to_equal("safe")
+
+	var contexts_source := {"secret-context": {"token": "secret"}}
+	var contexts_result: Dictionary = redactor.redact_contexts(contexts_source)
+	Expect.that(contexts_result["valid"]).to_be_true()
+	Expect.that(contexts_result["value"]).to_equal({
+			"secret-context": {"token": "safe"},
+		})
+	Expect.that(contexts_source).to_equal({"secret-context": {"token": "secret"}})
+
+	var user_result: Dictionary = redactor.redact_user(ObservabilityUser.new(
+			"secret-id",
+			"secret-name",
+			"secret@example.invalid",
+	))
+	Expect.that(user_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var user: ObservabilityUser = user_result["value"] as ObservabilityUser
+	Expect.that(user.application_user_id()).to_equal("safe-id")
+	Expect.that(user.display_name()).to_equal("safe-name")
+	Expect.that(user.contact_email()).to_equal("safe@example.invalid")
+
+	var breadcrumb_result: Dictionary = redactor.redact_breadcrumb(
+			ObservabilityBreadcrumb.new(
+					"secret message",
+					ObservabilityLevel.INFO,
+					&"secret.category",
+					1,
+					{"token": "secret"},
+					&"secret-type",
+				),
+		)
+	Expect.that(breadcrumb_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var breadcrumb: ObservabilityBreadcrumb = (
+			breadcrumb_result["value"] as ObservabilityBreadcrumb
+		)
+	Expect.that(breadcrumb.message()).to_equal("safe message")
+	Expect.that(breadcrumb.category()).to_equal(&"safe.category")
+	Expect.that(breadcrumb.type()).to_equal(&"safe-type")
+	Expect.that(breadcrumb.attributes()["token"]).to_equal("safe")
+
+	var path_attachment: ObservabilityAttachment = ObservabilityAttachment.from_path(
+			"user://private.log",
+			"secret.log",
+			"secret/plain",
+		)
+	var attachment_result: Dictionary = redactor.redact_attachment(path_attachment)
+	Expect.that(attachment_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var rebuilt_path_attachment: ObservabilityAttachment = (
+			attachment_result["value"] as ObservabilityAttachment
+		)
+	Expect.that(rebuilt_path_attachment.path()).to_equal("user://private.log")
+	Expect.that(rebuilt_path_attachment.filename()).to_equal("safe.log")
+	Expect.that(rebuilt_path_attachment.content_type()).to_equal("safe/plain")
+	Expect.that(path_attachment.filename()).to_equal("secret.log")
+
+	var byte_source := PackedByteArray([1, 2, 3])
+	var byte_attachment: ObservabilityAttachment = ObservabilityAttachment.from_bytes(
+			byte_source,
+			"secret.bin",
+			"secret/binary",
+		)
+	var byte_result: Dictionary = redactor.redact_attachment(byte_attachment)
+	byte_source[0] = 9
+	Expect.that(byte_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var rebuilt_byte_attachment: ObservabilityAttachment = (
+			byte_result["value"] as ObservabilityAttachment
+		)
+	Expect.that(rebuilt_byte_attachment.bytes()).to_equal(PackedByteArray([1, 2, 3]))
+	Expect.that(rebuilt_byte_attachment.filename()).to_equal("safe.bin")
+
+	var payload_source: Dictionary = {
+		"path": "/tmp/secret-source.log",
+		"filename": "secret.log",
+		"content_type": "secret/plain",
+		"category": "event.attachment",
+		"persistent": true,
+	}
+	var payload_result: Dictionary = redactor.redact_attachment_payload(payload_source)
+	Expect.that(payload_result["valid"]).to_be_true()
+	Expect.that(payload_result["value"]["path"]).to_equal("/tmp/secret-source.log")
+	Expect.that(payload_result["value"]["filename"]).to_equal("safe.log")
+	Expect.that(payload_result["value"]["content_type"]).to_equal("safe/plain")
+	Expect.that(payload_result["value"]["category"]).to_equal("event.attachment")
+	Expect.that(payload_result["value"]["persistent"]).to_be_true()
+	Expect.that(payload_source["filename"]).to_equal("secret.log")
+
+	var payload_bytes := PackedByteArray([4, 5, 6])
+	var byte_payload_result: Dictionary = redactor.redact_attachment_payload({
+		"bytes": payload_bytes,
+		"filename": "secret.data",
+		"content_type": "secret/binary",
+		"category": "event.view_hierarchy",
+	})
+	payload_bytes[0] = 9
+	Expect.that(byte_payload_result["valid"]).to_be_true()
+	Expect.that(byte_payload_result["value"]["bytes"]).to_equal(
+			PackedByteArray([4, 5, 6]))
+	Expect.that(byte_payload_result["value"]["filename"]).to_equal("safe.data")
+
+
+func test_redactor_wildcards_are_case_insensitive_and_preserve_input() -> void:
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["MeTrIc", "*"]),
+				"secret",
+				"first",
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["metric", "**"]),
+				"first|secret",
+				"safe",
+			),
+	])
+	var source := ObservabilityMetric.new(
+			ObservabilityMetricType.COUNTER,
+			"secret",
+			3.0,
+			"secret",
+			{"nested": ["secret", {"token": "secret"}]},
+		)
+	var result: Dictionary = ObservabilityRedactor.new(policy).redact_metric(source)
+
+	Expect.that(result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var rebuilt: ObservabilityMetric = result["value"] as ObservabilityMetric
+	Expect.that(rebuilt.name()).to_equal("safe")
+	Expect.that(rebuilt.unit()).to_equal("safe")
+	Expect.that(rebuilt.attributes()).to_equal({
+			"nested": ["safe", {"token": "safe"}],
+		})
+	Expect.that(source.name()).to_equal("secret")
+	Expect.that(source.attributes()).to_equal({
+			"nested": ["secret", {"token": "secret"}],
+		})
+
+
+func test_redactor_child_rules_do_not_reapply_to_later_parent_replacements() -> void:
+	var replacement_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray([
+					"contexts",
+					"profile",
+					"credentials",
+					"token",
+				]),
+				"",
+				"child-first",
+			),
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["contexts", "profile", "credentials"]),
+				{"token": "parent-replacement", "source": "parent"},
+			),
+	])
+	var replacement_result: Dictionary = ObservabilityRedactor.new(
+			replacement_policy,
+		).redact_contexts({
+			"profile": {
+				"credentials": {"token": "original", "source": "original"},
+			},
+		})
+	Expect.that(replacement_result["valid"]).to_be_true()
+	Expect.that(replacement_result["value"]["profile"]["credentials"]).to_equal({
+		"token": "parent-replacement",
+		"source": "parent",
+	})
+
+	var removal_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.remove_field(PackedStringArray([
+			"contexts",
+			"profile",
+			"credentials",
+			"token",
+		])),
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["contexts", "profile", "credentials"]),
+				{"token": "restored-by-parent", "source": "parent"},
+			),
+	])
+	var removal_result: Dictionary = ObservabilityRedactor.new(
+			removal_policy,
+		).redact_contexts({
+			"profile": {
+				"credentials": {"token": "original", "source": "original"},
+			},
+		})
+	Expect.that(removal_result["valid"]).to_be_true()
+	Expect.that(removal_result["value"]["profile"]["credentials"]).to_equal({
+		"token": "restored-by-parent",
+		"source": "parent",
+	})
+
+
+func test_redactor_later_child_rules_see_earlier_parent_replacements() -> void:
+	var replacement_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["contexts", "profile", "credentials"]),
+				{"token": "parent-replacement", "source": "parent"},
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray([
+					"contexts",
+					"profile",
+					"credentials",
+					"token",
+				]),
+				"",
+				"child-after-parent",
+			),
+	])
+	var replacement_result: Dictionary = ObservabilityRedactor.new(
+			replacement_policy,
+		).redact_contexts({
+			"profile": {
+				"credentials": {"token": "original", "source": "original"},
+			},
+		})
+	Expect.that(replacement_result["valid"]).to_be_true()
+	Expect.that(replacement_result["value"]["profile"]["credentials"]).to_equal({
+		"token": "child-after-parent",
+		"source": "parent",
+	})
+
+	var removal_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["contexts", "profile", "credentials"]),
+				{"token": "remove-after-parent", "source": "parent"},
+			),
+		ObservabilityRedactionRule.remove_field(PackedStringArray([
+			"contexts",
+			"profile",
+			"credentials",
+			"token",
+		])),
+	])
+	var removal_result: Dictionary = ObservabilityRedactor.new(
+			removal_policy,
+		).redact_contexts({
+			"profile": {
+				"credentials": {"token": "original", "source": "original"},
+			},
+		})
+	Expect.that(removal_result["valid"]).to_be_true()
+	Expect.that(removal_result["value"]["profile"]["credentials"]).to_equal({
+		"source": "parent",
+	})
+
+
+func test_redactor_fails_closed_without_returning_sensitive_payloads() -> void:
+	var incompatible := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["event", "level"]),
+				"not-an-integer",
+			),
+	])
+	var source := ObservabilityEvent.new(
+			p_message = "do-not-leak-this-message",
+			p_attributes = {"token": "do-not-leak-this-token"},
+		)
+	var result: Dictionary = ObservabilityRedactor.new(incompatible).redact_event(
+			source,
+			&"event",
+		)
+	Expect.that(result).to_equal({"valid": false, "rule_index": 0})
+	Expect.that(source.message()).to_equal("do-not-leak-this-message")
+
+	var malformed_rules: Array[ObservabilityRedactionRule] = [null]
+	var malformed := ObservabilityRedactor.new(
+			ObservabilityRedactionPolicy.new(malformed_rules),
+		).redact_event(source, &"event")
+	Expect.that(malformed).to_equal({"valid": false, "rule_index": 0})
+
+	var no_policy: Dictionary = ObservabilityRedactor.new(null).redact_event(
+			source,
+			&"event",
+		)
+	Expect.that(no_policy["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var isolated: ObservabilityEvent = no_policy["value"] as ObservabilityEvent
+	Expect.that(isolated).to_not_equal(source)
+	Expect.that(isolated.message()).to_equal("do-not-leak-this-message")
+
+
+func test_redactor_remove_field_only_removes_dictionary_children() -> void:
+	var attribute_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["event", "attributes", "delete_me"]),
+			),
+	])
+	var attribute_result: Dictionary = ObservabilityRedactor.new(
+			attribute_policy,
+	).redact_event(ObservabilityEvent.new(
+			p_attributes = {"delete_me": "secret", "keep": "safe"},
+		), &"event")
+	Expect.that(attribute_result["valid"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var rebuilt: ObservabilityEvent = (
+			attribute_result["value"] as ObservabilityEvent
+		)
+	Expect.that(rebuilt.attributes()).to_equal({"keep": "safe"})
+
+	for path: PackedStringArray in [
+		PackedStringArray(["event"]),
+		PackedStringArray(["event", "message"]),
+		PackedStringArray(["event", "attributes", "items", "*"]),
+	]:
+		var policy := ObservabilityRedactionPolicy.new([
+			ObservabilityRedactionRule.remove_field(path),
+		])
+		var result: Dictionary = ObservabilityRedactor.new(policy).redact_event(
+				ObservabilityEvent.new(
+						p_message = "sensitive-message",
+						p_attributes = {"items": ["sensitive-item"]},
+					),
+				&"event",
+			)
+		Expect.that(result).to_equal({"valid": false, "rule_index": 0})
+
+	var ordered_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["event", "kind"]),
+				"message",
+				"renamed",
+			),
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["event", "message"]),
+			),
+	])
+	var ordered_result: Dictionary = ObservabilityRedactor.new(
+			ordered_policy,
+		).redact_event(ObservabilityEvent.new(
+			p_message = "sensitive-message",
+		), &"event")
+	Expect.that(ordered_result).to_equal({"valid": false, "rule_index": 1})
+
+
+func test_redactor_rejects_cyclic_contexts_without_retaining_payloads() -> void:
+	var self_cycle: Dictionary = {}
+	self_cycle["self"] = self_cycle
+	var self_result: Dictionary = ObservabilityRedactor.new().redact_contexts({
+		"cycle": self_cycle,
+	})
+	Expect.that(self_result).to_equal({"valid": false, "rule_index": -1})
+	var replacement_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["contexts", "cycle"]),
+				{"replacement": "safe"},
+			),
+	])
+	var concealed_result: Dictionary = ObservabilityRedactor.new(
+			replacement_policy,
+		).redact_contexts({"cycle": self_cycle})
+	Expect.that(concealed_result).to_equal({"valid": false, "rule_index": -1})
+
+	var mutual_array: Array = []
+	var mutual_dictionary: Dictionary = {"array": mutual_array}
+	mutual_array.append(mutual_dictionary)
+	var mutual_result: Dictionary = ObservabilityRedactor.new().redact_contexts({
+		"cycle": mutual_dictionary,
+	})
+	Expect.that(mutual_result).to_equal({"valid": false, "rule_index": -1})
+
+
+func test_redactor_bounds_container_depth_and_visited_items_per_call() -> void:
+	var deep: Dictionary = {"value": "kept"}
+	for _index: int in range(70):
+		deep = {"child": deep}
+	var deep_result: Dictionary = ObservabilityRedactor.new().redact_event(
+			ObservabilityEvent.new(p_attributes = deep),
+			&"event",
+		)
+	Expect.that(deep_result).to_equal({"valid": false, "rule_index": -1})
+
+	var flooded: Array = []
+	for index: int in range(10_010):
+		flooded.append(index)
+	var redactor := ObservabilityRedactor.new()
+	var flooded_result: Dictionary = redactor.redact_event(
+			ObservabilityEvent.new(p_attributes = {"items": flooded}),
+			&"event",
+		)
+	Expect.that(flooded_result).to_equal({"valid": false, "rule_index": -1})
+
+	var recovery_result: Dictionary = redactor.redact_event(
+			ObservabilityEvent.new(p_attributes = {"value": "kept"}),
+			&"event",
+		)
+	Expect.that(recovery_result["valid"]).to_be_true()
+
+
+func test_redactor_allows_repeated_acyclic_context_containers() -> void:
+	var shared: Dictionary = {"value": "secret"}
+	var source: Dictionary = {"first": shared, "second": shared}
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["contexts", "**"]),
+				"secret",
+				"safe",
+			),
+	])
+	var result: Dictionary = ObservabilityRedactor.new(policy).redact_contexts(source)
+
+	Expect.that(result["valid"]).to_be_true()
+	Expect.that(result["value"]).to_equal({
+		"first": {"value": "safe"},
+		"second": {"value": "safe"},
+	})
+	Expect.that(source).to_equal({
+		"first": {"value": "secret"},
+		"second": {"value": "secret"},
+	})
+
+
+func test_redactor_attachment_payload_matches_native_mapper_contract() -> void:
+	var redactor := ObservabilityRedactor.new()
+	var invalid_payloads: Array[Dictionary] = [
+		{},
+		{"filename": "a", "category": "event.attachment"},
+		{
+			"filename": "a",
+			"category": "event.attachment",
+			"path": "/tmp/a",
+			"bytes": PackedByteArray([1]),
+		},
+		{"filename": "a", "category": "event.attachment", "path": ""},
+		{"filename": "a", "category": "event.attachment", "path": "relative/a"},
+		{"filename": "a", "category": "event.attachment", "bytes": [1, 2]},
+		{"filename": "", "category": "event.attachment", "path": "/tmp/a"},
+		{"filename": "a", "category": "", "path": "/tmp/a"},
+		{"filename": "a", "category": "other", "path": "/tmp/a"},
+		{
+			"filename": "a",
+			"category": "event.attachment",
+			"path": "/tmp/a",
+			"content_type": 12,
+		},
+	]
+	for payload: Dictionary in invalid_payloads:
+		Expect.that(redactor.redact_attachment_payload(payload)).to_equal({
+			"valid": false,
+			"rule_index": -1,
+		})
+
+	var path_result: Dictionary = redactor.redact_attachment_payload({
+		"filename": "path.log",
+		"category": "event.attachment",
+		"path": "/tmp/path.log",
+	})
+	Expect.that(path_result["valid"]).to_be_true()
+	Expect.that(path_result["value"]).to_equal({
+		"filename": "path.log",
+		"category": "event.attachment",
+		"path": "/tmp/path.log",
+	})
+
+	var empty_bytes_result: Dictionary = redactor.redact_attachment_payload({
+		"filename": "empty.bin",
+		"category": "event.attachment",
+		"bytes": PackedByteArray(),
+	})
+	Expect.that(empty_bytes_result).to_equal({
+		"valid": true,
+		"value": {
+			"filename": "empty.bin",
+			"category": "event.attachment",
+			"bytes": PackedByteArray(),
+		},
+	})
+
+	var source_bytes := PackedByteArray([1, 2, 3])
+	var bytes_result: Dictionary = redactor.redact_attachment_payload({
+		"filename": "view.json",
+		"content_type": "",
+		"category": "event.view_hierarchy",
+		"bytes": source_bytes,
+	})
+	source_bytes[0] = 9
+	Expect.that(bytes_result["valid"]).to_be_true()
+	Expect.that(bytes_result["value"]["bytes"]).to_equal(PackedByteArray([1, 2, 3]))
+	Expect.that(bytes_result["value"]["content_type"]).to_equal("")
+
+
+func test_redactor_reports_latest_effective_rule_for_invalid_metadata() -> void:
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["attachments", "filename"]),
+				"does-not-match",
+				"unused",
+			),
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["attachments", "category"]),
+				"invalid",
+			),
+	])
+	var source: Dictionary = {
+		"filename": "safe.log",
+		"content_type": "text/plain",
+		"category": "event.attachment",
+		"path": "/tmp/safe.log",
+	}
+	var result: Dictionary = ObservabilityRedactor.new(
+			policy,
+		).redact_attachment_payload(source)
+
+	Expect.that(result).to_equal({"valid": false, "rule_index": 1})
+	Expect.that(source["category"]).to_equal("event.attachment")
+
+	var no_op_result: Dictionary = ObservabilityRedactor.new(
+			ObservabilityRedactionPolicy.new([policy.rules()[0]]),
+		).redact_attachment_payload(source)
+	Expect.that(no_op_result["valid"]).to_be_true()
+	Expect.that(no_op_result["value"]["filename"]).to_equal("safe.log")
+
+	var mixed_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["attachments", "content_type"]),
+			),
+		ObservabilityRedactionRule.replace_value(
+				PackedStringArray(["attachments", "category"]),
+				"invalid",
+			),
+	])
+	var mixed_result: Dictionary = ObservabilityRedactor.new(
+			mixed_policy,
+		).redact_attachment_payload(source)
+	Expect.that(mixed_result).to_equal({"valid": false, "rule_index": 1})
+
+	var removal_only_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["attachments", "filename"]),
+			),
+	])
+	var removal_only_result: Dictionary = ObservabilityRedactor.new(
+			removal_only_policy,
+		).redact_attachment_payload(source)
+	Expect.that(removal_only_result).to_equal({"valid": false, "rule_index": 0})
+
+
+func test_redactor_fails_closed_on_adversarial_rule_paths() -> void:
+	var adversarial_path := PackedStringArray()
+	for _index: int in range(257):
+		adversarial_path.append("**")
+	adversarial_path.append("filename")
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				adversarial_path,
+				"safe",
+				"changed",
+			),
+	])
+	var result: Dictionary = ObservabilityRedactor.new(
+			policy,
+		).redact_attachment_payload({
+			"filename": "safe.log",
+			"category": "event.attachment",
+			"path": "/tmp/safe.log",
+		})
+
+	Expect.that(result).to_equal({"valid": false, "rule_index": 0})
+
+
+func test_processing_diagnostic_preserves_payload_free_fields() -> void:
+	var diagnostic := ObservabilityProcessingDiagnostic.new(
+			7,
+			ObservabilityProcessingDiagnostic.EVENT,
+			ObservabilityProcessingDiagnostic.DROPPED,
+			ObservabilityProcessingDiagnostic.RATE_LIMITED,
+			3,
+			2,
+			ObservabilityProcessingDiagnostic.WINDOW,
+			Error.ERR_BUSY,
+	)
+	var copied: ObservabilityProcessingDiagnostic = diagnostic.duplicate()
+
+	Expect.that(diagnostic.sequence()).to_equal(7)
+	Expect.that(diagnostic.processing_signal()).to_equal(
+			ObservabilityProcessingDiagnostic.EVENT)
+	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingDiagnostic.DROPPED)
+	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingDiagnostic.RATE_LIMITED)
+	Expect.that(diagnostic.processor_index()).to_equal(3)
+	Expect.that(diagnostic.rule_index()).to_equal(2)
+	Expect.that(diagnostic.limit_kind()).to_equal(ObservabilityProcessingDiagnostic.WINDOW)
+	Expect.that(diagnostic.error()).to_equal(Error.ERR_BUSY)
+	Expect.that(copied).to_not_equal(diagnostic)
+	Expect.that(copied.sequence()).to_equal(7)
+
+
+func test_processing_config_defaults_and_defensively_copies_inputs() -> void:
+	var processors: Array[Callable] = [Callable()]
+	var limits := ObservabilitySignalLimits.new(8, 9, 10, 11)
+	var log_limits := ObservabilitySignalLimits.new(12, 13, 14, 15)
+	var metric_limits := ObservabilitySignalLimits.new(16, 17, 18, 19)
+	var policy := ObservabilityRedactionPolicy.new([
+			ObservabilityRedactionRule.sensitive_key("authorization"),
+	])
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_sample_rate = -0.5,
+			p_log_sample_rate = 2.0,
+			p_event_processors = processors,
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = limits,
+			p_log_limits = log_limits,
+			p_metric_limits = metric_limits,
+			p_redaction_policy = policy,
+	)
+	processors.clear()
+	var exposed_processors: Array[Callable] = config.event_processors()
+	exposed_processors.clear()
+	var exposed_policy: ObservabilityRedactionPolicy = config.redaction_policy()
+	var exposed_rules: Array[ObservabilityRedactionRule] = exposed_policy.rules()
+	exposed_rules.clear()
+
+	Expect.that(config.event_sample_rate).to_be_close_to(-0.5)
+	Expect.that(config.log_sample_rate).to_be_close_to(2.0)
+	Expect.that(config.metric_sample_rate).to_be_close_to(1.0)
+	Expect.that(config.event_processors()).to_have_size(1)
+	Expect.that(config.log_processors()).to_have_size(0)
+	Expect.that(config.metric_processors()).to_have_size(0)
+	Expect.that(config.event_limits().per_frame()).to_equal(8)
+	Expect.that(config.log_limits()).to_not_equal(log_limits)
+	Expect.that(config.log_limits().per_frame()).to_equal(12)
+	Expect.that(config.metric_limits()).to_not_equal(metric_limits)
+	Expect.that(config.metric_limits().window_msec()).to_equal(19)
+	Expect.that(config.redaction_policy().rules()).to_have_size(1)
+
+
+func test_processing_config_default_and_legacy_event_limits() -> void:
+	var defaults := ObservabilityConfig.new()
+	var legacy := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_automatic_events_per_frame = -1,
+			p_automatic_repeated_error_window_msec = 2000,
+			p_automatic_event_throttle_count = 30,
+			p_automatic_event_throttle_window_msec = 4000,
+	)
+
+	Expect.that(defaults.event_sample_rate).to_be_close_to(1.0)
+	Expect.that(defaults.log_sample_rate).to_be_close_to(1.0)
+	Expect.that(defaults.event_processors()).to_have_size(0)
+	Expect.that(defaults.log_processors()).to_have_size(0)
+	Expect.that(defaults.metric_processors()).to_have_size(0)
+	Expect.that(defaults.event_limits().per_frame()).to_equal(5)
+	Expect.that(defaults.event_limits().repeated_window_msec()).to_equal(1000)
+	Expect.that(defaults.event_limits().window_count()).to_equal(20)
+	Expect.that(defaults.event_limits().window_msec()).to_equal(10000)
+	Expect.that(defaults.log_limits()).to_not_equal(defaults.log_limits())
+	Expect.that(defaults.metric_limits()).to_not_equal(defaults.metric_limits())
+	Expect.that(defaults.log_limits().per_frame()).to_equal(0)
+	Expect.that(defaults.log_limits().repeated_window_msec()).to_equal(0)
+	Expect.that(defaults.log_limits().window_count()).to_equal(0)
+	Expect.that(defaults.log_limits().window_msec()).to_equal(0)
+	Expect.that(defaults.metric_limits().per_frame()).to_equal(0)
+	Expect.that(defaults.metric_limits().repeated_window_msec()).to_equal(0)
+	Expect.that(defaults.metric_limits().window_count()).to_equal(0)
+	Expect.that(defaults.metric_limits().window_msec()).to_equal(0)
+	Expect.that(defaults.redaction_policy().rules()).to_have_size(0)
+	Expect.that(legacy.event_limits().per_frame()).to_equal(0)
+	Expect.that(legacy.event_limits().repeated_window_msec()).to_equal(2000)
+	Expect.that(legacy.event_limits().window_count()).to_equal(30)
+	Expect.that(legacy.event_limits().window_msec()).to_equal(4000)
+
+
+func test_processing_config_derives_implicit_event_limits_from_current_legacy_fields() -> void:
+	var config := ObservabilityConfig.new()
+	config.automatic_events_per_frame = 11
+	config.automatic_repeated_error_window_msec = 12
+	config.automatic_event_throttle_count = 13
+	config.automatic_event_throttle_window_msec = 14
+
+	Expect.that(config.event_limits().per_frame()).to_equal(11)
+	Expect.that(config.event_limits().repeated_window_msec()).to_equal(12)
+	Expect.that(config.event_limits().window_count()).to_equal(13)
+	Expect.that(config.event_limits().window_msec()).to_equal(14)
+
+
+func test_processing_config_keeps_explicit_event_limits_after_legacy_mutation() -> void:
+	var limits := ObservabilitySignalLimits.new(21, 22, 23, 24)
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = limits,
+	)
+	config.automatic_events_per_frame = 31
+	config.automatic_repeated_error_window_msec = 32
+	config.automatic_event_throttle_count = 33
+	config.automatic_event_throttle_window_msec = 34
+
+	Expect.that(config.event_limits()).to_not_equal(limits)
+	Expect.that(config.event_limits().per_frame()).to_equal(21)
+	Expect.that(config.event_limits().repeated_window_msec()).to_equal(22)
+	Expect.that(config.event_limits().window_count()).to_equal(23)
+	Expect.that(config.event_limits().window_msec()).to_equal(24)
+
+
 func test_byte_attachment_defensively_copies_data_and_preserves_metadata() -> void:
 	var source_bytes := PackedByteArray([1, 2, 3])
 	var attachment := ObservabilityAttachment.from_bytes(
@@ -1833,7 +3182,7 @@ func test_metrics_reject_non_boolean_filter_results() -> void:
 		))).to_equal(Error.OK)
 
 	Expect.that(service.capture_counter("combat.hit")).to_be_false()
-	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
 	Expect.that(provider.metrics()).to_have_size(0)
 	service.shutdown()
 
@@ -1998,10 +3347,193 @@ func test_memory_provider_captures_and_clears_breadcrumbs() -> void:
 	var breadcrumb := ObservabilityBreadcrumb.new(p_message = "trail")
 
 	Expect.that(service.capture_breadcrumb(breadcrumb)).to_be_true()
-	Expect.that(provider.breadcrumbs()).to_equal([breadcrumb])
+	Expect.that(provider.breadcrumbs()).to_have_size(1)
+	Expect.that(provider.breadcrumbs()[0].message()).to_equal("trail")
+	Expect.that(provider.breadcrumbs()[0]).not_().to_equal(breadcrumb)
 	provider.clear_breadcrumbs()
 	Expect.that(provider.breadcrumbs()).to_have_size(0)
 	service.shutdown()
+
+
+func test_service_redacts_rebuilt_provider_owned_state_without_retaining_inputs() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["contexts", "**", "token"]),
+				"secret",
+				"safe",
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["user", "contact_email"]),
+				"secret@example.com",
+				"safe@example.invalid",
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["breadcrumbs", "message"]),
+				"secret",
+				"safe",
+			),
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["attachments", "filename"]),
+				"secret",
+				"safe",
+			),
+	])
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = policy,
+	))).to_equal(Error.OK)
+
+	var context_source: Dictionary = {
+		"token": "secret",
+		"nested": {"token": "secret"},
+	}
+	var manual_breadcrumb := ObservabilityBreadcrumb.new(p_message = "secret manual")
+	var automatic_breadcrumb := ObservabilityBreadcrumb.new(
+			p_message = "secret automatic",
+		)
+	var attachment := ObservabilityAttachment.from_bytes(
+			PackedByteArray([1, 2, 3]),
+			"secret.log",
+			"text/plain",
+		)
+	Expect.that(service.set_context("account", context_source)).to_be_true()
+	Expect.that(service.set_user(ObservabilityUser.new(
+			"player-7",
+			"Mina",
+			"secret@example.com",
+		))).to_be_true()
+	Expect.that(service.capture_breadcrumb(manual_breadcrumb)).to_be_true()
+	Expect.that(service._capture_automatic_breadcrumb(automatic_breadcrumb)).to_be_true()
+	Expect.that(service.add_attachment(attachment).is_empty()).to_be_false()
+
+	context_source["token"] = "mutated"
+	context_source["nested"]["token"] = "mutated"
+	Expect.that(service.capture_message("state snapshot")).to_equal("memory:1")
+	Expect.that(provider.captured_scopes()[0]["contexts"]["account"]).to_equal({
+		"token": "safe",
+		"nested": {"token": "safe"},
+	})
+	Expect.that(provider.captured_scopes()[0]["user"]["contact_email"]).to_equal(
+			"safe@example.invalid",
+		)
+	Expect.that(provider.breadcrumbs()[0].message()).to_equal("safe manual")
+	Expect.that(provider.breadcrumbs()[1].message()).to_equal("safe automatic")
+	Expect.that(provider.breadcrumbs()[0]).not_().to_equal(manual_breadcrumb)
+	Expect.that(provider.breadcrumbs()[1]).not_().to_equal(automatic_breadcrumb)
+	Expect.that(provider.captured_attachments()[0][0]["filename"]).to_equal("safe.log")
+	Expect.that(manual_breadcrumb.message()).to_equal("secret manual")
+	Expect.that(automatic_breadcrumb.message()).to_equal("secret automatic")
+	Expect.that(attachment.filename()).to_equal("secret.log")
+	service.shutdown()
+
+
+func test_service_state_redaction_failures_skip_provider_mutations_and_report_state() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["contexts", "account"]),
+						7,
+					),
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["user", "contact_email"]),
+						7,
+					),
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["breadcrumbs", "level"]),
+						"invalid",
+					),
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["attachments", "filename"]),
+						7,
+					),
+			]),
+	))).to_equal(Error.OK)
+
+	Expect.that(service.set_context("account", {"token": "secret"})).to_be_false()
+	_expect_state_redaction_failure(service)
+	Expect.that(service.set_user(ObservabilityUser.new(
+			"player-7",
+			"Mina",
+			"secret@example.com",
+		))).to_be_false()
+	_expect_state_redaction_failure(service)
+	Expect.that(service.capture_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "secret",
+		))).to_be_false()
+	_expect_state_redaction_failure(service)
+	Expect.that(service._capture_automatic_breadcrumb(ObservabilityBreadcrumb.new(
+			p_message = "automatic secret",
+		))).to_be_false()
+	_expect_state_redaction_failure(service)
+	Expect.that(service.add_attachment(ObservabilityAttachment.from_bytes(
+			PackedByteArray([1]),
+			"secret.log",
+		)).is_empty()).to_be_true()
+	_expect_state_redaction_failure(service)
+
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	Expect.that(service.capture_message("provider state unchanged")).to_equal("memory:1")
+	Expect.that(provider.captured_scopes()[0]).to_equal({
+		"tags": {},
+		"contexts": {},
+		"user": null,
+	})
+	Expect.that(provider.captured_attachments()[0]).to_have_size(0)
+	service.shutdown()
+
+
+func test_service_rejects_recursive_state_mutation_with_operation_local_error() -> void:
+	_state_reentry_service = _processing_service()
+	_state_reentry_result = true
+	_state_reentry_error = Error.OK
+	_state_reentry_signal = &""
+	_state_reentry_reason = &""
+	_state_reentry_diagnostic_error = Error.OK
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(_state_reentry_service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [
+				Callable(self, "_service_set_context_during_processing"),
+			],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+
+	Expect.that(_state_reentry_service.capture_message("outer")).to_equal("memory:1")
+	Expect.that(_state_reentry_result).to_be_false()
+	Expect.that(_state_reentry_error).to_equal(Error.ERR_BUSY)
+	Expect.that(_state_reentry_service.last_error()).to_equal(Error.ERR_BUSY)
+	Expect.that(provider.captured_scopes()[0]["contexts"]).to_equal({})
+	Expect.that(_state_reentry_signal).to_equal(
+			ObservabilityProcessingDiagnostic.STATE,
+		)
+	Expect.that(_state_reentry_reason).to_equal(
+			ObservabilityProcessingDiagnostic.RECURSIVE,
+		)
+	Expect.that(_state_reentry_diagnostic_error).to_equal(Error.ERR_BUSY)
+	_shutdown_processing_service(_state_reentry_service)
+	_state_reentry_service = null
 
 
 func test_memory_scope_merges_local_overrides_and_defensively_snapshots_user() -> void:
@@ -2346,7 +3878,9 @@ func test_memory_breadcrumb_bound_zero_and_service_clear_results() -> void:
 	Expect.that(service.capture_breadcrumb(one)).to_be_true()
 	Expect.that(service.capture_breadcrumb(two)).to_be_true()
 	Expect.that(service.capture_breadcrumb(three)).to_be_true()
-	Expect.that(provider.breadcrumbs()).to_equal([two, three])
+	Expect.that(provider.breadcrumbs()).to_have_size(2)
+	Expect.that(provider.breadcrumbs()[0].message()).to_equal("two")
+	Expect.that(provider.breadcrumbs()[1].message()).to_equal("three")
 	Expect.that(service.clear_breadcrumbs()).to_be_true()
 	Expect.that(service.last_error()).to_equal(Error.OK)
 	Expect.that(provider.breadcrumbs()).to_have_size(0)
@@ -2497,42 +4031,119 @@ func test_automatic_logger_filters_and_routes_messages_without_events() -> void:
 	service.shutdown()
 
 
-func test_automatic_logger_suppresses_duplicate_errors_deterministically() -> void:
-	var service: FoundryObservability = _service()
+func test_automatic_errors_share_event_limits_without_suppressing_other_destinations() -> void:
+	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {},
+			p_automatic_capture_enabled = false,
 			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_repeated_error_window_msec = 1000,
-			p_automatic_events_per_frame = 0,
-			p_automatic_event_throttle_count = 0,
-		)
+			p_automatic_events_per_frame = 1,
+			p_automatic_event_throttle_count = 2,
+			p_automatic_event_throttle_window_msec = 10000,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_log_limits = ObservabilitySignalLimits.new(),
+	)
 	var capture_time := AutomaticCaptureTime.new(1000, 1)
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, capture_time.now, capture_time.frame)
 
-	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	capture_time.now_msec = 1500
-	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(2)
-	Expect.that(provider.breadcrumbs()).to_have_size(1)
+	for _index: int in range(3):
+		logger._capture_error(
+				"tick", "res://loop.fs", 9, "boom", "", false,
+				Logger.ERROR_TYPE_ERROR, [],
+			)
 
+	var non_log_count: int = 0
+	var log_count: int = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() != &"log":
+			non_log_count += 1
+		else:
+			log_count += 1
+	Expect.that(non_log_count).to_equal(1)
+	Expect.that(provider.breadcrumbs()).to_have_size(3)
+	Expect.that(log_count).to_equal(3)
+	Expect.that(provider.events()[0].engine_ticks_msec()).to_equal(1000)
+	Expect.that(provider.breadcrumbs()[0].timestamp_msec()).to_equal(1000)
+
+	capture_time.frame_index = 2
+	capture_time.now_msec = 1500
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
+	logger._capture_error(
+			"tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [],
+		)
+	non_log_count = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() != &"log":
+			non_log_count += 1
+	Expect.that(non_log_count).to_equal(1)
+
+	capture_time.frame_index = 3
 	capture_time.now_msec = 2000
-	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(4)
-	Expect.that(provider.breadcrumbs()).to_have_size(2)
-	service.shutdown()
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
+	logger._capture_error(
+			"tick", "res://loop.fs", 9, "boom", "", false,
+			Logger.ERROR_TYPE_ERROR, [],
+		)
+	non_log_count = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() != &"log":
+			non_log_count += 1
+	Expect.that(non_log_count).to_equal(2)
+
+	capture_time.frame_index = 4
+	capture_time.now_msec = 2001
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
+	logger._capture_error(
+			"tick", "res://loop.fs", 10, "different", "", false,
+			Logger.ERROR_TYPE_ERROR, [],
+		)
+	non_log_count = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() != &"log":
+			non_log_count += 1
+	Expect.that(non_log_count).to_equal(2)
+
+	capture_time.frame_index = 5
+	capture_time.now_msec = 12001
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
+	Expect.that(service.capture_message("manual capacity")).not_().to_equal("")
+	logger._capture_error(
+			"tick", "res://loop.fs", 11, "automatic after manual", "", false,
+			Logger.ERROR_TYPE_ERROR, [],
+		)
+	non_log_count = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() != &"log":
+			non_log_count += 1
+	Expect.that(non_log_count).to_equal(3)
+	Expect.that(provider.breadcrumbs()).to_have_size(7)
+	log_count = 0
+	for event: ObservabilityEvent in provider.events():
+		if event.kind() == &"log":
+			log_count += 1
+	Expect.that(log_count).to_equal(7)
+	_shutdown_processing_service(service)
 
 
 func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> void:
-	var service: FoundryObservability = _service()
+	var service := _processing_service()
 	var provider := RejectingObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
@@ -2546,6 +4157,8 @@ func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> 
 			p_automatic_event_throttle_count = 1,
 			p_automatic_event_throttle_window_msec = 1000,
 		)
+	_service_processing_clock_msec = 1000
+	_service_processing_frame_index = 1
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, func() -> int: return 1000, func() -> int: return 1)
@@ -2555,9 +4168,9 @@ func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> 
 	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
 
-	Expect.that(provider.capture_count).to_equal(4)
+	Expect.that(provider.capture_count).to_equal(3)
 	Expect.that(provider.breadcrumb_count).to_equal(2)
-	service.shutdown()
+	_shutdown_processing_service(service)
 
 
 func test_successful_automatic_breadcrumb_does_not_clear_event_failure() -> void:
@@ -2612,94 +4225,100 @@ func test_rejected_automatic_breadcrumb_reports_failure_after_accepted_event() -
 
 
 func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
-	var service: FoundryObservability = _service()
+	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {},
+			p_automatic_capture_enabled = false,
 			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_repeated_error_window_msec = 0,
-			p_automatic_events_per_frame = 1,
-			p_automatic_event_throttle_count = 2,
-			p_automatic_event_throttle_window_msec = 1000,
-		)
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1, 0, 0, 0),
+			p_log_limits = ObservabilitySignalLimits.new(2, 0, 0, 0),
+	)
 	var capture_time := AutomaticCaptureTime.new(1000, 1)
+	_service_processing_clock_msec = capture_time.now_msec
+	_service_processing_frame_index = capture_time.frame_index
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, capture_time.now, capture_time.frame)
 
-	logger._log_error("tick", "res://loop.fs", 9, "a", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	logger._log_error("tick", "res://loop.fs", 9, "b", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	capture_time.frame_index = 2
-	capture_time.now_msec = 1002
-	logger._log_error("tick", "res://loop.fs", 9, "c", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	logger._log_error("tick", "res://loop.fs", 9, "d", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	capture_time.frame_index = 3
-	capture_time.now_msec = 1003
-	logger._log_error("tick", "res://loop.fs", 9, "e", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
+	for index: int in range(3):
+		logger._capture_error(
+				"tick", "res://loop.fs", 9 + index, str(index), "", false,
+				Logger.ERROR_TYPE_ERROR, [],
+			)
 
 	var exception_count: int = 0
+	var log_count: int = 0
 	for event: ObservabilityEvent in provider.events():
 		if event.kind() == &"exception":
 			exception_count += 1
-	Expect.that(exception_count).to_equal(2)
-	Expect.that(provider.breadcrumbs()).to_have_size(5)
-	Expect.that(provider.events()).to_have_size(7)
-
-	capture_time.frame_index = 4
-	capture_time.now_msec = 2001
-	logger._log_error("tick", "res://loop.fs", 9, "f", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.breadcrumbs()).to_have_size(6)
-	Expect.that(provider.events()).to_have_size(9)
-	service.shutdown()
+		elif event.kind() == &"log":
+			log_count += 1
+	Expect.that(exception_count).to_equal(1)
+	Expect.that(log_count).to_equal(2)
+	Expect.that(provider.breadcrumbs()).to_have_size(3)
+	_shutdown_processing_service(service)
 
 
-func test_automatic_logger_bounds_identity_state_and_resets_limits() -> void:
-	var service: FoundryObservability = _service()
+func test_automatic_processor_recursion_drops_nested_message_without_payload_delivery() -> void:
+	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
+	_automatic_nested_service = service
+	_automatic_nested_capture_result = "not called"
+	_automatic_nested_reason = &""
 	var config := ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {},
+			p_automatic_capture_enabled = false,
 			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
 			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_repeated_error_window_msec = 100000,
-			p_automatic_events_per_frame = 0,
-			p_automatic_event_throttle_count = 0,
-		)
+			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [
+				Callable(self, "_automatic_capture_nested_message"),
+			],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	)
+	_service_processing_clock_msec = 1000
+	_service_processing_frame_index = 1
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(
 			service, config, func() -> int: return 1000, func() -> int: return 1)
-	for index: int in range(101):
-		logger._log_error("tick", "res://loop.fs", index, str(index), "", false,
-				Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(101)
 
-	logger._log_error("tick", "res://loop.fs", 0, "0", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(102)
-	logger.reset()
-	logger._log_error("tick", "res://loop.fs", 0, "0", "", false,
-			Logger.ERROR_TYPE_ERROR, [])
-	Expect.that(provider.events()).to_have_size(103)
-	service.shutdown()
+	logger._capture_error(
+			"tick", "res://loop.fs", 9, "outer", "", false,
+			Logger.ERROR_TYPE_ERROR, [],
+		)
+
+	Expect.that(_automatic_nested_capture_result).to_equal("")
+	Expect.that(_automatic_nested_reason).to_equal(
+			ObservabilityProcessingDiagnostic.RECURSIVE,
+		)
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].message()).to_equal("outer")
+	Expect.that(provider.events()[0].message()).not_().to_equal("nested")
+	_shutdown_processing_service(service)
 
 
 func test_automatic_capture_reservation_is_atomic() -> void:
-	var service: FoundryObservability = _service()
+	var service := _processing_service()
 
 	Expect.that(service.try_begin_automatic_capture()).to_be_true()
 	Expect.that(service.try_begin_automatic_capture()).to_be_false()
 	service.end_automatic_capture()
 	Expect.that(service.try_begin_automatic_capture()).to_be_true()
 	service.end_automatic_capture()
+	_shutdown_processing_service(service)
 
 
 func test_automatic_capture_skips_missing_optional_breadcrumb_capability() -> void:
@@ -2919,25 +4538,646 @@ func test_structured_logs_honor_disabled_and_minimum_level_configuration() -> vo
 
 
 func test_structured_logs_apply_deterministic_per_second_rate_limit() -> void:
-	var service: FoundryObservability = _service()
+	var service := _processing_service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	_service_processing_frame_index = 1
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
 			p_global_attributes = {},
 			p_provider_options = {},
 			p_log_rate_limit_per_second = 1,
 		))).to_equal(Error.OK)
+	_service_processing_clock_msec = 1000
 	Expect.that(service.capture_log(
 			"first", ObservabilityLevel.INFO, &"game", -1, {}, 1000,
 		)).to_equal("memory:1")
+	_service_processing_clock_msec = 1500
 	Expect.that(service.capture_log(
 			"dropped", ObservabilityLevel.INFO, &"game", -1, {}, 1500,
 		)).to_equal("")
+	_service_processing_clock_msec = 2000
 	Expect.that(service.capture_log(
 			"next window", ObservabilityLevel.INFO, &"game", -1, {}, 2000,
 		)).to_equal("memory:2")
 	Expect.that(provider.events()).to_have_size(2)
+	_shutdown_processing_service(service)
+
+
+func test_service_processes_replacement_event_before_memory_provider_delivery() -> void:
+	var service: FoundryObservability = _service()
+	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
+	_service_event_processor_calls = 0
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_service_replace_event")],
+	))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("original")).to_equal("memory:1")
+	Expect.that(_service_event_processor_calls).to_equal(1)
+	Expect.that(provider.events()[0].message()).to_equal("processed")
+	var diagnostic: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
+	Expect.that(diagnostic.processing_signal()).to_equal(ObservabilityProcessingDiagnostic.EVENT)
+	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingDiagnostic.ACCEPTED)
+	Expect.that(service.last_error()).to_equal(Error.OK)
 	service.shutdown()
+
+
+func test_service_processor_drop_preserves_ok_error_and_publishes_diagnostic() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_service_drop_event")],
+	))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("dropped")).to_equal("")
+	Expect.that(provider.events()).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	var diagnostic: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
+	Expect.that(diagnostic.outcome()).to_equal(ObservabilityProcessingDiagnostic.DROPPED)
+	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingDiagnostic.PROCESSOR)
+	Expect.that(diagnostic.processor_index()).to_equal(0)
+	Expect.that(diagnostic.error()).to_equal(Error.OK)
+	service.shutdown()
+
+
+func test_service_processing_capacity_is_independent_per_event_log_and_metric() -> void:
+	var service := _processing_service()
+	var provider := MemoryObservabilityProvider.new()
+	_service_processing_clock_msec = 1000
+	_service_processing_frame_index = 1
+	var one_per_frame := ObservabilitySignalLimits.new(1, 0, 0, 0)
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = one_per_frame,
+			p_log_limits = one_per_frame,
+			p_metric_limits = one_per_frame,
+	))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("event first")).to_equal("memory:1")
+	Expect.that(service.capture_log("log first")).to_equal("memory:2")
+	Expect.that(service.capture_counter("metric.first")).to_be_true()
+	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.metrics()).to_have_size(1)
+
+	Expect.that(service.capture_message("event second")).to_equal("")
+	_expect_service_per_frame_diagnostic(service, ObservabilityProcessingDiagnostic.EVENT)
+	Expect.that(service.capture_log("log second")).to_equal("")
+	_expect_service_per_frame_diagnostic(service, ObservabilityProcessingDiagnostic.LOG)
+	Expect.that(service.capture_counter("metric.second")).to_be_false()
+	_expect_service_per_frame_diagnostic(service, ObservabilityProcessingDiagnostic.METRIC)
+	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.metrics()).to_have_size(1)
+	_shutdown_processing_service(service)
+
+
+func test_service_failed_reconfiguration_preserves_processing_diagnostic_and_admission() -> void:
+	var service := _processing_service()
+	var active := ConfigureCountingMemoryProvider.new()
+	_service_processing_clock_msec = 1000
+	_service_processing_frame_index = 1
+	var active_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1, 0, 0, 0),
+		)
+	Expect.that(service.configure(active, active_config)).to_equal(Error.OK)
+	Expect.that(service.capture_message("accepted")).to_equal("memory:1")
+	Expect.that(service.capture_message("limited")).to_equal("")
+	var prior: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
+
+	var invalid_candidate := ConfigureCountingMemoryProvider.new()
+	Expect.that(service.configure(invalid_candidate, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable()],
+		))).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(invalid_candidate.configure_calls).to_equal(0)
+	_expect_service_diagnostic_unchanged(service, prior)
+	Expect.that(service.capture_message("still limited after invalid")).to_equal("")
+
+	var failing_candidate := ConfigureCountingMemoryProvider.new()
+	failing_candidate.configure_result = Error.FAILED
+	prior = service.last_processing_diagnostic()
+	Expect.that(service.configure(failing_candidate, active_config)).to_equal(Error.FAILED)
+	Expect.that(failing_candidate.configure_calls).to_equal(1)
+	_expect_service_diagnostic_unchanged(service, prior)
+	Expect.that(service.capture_message("still limited after candidate failure")).to_equal("")
+
+	active.configure_result = Error.FAILED
+	prior = service.last_processing_diagnostic()
+	Expect.that(service.configure(active, active_config)).to_equal(Error.FAILED)
+	_expect_service_diagnostic_unchanged(service, prior)
+	Expect.that(service.capture_message("still limited after same provider failure")).to_equal("")
+	_shutdown_processing_service(service)
+
+
+func test_service_constructor_preserves_positional_arguments_and_uses_processing_seams() -> void:
+	var service := _processing_service()
+	var provider := MemoryObservabilityProvider.new()
+	_service_processing_clock_msec = 0
+	_service_processing_frame_index = 1
+	_service_processing_clock_calls = 0
+	_service_processing_frame_calls = 0
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1, 0, 0, 0),
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("first")).to_equal("memory:1")
+	Expect.that(service.capture_message("limited")).to_equal("")
+	Expect.that(service.last_processing_diagnostic().limit_kind()).to_equal(
+			ObservabilityProcessingDiagnostic.PER_FRAME)
+	_service_processing_frame_index = 2
+	Expect.that(service.capture_message("next frame")).to_equal("memory:2")
+	Expect.that(_service_processing_clock_calls).to_be_greater_than(0)
+	Expect.that(_service_processing_frame_calls).to_be_greater_than(0)
+	_shutdown_processing_service(service)
+
+
+func test_service_event_capture_does_not_cross_reconfigured_generation() -> void:
+	var service := _processing_service()
+	var original := MemoryObservabilityProvider.new()
+	var replacement := MemoryObservabilityProvider.new()
+	var replacement_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+		)
+	_service_lifecycle_service = service
+	_service_lifecycle_provider = replacement
+	_service_lifecycle_config = replacement_config
+	_service_lifecycle_configure_result = Error.FAILED
+	Expect.that(service.configure(original, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [
+				Callable(self, "_service_reconfigure_from_event_processor"),
+			],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("old generation")).to_equal("")
+	Expect.that(_service_lifecycle_configure_result).to_equal(Error.OK)
+	Expect.that(original.events()).to_have_size(0)
+	Expect.that(replacement.events()).to_have_size(0)
+	Expect.that(service.last_processing_diagnostic()).to_be_null()
+
+	Expect.that(service.capture_message("new generation")).to_equal("memory:1")
+	Expect.that(replacement.events()).to_have_size(1)
+	Expect.that(replacement.events()[0].message()).to_equal("new generation")
+	_shutdown_processing_service(service)
+
+
+func test_service_metric_capture_does_not_cross_reconfigured_generation() -> void:
+	var service := _processing_service()
+	var original := MemoryObservabilityProvider.new()
+	var replacement := MemoryObservabilityProvider.new()
+	var replacement_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+		)
+	_service_lifecycle_service = service
+	_service_lifecycle_provider = replacement
+	_service_lifecycle_config = replacement_config
+	_service_lifecycle_configure_result = Error.FAILED
+	Expect.that(service.configure(original, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [
+				Callable(self, "_service_reconfigure_from_metric_processor"),
+			],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_counter("old.metric")).to_be_false()
+	Expect.that(_service_lifecycle_configure_result).to_equal(Error.OK)
+	Expect.that(original.metrics()).to_have_size(0)
+	Expect.that(replacement.metrics()).to_have_size(0)
+	Expect.that(service.last_processing_diagnostic()).to_be_null()
+
+	Expect.that(service.capture_counter("new.metric")).to_be_true()
+	Expect.that(replacement.metrics()).to_have_size(1)
+	Expect.that(replacement.metrics()[0].name()).to_equal("new.metric")
+	_shutdown_processing_service(service)
+
+
+func test_service_rejects_reconfiguration_during_provider_capture() -> void:
+	var service := _processing_service()
+	var active := ReconfiguringCaptureMemoryProvider.new()
+	var replacement := ConfigureCountingMemoryProvider.new()
+	var replacement_config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+		)
+	active.service = service
+	active.replacement_provider = replacement
+	active.replacement_config = replacement_config
+	Expect.that(service.configure(active, replacement_config)).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("active generation")).to_equal("memory:1")
+	Expect.that(active.reconfigure_result).to_equal(Error.ERR_BUSY)
+	Expect.that(active.shutdown_count).to_equal(0)
+	Expect.that(replacement.configure_calls).to_equal(0)
+	Expect.that(active.events()).to_have_size(1)
+	Expect.that(service.provider_name()).to_equal(&"memory")
+
+	Expect.that(service.capture_message("still active")).to_equal("memory:2")
+	Expect.that(active.events()).to_have_size(2)
+	_shutdown_processing_service(service)
+
+
+func test_service_blocks_other_provider_calls_during_reconfiguration() -> void:
+	var service := _processing_service()
+	var active := MemoryObservabilityProvider.new()
+	var replacement := ReentrantConfigureMemoryProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+		)
+	Expect.that(service.configure(active, config)).to_equal(Error.OK)
+	replacement.service = service
+
+	Expect.that(service.configure(replacement, config)).to_equal(Error.OK)
+	Expect.that(replacement.nested_flush_result).to_equal(Error.ERR_BUSY)
+	Expect.that(active.flush_count).to_equal(0)
+	Expect.that(service.capture_message("replacement active")).to_equal("memory:1")
+	_shutdown_processing_service(service)
+
+
+func test_scope_operation_does_not_cross_same_provider_generation() -> void:
+	var service := _reconfiguring_reservation_service()
+	var provider := RecordingScopeProvider.new()
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	service.replacement_config = _ordinary_generation_config(false)
+	service.armed = true
+
+	Expect.that(service.set_tag("region", "iad")).to_be_false()
+	Expect.that(service.reconfigure_result).to_equal(Error.OK)
+	Expect.that(provider.calls).to_have_size(0)
+	Expect.that(service.is_enabled()).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	_shutdown_processing_service(service)
+
+
+func test_attachment_does_not_repopulate_same_provider_after_session_reset() -> void:
+	var service := _reconfiguring_reservation_service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	service.replacement_config = _ordinary_generation_config(true)
+	service.armed = true
+	var attachment := ObservabilityAttachment.from_bytes(
+			PackedByteArray([1, 2, 3]),
+			"stale.bin",
+		)
+
+	Expect.that(service.add_attachment(attachment)).to_equal("")
+	Expect.that(service.reconfigure_result).to_equal(Error.OK)
+	Expect.that(service.capture_message("new session")).to_equal("memory:1")
+	Expect.that(provider.captured_attachments()[0]).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	_shutdown_processing_service(service)
+
+
+func test_breadcrumb_does_not_cross_same_provider_generation() -> void:
+	var service := _reconfiguring_reservation_service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	service.replacement_config = _ordinary_generation_config(true)
+	service.armed = true
+
+	Expect.that(service.capture_breadcrumb(
+			ObservabilityBreadcrumb.new(p_message = "stale"),
+		)).to_be_false()
+	Expect.that(service.reconfigure_result).to_equal(Error.OK)
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	_shutdown_processing_service(service)
+
+
+func test_feedback_does_not_cross_same_provider_generation() -> void:
+	var service := _reconfiguring_reservation_service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	service.replacement_config = _ordinary_generation_config(true)
+	service.armed = true
+
+	Expect.that(service.capture_feedback(
+			ObservabilityFeedback.new(p_message = "stale"),
+		)).to_equal("")
+	Expect.that(service.reconfigure_result).to_equal(Error.OK)
+	Expect.that(provider.feedback()).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	_shutdown_processing_service(service)
+
+
+func test_shutdown_requested_inside_provider_capture_completes_after_call() -> void:
+	var service := _processing_service()
+	var provider := ShutdownRequestingMemoryProvider.new()
+	provider.service = service
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("final event")).to_equal("memory:1")
+	Expect.that(provider.request_count).to_equal(1)
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.flush_count).to_equal(1)
+	Expect.that(provider.shutdown_count).to_equal(1)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+	Expect.that(service.capture_message("after shutdown")).to_equal("")
+
+	service.shutdown()
+	Expect.that(provider.flush_count).to_equal(1)
+	Expect.that(provider.shutdown_count).to_equal(1)
+	service.free()
+
+
+func test_shutdown_requested_during_configure_cleans_committed_candidate() -> void:
+	var service := _processing_service()
+	var active := MemoryObservabilityProvider.new()
+	var replacement := ReentrantConfigureMemoryProvider.new()
+	Expect.that(service.configure(
+			active,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	replacement.service = service
+	replacement.request_shutdown = true
+
+	Expect.that(service.configure(
+			replacement,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(replacement.flush_count).to_equal(1)
+	Expect.that(replacement.shutdown_count).to_equal(1)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+
+	service.shutdown()
+	Expect.that(replacement.shutdown_count).to_equal(1)
+	service.free()
+
+
+func test_shutdown_during_candidate_preparation_cannot_resurrect_configuration() -> void:
+	var service := ShutdownDuringCandidatePreparationService.new(
+			ObservabilityStartupSettings.new(),
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs",
+			Callable(self, "_service_processing_clock"),
+			Callable(self, "_service_processing_frame"),
+		)
+	var active := MemoryObservabilityProvider.new()
+	var replacement := ConfigureCountingMemoryProvider.new()
+	Expect.that(service.configure(
+			active,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	service.shutdown_during_preparation = true
+
+	Expect.that(service.configure(
+			replacement,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.ERR_BUSY)
+	Expect.that(service.shutdown_during_preparation).to_be_false()
+	Expect.that(replacement.configure_calls).to_equal(0)
+	Expect.that(replacement.shutdown_count).to_equal(0)
+	Expect.that(active.flush_count).to_equal(1)
+	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+
+	service.shutdown()
+	Expect.that(active.shutdown_count).to_equal(1)
+	service.free()
+
+
+func test_failed_replacement_requesting_shutdown_cleans_both_providers_once() -> void:
+	var service := _processing_service()
+	var active := MemoryObservabilityProvider.new()
+	var replacement := ReentrantConfigureMemoryProvider.new()
+	Expect.that(service.configure(
+			active,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	replacement.service = service
+	replacement.request_shutdown = true
+	replacement.configure_result = Error.FAILED
+
+	Expect.that(service.configure(
+			replacement,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.FAILED)
+	Expect.that(replacement.flush_count).to_equal(0)
+	Expect.that(replacement.shutdown_count).to_equal(1)
+	Expect.that(active.flush_count).to_equal(1)
+	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+
+	service.shutdown()
+	Expect.that(replacement.shutdown_count).to_equal(1)
+	Expect.that(active.shutdown_count).to_equal(1)
+	service.free()
+
+
+func test_automatic_capture_rejects_completed_shutdown() -> void:
+	var service: FoundryObservability = _service()
+	service.shutdown()
+
+	var reserved: bool = service.try_begin_automatic_capture()
+	Expect.that(reserved).to_be_false()
+	if reserved:
+		service.end_automatic_capture()
+
+
+func test_service_normalizes_final_processor_replacement_before_delivery() -> void:
+	var service := _processing_service()
+	var provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_stack_trace_source_context_enabled = false,
+			p_stack_trace_variables_enabled = false,
+			p_event_processors = [
+				Callable(self, "_service_replace_with_unnormalized_exception"),
+			],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+		))).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("input")).to_equal("memory:1")
+	var captured: ObservabilityEvent = provider.events()[0]
+	Expect.that(captured.timestamp_msec()).to_be_greater_than(1_000_000_000_000)
+	Expect.that(captured.engine_ticks_msec()).to_be_greater_than(-1)
+	Expect.that(captured.kind()).to_equal(&"exception")
+	Expect.that(captured.exception().frames()).to_have_size(1)
+	var frame: ObservabilityStackFrame = captured.exception().frames()[0]
+	Expect.that(frame.line()).to_equal(-1)
+	Expect.that(frame.context_line()).to_equal("")
+	Expect.that(frame.pre_context()).to_equal(PackedStringArray())
+	Expect.that(frame.post_context()).to_equal(PackedStringArray())
+	Expect.that(frame.variables()).to_equal({})
+	_shutdown_processing_service(service)
+
+
+func test_automatic_logger_preserves_event_failure_after_successful_log() -> void:
+	var service := _processing_service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 0,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_processing_wrong_type")],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+			p_log_limits = ObservabilitySignalLimits.new(),
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service,
+			config,
+			func() -> int: return 1000,
+			func() -> int: return 1,
+		)
+
+	logger._log_error(
+			"run",
+			"res://case.fs",
+			1,
+			"failure",
+			"",
+			false,
+			Logger.ERROR_TYPE_ERROR,
+			[],
+		)
+
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].kind()).to_equal(&"log")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
+	_shutdown_processing_service(service)
+
+
+func test_automatic_logger_preserves_breadcrumb_redaction_failure_after_log() -> void:
+	var service := _processing_service()
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_event_mask = ObservabilityCaptureMask.NONE,
+			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
+			p_automatic_repeated_error_window_msec = 0,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_log_limits = ObservabilitySignalLimits.new(),
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["breadcrumbs", "level"]),
+						"invalid",
+					),
+			]),
+		)
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service,
+			config,
+			func() -> int: return 1000,
+			func() -> int: return 1,
+		)
+
+	logger._log_error(
+			"run",
+			"res://case.fs",
+			1,
+			"failure",
+			"",
+			false,
+			Logger.ERROR_TYPE_ERROR,
+			[],
+		)
+
+	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(provider.events()[0].kind()).to_equal(&"log")
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
+	_shutdown_processing_service(service)
 
 
 func test_disabled_structured_logs_do_not_consume_rate_limit() -> void:
@@ -4359,6 +6599,1213 @@ func test_memory_attachment_zero_limit_clear_history_and_shutdown_state() -> voi
 	Expect.that(provider.remove_attachment("memory-attachment:1")).to_equal(Error.FAILED)
 	Expect.that(provider.clear_attachments()).to_be_false()
 	Expect.that(provider.last_attachment_failures()).to_have_size(0)
+
+
+func test_processing_pipeline_redacts_before_processors_and_again_after_replacement() -> void:
+	_processing_order.clear()
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 2,
+	)
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [
+				Callable(self, "_processing_replace_first"),
+				Callable(self, "_processing_reintroduce_secret"),
+				Callable(self, "_processing_replace_second"),
+			],
+			p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["event", "message"]), "secret", "safe"),
+			]),
+	))).to_equal(Error.OK)
+	var result: Dictionary = pipeline.process_event(ObservabilityEvent.new(
+			p_message = "secret",
+	))
+	Expect.that(result["accepted"]).to_be_true()
+	var value: ObservabilityEvent = result["value"]
+	Expect.that(value.message()).to_equal("safe-first-safe-second")
+	Expect.that(_processing_order).to_equal(["first", "reintroduce", "second"])
+
+
+func test_processing_pipeline_separates_logs_and_rejects_signal_crossing_processors() -> void:
+	_processing_order.clear()
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_processing_event_marker")],
+			p_log_processors = [Callable(self, "_processing_log_marker")],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+			p_log_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	var log_result: Dictionary = pipeline.process_event(ObservabilityEvent.new(
+			p_kind = &"log", p_message = "line",
+	))
+	Expect.that(log_result["accepted"]).to_be_true()
+	@warning_ignore("unsafe_cast")
+	Expect.that((log_result["value"] as ObservabilityEvent).message()).to_equal("line-log")
+	Expect.that(_processing_order).to_equal(["log"])
+
+	var crossing := ObservabilityProcessingPipeline.new()
+	Expect.that(crossing.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_log_processors = [Callable(self, "_processing_log_to_event")],
+			p_event_processors = [], p_metric_processors = [],
+			p_log_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(crossing.process_event(ObservabilityEvent.new(
+			p_kind = &"log",
+	))["accepted"]).to_be_false()
+	Expect.that(crossing.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+	Expect.that(crossing.last_diagnostic().processor_index()).to_equal(0)
+
+
+func test_processing_pipeline_reports_processor_drops_and_wrong_types() -> void:
+	var dropped := ObservabilityProcessingPipeline.new()
+	Expect.that(dropped.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_processing_drop")],
+			p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(dropped.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(dropped.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.PROCESSOR)
+	Expect.that(dropped.last_diagnostic().processor_index()).to_equal(0)
+	Expect.that(dropped.last_diagnostic().error()).to_equal(Error.OK)
+
+	var invalid := ObservabilityProcessingPipeline.new()
+	Expect.that(invalid.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_processing_wrong_type")],
+			p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(invalid.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(invalid.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+	Expect.that(invalid.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
+
+
+func test_processing_pipeline_fails_closed_when_processor_target_expires() -> void:
+	var callbacks := MutableProcessingCallbacks.new()
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(_processing_config([
+			Callable(callbacks, "process_event"),
+	]))).to_equal(Error.OK)
+	callbacks.free()
+
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+
+
+func test_processing_pipeline_fails_closed_when_metric_filter_target_expires() -> void:
+	var callbacks := MutableProcessingCallbacks.new()
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_metric_filter = Callable(callbacks, "filter_metric"),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	callbacks.free()
+
+	Expect.that(pipeline.process_metric(ObservabilityMetric.new(
+			p_name = "metric", p_value = 1.0,
+	))["accepted"]).to_be_false()
+	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+
+
+func test_processing_pipeline_metric_filter_is_pre_redacted_and_precedes_processors() -> void:
+	_processing_order.clear()
+	_processing_filter_values.clear()
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_metric_filter = Callable(self, "_processing_metric_filter"),
+			p_metric_processors = [Callable(self, "_processing_metric_marker")],
+			p_event_processors = [], p_log_processors = [],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_text(
+						PackedStringArray(["metric", "name"]), "secret", "safe"),
+			]),
+	))).to_equal(Error.OK)
+	var result: Dictionary = pipeline.process_metric(ObservabilityMetric.new(
+			p_name = "secret.metric", p_value = 1.0,
+	))
+	Expect.that(result["accepted"]).to_be_true()
+	Expect.that(_processing_filter_values).to_equal(["safe.metric"])
+	Expect.that(_processing_order).to_equal(["metric"])
+	@warning_ignore("unsafe_cast")
+	Expect.that((result["value"] as ObservabilityMetric).name()).to_equal("safe.metric-processed")
+
+	var rejected := ObservabilityProcessingPipeline.new()
+	Expect.that(rejected.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_metric_filter = Callable(self, "_processing_metric_false"),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(rejected.process_metric(ObservabilityMetric.new(
+			p_name = "metric", p_value = 1.0,
+	))["accepted"]).to_be_false()
+	Expect.that(rejected.last_diagnostic().processor_index()).to_equal(-1)
+	Expect.that(rejected.last_diagnostic().error()).to_equal(Error.OK)
+
+	var malformed := ObservabilityProcessingPipeline.new()
+	Expect.that(malformed.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_metric_filter = Callable(self, "_processing_metric_non_bool"),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(malformed.process_metric(ObservabilityMetric.new(
+			p_name = "metric", p_value = 1.0,
+	))["accepted"]).to_be_false()
+	Expect.that(malformed.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+
+
+func test_processing_pipeline_blocks_recursive_entries_before_callbacks_or_limits() -> void:
+	_recursive_pipeline = ObservabilityProcessingPipeline.new(
+			func() -> int: return 1,
+			func() -> int: return 1,
+			func() -> int: return 1,
+	)
+	Expect.that(_recursive_pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_processing_reenter_metric")],
+			p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1),
+			p_metric_limits = ObservabilitySignalLimits.new(1),
+	))).to_equal(Error.OK)
+	Expect.that(_recursive_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(_recursive_pipeline.recursive_drop_count()).to_equal(1)
+	Expect.that(_recursive_pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.RECURSIVE)
+	Expect.that(_recursive_pipeline.process_metric(ObservabilityMetric.new(
+			p_name = "after.recursion", p_value = 1.0,
+	))["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_recursive_state_result_is_operation_local() -> void:
+	_recursive_state_result = {}
+	_recursive_pipeline = ObservabilityProcessingPipeline.new()
+	Expect.that(_recursive_pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_processing_reenter_state")],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+
+	Expect.that(
+			_recursive_pipeline.process_event(ObservabilityEvent.new())["accepted"],
+		).to_be_true()
+	Expect.that(_recursive_state_result["accepted"]).to_be_false()
+	Expect.that(_recursive_state_result["valid"]).to_be_false()
+	Expect.that(_recursive_state_result["value"]).to_be_null()
+	Expect.that(_recursive_state_result["signal"]).to_equal(
+			ObservabilityProcessingDiagnostic.STATE,
+		)
+	Expect.that(_recursive_state_result["reason"]).to_equal(
+			ObservabilityProcessingDiagnostic.RECURSIVE,
+		)
+	Expect.that(_recursive_state_result["error"]).to_equal(Error.ERR_BUSY)
+
+
+func test_processing_pipeline_state_result_survives_later_diagnostic_overwrite() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_service_drop_event")],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_value(
+						PackedStringArray(["contexts", "account"]),
+						7,
+					),
+			]),
+	))).to_equal(Error.OK)
+
+	var state_result: Dictionary = pipeline.redact_contexts({
+		"account": {"token": "secret"},
+	})
+	Expect.that(state_result["accepted"]).to_be_false()
+	Expect.that(state_result["valid"]).to_be_false()
+	Expect.that(state_result["signal"]).to_equal(
+			ObservabilityProcessingDiagnostic.STATE,
+		)
+	Expect.that(state_result["reason"]).to_equal(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+		)
+	Expect.that(state_result["error"]).to_equal(Error.ERR_INVALID_DATA)
+
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.PROCESSOR,
+		)
+	Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.OK)
+	Expect.that(state_result["reason"]).to_equal(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+		)
+	Expect.that(state_result["error"]).to_equal(Error.ERR_INVALID_DATA)
+
+
+func test_processing_pipeline_reconfigure_reentry_is_recursive_and_outer_result_is_stale() -> void:
+	_processing_owner_id = 1
+	_lifecycle_nested_result = {}
+	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(_lifecycle_pipeline.configure(_processing_config(
+			[Callable(self, "_processing_reconfigure_and_reenter")],
+	))).to_equal(Error.OK)
+
+	var outer: Dictionary = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(_lifecycle_nested_result["accepted"]).to_be_false()
+	Expect.that(outer["accepted"]).to_be_false()
+	Expect.that(_lifecycle_pipeline.recursive_drop_count()).to_equal(1)
+	Expect.that(_lifecycle_pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.RECURSIVE)
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_suppresses_old_generation_processor_drop_after_reset() -> void:
+	_processing_owner_id = 1
+	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(_lifecycle_pipeline.configure(_processing_config(
+			[Callable(self, "_processing_reconfigure_and_drop")],
+	))).to_equal(Error.OK)
+
+	Expect.that(_lifecycle_pipeline.process_event(
+			ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(_lifecycle_pipeline.last_diagnostic()).to_be_null()
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_allows_overlapping_different_owners() -> void:
+	_processing_owner_id = 1
+	_overlap_stage = 0
+	_overlap_nested_result = {}
+	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(_lifecycle_pipeline.configure(_processing_config(
+			[Callable(self, "_processing_overlap_different_owner")],
+	))).to_equal(Error.OK)
+
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(_overlap_nested_result["accepted"]).to_be_true()
+	Expect.that(_lifecycle_pipeline.recursive_drop_count()).to_equal(0)
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_exact_release_preserves_other_active_owner_reservation() -> void:
+	_processing_owner_id = 1
+	_overlap_stage = 0
+	_overlap_nested_result = {}
+	_overlap_recursive_result = {}
+	_lifecycle_pipeline = ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(_lifecycle_pipeline.configure(_processing_config(
+			[Callable(self, "_processing_overlap_and_probe_original_owner")],
+	))).to_equal(Error.OK)
+
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(_overlap_nested_result["accepted"]).to_be_true()
+	Expect.that(_overlap_recursive_result["accepted"]).to_be_false()
+	Expect.that(_lifecycle_pipeline.recursive_drop_count()).to_equal(1)
+	Expect.that(_lifecycle_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_uses_signal_local_limiters_and_publishes_limit_diagnostics() -> void:
+	_processing_clock_calls = 0
+	_processing_frame_calls = 0
+	var pipeline := ObservabilityProcessingPipeline.new(
+			Callable(self, "_processing_clock"),
+			Callable(self, "_processing_frame"),
+	)
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1),
+			p_log_limits = ObservabilitySignalLimits.new(1),
+			p_metric_limits = ObservabilitySignalLimits.new(1),
+	))).to_equal(Error.OK)
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.last_diagnostic().limit_kind()).to_equal(
+			ObservabilityProcessingDiagnostic.PER_FRAME)
+	Expect.that(pipeline.process_event(ObservabilityEvent.new(
+			p_kind = &"log",
+	))["accepted"]).to_be_true()
+	Expect.that(pipeline.process_metric(ObservabilityMetric.new(
+			p_name = "limit.metric", p_value = 1.0,
+	))["accepted"]).to_be_true()
+	Expect.that(_processing_clock_calls).to_equal(4)
+	Expect.that(_processing_frame_calls).to_equal(4)
+
+
+func test_processing_pipeline_configure_is_atomic_and_success_resets_state() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+	)
+	var active := ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1))
+	Expect.that(pipeline.configure(active)).to_equal(Error.OK)
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	var prior: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	var invalid := ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [], p_event_sample_rate = NAN)
+	Expect.that(pipeline.configure(invalid)).to_equal(Error.ERR_INVALID_PARAMETER)
+	var infinite := ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_log_sample_rate = INF,
+	)
+	Expect.that(pipeline.configure(infinite)).to_equal(Error.ERR_INVALID_PARAMETER)
+	var invalid_processor := ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable()], p_log_processors = [], p_metric_processors = [],
+	)
+	Expect.that(pipeline.configure(invalid_processor)).to_equal(Error.ERR_INVALID_DATA)
+	var invalid_rule := ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([null]),
+	)
+	Expect.that(pipeline.configure(invalid_rule)).to_equal(Error.ERR_INVALID_DATA)
+	var overlong_path := PackedStringArray()
+	for _index: int in range(ObservabilityRedactor.MAX_RULE_PATH_SEGMENTS + 1):
+		overlong_path.append("segment")
+	var overlong_policy := ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.replace_text(overlong_path, "", "safe"),
+			]),
+	)
+	Expect.that(pipeline.configure(overlong_policy)).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(prior.sequence())
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_event_sample_rate = 1.0,
+			p_event_limits = ObservabilitySignalLimits.new(1),
+	))).to_equal(Error.OK)
+	Expect.that(pipeline.last_diagnostic()).to_be_null()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+	Expect.that(pipeline.configure(null)).to_equal(Error.ERR_INVALID_PARAMETER)
+
+
+func test_processing_pipeline_configures_structural_rules_and_rejects_matching_payloads() -> void:
+	var matching := ObservabilityProcessingPipeline.new()
+	Expect.that(matching.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.remove_field(
+						PackedStringArray(["event", "message"])),
+			]),
+	))).to_equal(Error.OK)
+	Expect.that(matching.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(matching.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED)
+	Expect.that(matching.last_diagnostic().rule_index()).to_equal(0)
+	Expect.that(matching.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
+
+	var nonmatching := ObservabilityProcessingPipeline.new()
+	Expect.that(nonmatching.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.remove_field(
+						PackedStringArray(["other", "message"])),
+			]),
+	))).to_equal(Error.OK)
+	Expect.that(nonmatching.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_reports_rule_for_required_frame_field_removal() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new([
+				ObservabilityRedactionRule.remove_field(
+						PackedStringArray(["event", "attributes", "unused"])),
+				ObservabilityRedactionRule.remove_field(PackedStringArray([
+					"event", "exception", "frames", "*", "file",
+				])),
+			]),
+		))).to_equal(Error.OK)
+	var result: Dictionary = pipeline.process_event(ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_attributes = {},
+			p_exception = ObservabilityException.new(
+					p_attributes = {},
+					p_frames = [
+						ObservabilityStackFrame.new(p_file = "res://failure.fs"),
+					],
+				),
+		))
+
+	Expect.that(result["accepted"]).to_be_false()
+	var diagnostic: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	Expect.that(diagnostic.reason()).to_equal(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED)
+	Expect.that(diagnostic.error()).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(diagnostic.rule_index()).to_equal(1)
+
+
+func test_processing_pipeline_records_provider_results_and_keeps_admission_consumed() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+	)
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1),
+	))).to_equal(Error.OK)
+	var accepted: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(accepted["accepted"]).to_be_true()
+	pipeline.record_provider_result(&"event", false, Error.OK, accepted["operation_token"])
+	var rejected: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	Expect.that(rejected.reason()).to_equal(ObservabilityProcessingDiagnostic.PROVIDER_REJECTED)
+	Expect.that(rejected.error()).to_equal(Error.FAILED)
+	var isolated: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	Expect.that(isolated).to_not_equal(rejected)
+	pipeline.record_provider_result(&"event", true, Error.ERR_INVALID_PARAMETER)
+	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(rejected.sequence())
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+
+
+func test_processing_pipeline_pairs_provider_results_to_current_pending_tokens() -> void:
+	_processing_owner_id = 1
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
+	var old: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(old["accepted"]).to_be_true()
+	Expect.that(old.has("operation_token")).to_be_true()
+
+	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
+	pipeline.record_provider_result(&"event", false, Error.FAILED, old["operation_token"])
+	Expect.that(pipeline.last_diagnostic()).to_be_null()
+
+	var current: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	pipeline.record_provider_result(&"event", true, Error.ERR_INVALID_PARAMETER,
+			current["operation_token"])
+	var accepted: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	Expect.that(accepted.outcome()).to_equal(ObservabilityProcessingDiagnostic.ACCEPTED)
+	Expect.that(accepted.error()).to_equal(Error.OK)
+
+	pipeline.record_provider_result(&"event", false, Error.FAILED, current["operation_token"])
+	pipeline.record_provider_result(&"metric", false, Error.FAILED, current["operation_token"])
+	pipeline.record_provider_result(&"invalid", false, Error.FAILED, current["operation_token"])
+	pipeline.record_provider_result(&"event", false, Error.FAILED, -999)
+	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(accepted.sequence())
+
+	var paired_after_mismatch: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	pipeline.record_provider_result(
+			&"metric", false, Error.FAILED, paired_after_mismatch["operation_token"])
+	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(accepted.sequence())
+	pipeline.record_provider_result(
+			&"event", false, Error.ERR_INVALID_PARAMETER,
+			paired_after_mismatch["operation_token"])
+	var rejected: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	Expect.that(rejected.reason()).to_equal(
+			ObservabilityProcessingDiagnostic.PROVIDER_REJECTED)
+	Expect.that(rejected.error()).to_equal(Error.ERR_INVALID_PARAMETER)
+
+	var legacy: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	Expect.that(legacy["accepted"]).to_be_true()
+	pipeline.record_provider_result(&"event", true, Error.FAILED)
+	Expect.that(pipeline.last_diagnostic().outcome()).to_equal(
+			ObservabilityProcessingDiagnostic.ACCEPTED)
+	Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.OK)
+
+
+func test_processing_pipeline_keeps_only_latest_pending_result_per_owner_and_signal() -> void:
+	_processing_owner_id = 1
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
+	var first: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+	var latest: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+
+	Expect.that(pipeline._pending_provider_results).to_have_size(1)
+	Expect.that(pipeline._pending_provider_results.has(latest["operation_token"])).to_be_true()
+	Expect.that(pipeline._pending_provider_results.has(first["operation_token"])).to_be_false()
+	pipeline.record_provider_result(&"event", false, Error.FAILED, first["operation_token"])
+	Expect.that(pipeline.last_diagnostic()).to_be_null()
+
+	pipeline.record_provider_result(&"event", true, Error.FAILED)
+	var accepted: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
+	Expect.that(accepted.outcome()).to_equal(ObservabilityProcessingDiagnostic.ACCEPTED)
+	Expect.that(pipeline._pending_provider_results).to_have_size(0)
+	pipeline.record_provider_result(&"event", false, Error.FAILED, latest["operation_token"])
+	pipeline.record_provider_result(&"event", false, Error.FAILED)
+	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(accepted.sequence())
+
+
+func test_processing_pipeline_bounds_pending_results_and_evicts_oldest_token() -> void:
+	_processing_owner_id = 1
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+			Callable(self, "_processing_owner"),
+	)
+	Expect.that(pipeline.configure(_processing_config([]))).to_equal(Error.OK)
+	var oldest: Dictionary = {}
+	var newest: Dictionary = {}
+	for owner_id: int in range(1, 1026):
+		_processing_owner_id = owner_id
+		var result: Dictionary = pipeline.process_event(ObservabilityEvent.new())
+		Expect.that(result["accepted"]).to_be_true()
+		if oldest.is_empty():
+			oldest = result
+		newest = result
+
+	Expect.that(pipeline._pending_provider_results).to_have_size(1024)
+	Expect.that(pipeline._pending_provider_results.has(oldest["operation_token"])).to_be_false()
+	Expect.that(pipeline._pending_provider_results.has(newest["operation_token"])).to_be_true()
+	Expect.that(pipeline._processing_depth).to_equal(0)
+	Expect.that(pipeline._active_operations).to_have_size(0)
+	Expect.that(pipeline.recursive_drop_count()).to_equal(0)
+
+	pipeline.record_provider_result(&"event", false, Error.FAILED, oldest["operation_token"])
+	Expect.that(pipeline.last_diagnostic()).to_be_null()
+	pipeline.record_provider_result(&"event", true, Error.FAILED, newest["operation_token"])
+	Expect.that(pipeline.last_diagnostic().outcome()).to_equal(
+			ObservabilityProcessingDiagnostic.ACCEPTED)
+
+
+func test_processing_pipeline_identity_excludes_attributes_but_includes_message() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+	)
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(0, 1000),
+	))).to_equal(Error.OK)
+	Expect.that(pipeline.process_event(ObservabilityEvent.new(
+			p_message = "same", p_attributes = {"secret": "one"},
+	))["accepted"]).to_be_true()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new(
+			p_message = "same", p_attributes = {"secret": "two"},
+	))["accepted"]).to_be_false()
+	Expect.that(pipeline.process_event(ObservabilityEvent.new(
+			p_message = "different", p_attributes = {"secret": "two"},
+	))["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_rejects_event_to_log_processor_crossing() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new()
+	Expect.that(pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [Callable(self, "_processing_event_to_log")],
+			p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
+	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+	Expect.that(pipeline.last_diagnostic().processor_index()).to_equal(0)
+	Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
+
+
+func test_processing_pipeline_rejects_invalid_metric_processor_replacements() -> void:
+	var invalid_replacements: Array[Callable] = [
+		Callable(self, "_processing_metric_too_long_name"),
+		Callable(self, "_processing_metric_control_name"),
+		Callable(self, "_processing_metric_control_unit"),
+		Callable(self, "_processing_metric_invalid_unit"),
+		Callable(self, "_processing_metric_invalid_attribute_key"),
+		Callable(self, "_processing_metric_invalid_attribute_value"),
+		Callable(self, "_processing_metric_nonfinite_attribute"),
+	]
+	for processor: Callable in invalid_replacements:
+		var pipeline := ObservabilityProcessingPipeline.new()
+		Expect.that(pipeline.configure(ObservabilityConfig.new(
+				p_global_attributes = {}, p_provider_options = {},
+				p_automatic_message_filter_prefixes = PackedStringArray(),
+				p_event_processors = [], p_log_processors = [],
+				p_metric_processors = [processor],
+				p_metric_limits = ObservabilitySignalLimits.new(),
+		))).to_equal(Error.OK)
+		Expect.that(pipeline.process_metric(ObservabilityMetric.new(
+				p_name = "metric", p_value = 1.0,
+		))["accepted"]).to_be_false()
+		Expect.that(pipeline.last_diagnostic().reason()).to_equal(
+				ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+		Expect.that(pipeline.last_diagnostic().processor_index()).to_equal(0)
+		Expect.that(pipeline.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
+
+
+func test_processing_pipeline_reports_metric_processor_drop_and_wrong_type() -> void:
+	var dropped := ObservabilityProcessingPipeline.new()
+	Expect.that(dropped.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [],
+			p_metric_processors = [Callable(self, "_processing_metric_drop")],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(dropped.process_metric(ObservabilityMetric.new(
+			p_name = "metric", p_value = 1.0,
+	))["accepted"]).to_be_false()
+	Expect.that(dropped.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.PROCESSOR)
+	Expect.that(dropped.last_diagnostic().processor_index()).to_equal(0)
+	Expect.that(dropped.last_diagnostic().error()).to_equal(Error.OK)
+
+	var wrong_type := ObservabilityProcessingPipeline.new()
+	Expect.that(wrong_type.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [],
+			p_metric_processors = [Callable(self, "_processing_metric_wrong_type")],
+			p_metric_limits = ObservabilitySignalLimits.new(),
+	))).to_equal(Error.OK)
+	Expect.that(wrong_type.process_metric(ObservabilityMetric.new(
+			p_name = "metric", p_value = 1.0,
+	))["accepted"]).to_be_false()
+	Expect.that(wrong_type.last_diagnostic().reason()).to_equal(
+			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
+	Expect.that(wrong_type.last_diagnostic().processor_index()).to_equal(0)
+	Expect.that(wrong_type.last_diagnostic().error()).to_equal(Error.ERR_INVALID_DATA)
+
+
+func test_processing_pipeline_event_identity_matrix_excludes_attributes_and_scope() -> void:
+	var excluded := _processing_repeated_pipeline()
+	Expect.that(excluded.process_event(ObservabilityEvent.new(
+			p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO,
+			p_message = "same", p_attributes = {"one": 1}, p_scope = ObservabilityScope.new(),
+	))["accepted"]).to_be_true()
+	var changed_scope := ObservabilityScope.new()
+	changed_scope.set_tag("region", "iad")
+	Expect.that(excluded.process_event(ObservabilityEvent.new(
+			p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO,
+			p_message = "same", p_attributes = {"two": 2}, p_scope = changed_scope,
+	))["accepted"]).to_be_false()
+
+	for event: ObservabilityEvent in [
+		ObservabilityEvent.new(p_kind = &"exception", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same"),
+		ObservabilityEvent.new(p_kind = &"message", p_source = &"other", p_level = ObservabilityLevel.INFO, p_message = "same"),
+		ObservabilityEvent.new(p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.WARN, p_message = "same"),
+		ObservabilityEvent.new(p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "other"),
+		ObservabilityEvent.new(p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same", p_attributes = {}, p_exception = ObservabilityException.new("Type", "message", "stack", {})),
+	]:
+		var pipeline := _processing_repeated_pipeline()
+		Expect.that(pipeline.process_event(ObservabilityEvent.new(
+			p_kind = &"message", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same",
+		))["accepted"]).to_be_true()
+		Expect.that(pipeline.process_event(event)["accepted"]).to_be_true()
+
+
+func test_processing_pipeline_log_and_metric_identity_matrices() -> void:
+	var excluded_log := _processing_repeated_pipeline()
+	Expect.that(excluded_log.process_event(ObservabilityEvent.new(
+			p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO,
+			p_message = "same", p_attributes = {"one": 1}, p_engine_ticks_msec = 1,
+	))["accepted"]).to_be_true()
+	Expect.that(excluded_log.process_event(ObservabilityEvent.new(
+			p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO,
+			p_message = "same", p_attributes = {"two": 2}, p_engine_ticks_msec = 2,
+	))["accepted"]).to_be_false()
+	for event: ObservabilityEvent in [
+		ObservabilityEvent.new(p_kind = &"log", p_source = &"other", p_level = ObservabilityLevel.INFO, p_message = "same"),
+		ObservabilityEvent.new(p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.WARN, p_message = "same"),
+		ObservabilityEvent.new(p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "other"),
+	]:
+		var pipeline := _processing_repeated_pipeline()
+		Expect.that(pipeline.process_event(ObservabilityEvent.new(
+			p_kind = &"log", p_source = &"game", p_level = ObservabilityLevel.INFO, p_message = "same",
+		))["accepted"]).to_be_true()
+		Expect.that(pipeline.process_event(event)["accepted"]).to_be_true()
+
+	var excluded_metric := _processing_repeated_pipeline()
+	Expect.that(excluded_metric.process_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0,
+			p_unit = "count", p_attributes = {"one": 1},
+	))["accepted"]).to_be_true()
+	Expect.that(excluded_metric.process_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 2.0,
+			p_unit = "count", p_attributes = {"two": 2},
+	))["accepted"]).to_be_false()
+	for metric: ObservabilityMetric in [
+		ObservabilityMetric.new(p_type = ObservabilityMetricType.DISTRIBUTION, p_name = "metric", p_value = 1.0, p_unit = "count"),
+		ObservabilityMetric.new(p_type = ObservabilityMetricType.GAUGE, p_name = "other", p_value = 1.0, p_unit = "count"),
+		ObservabilityMetric.new(p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0, p_unit = "other"),
+	]:
+		var pipeline := _processing_repeated_pipeline()
+		Expect.that(pipeline.process_metric(ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0, p_unit = "count",
+		))["accepted"]).to_be_true()
+		Expect.that(pipeline.process_metric(metric)["accepted"]).to_be_true()
+
+
+func _processing_replace_first(event: ObservabilityEvent) -> ObservabilityEvent:
+	_processing_order.append("first")
+	return _processing_event_with_message(event, event.message() + "-first")
+
+
+func _processing_reintroduce_secret(event: ObservabilityEvent) -> ObservabilityEvent:
+	_processing_order.append("reintroduce")
+	return _processing_event_with_message(event, event.message() + "-secret")
+
+
+func _processing_replace_second(event: ObservabilityEvent) -> ObservabilityEvent:
+	_processing_order.append("second")
+	return _processing_event_with_message(event, event.message() + "-second")
+
+
+func _processing_event_marker(event: ObservabilityEvent) -> ObservabilityEvent:
+	_processing_order.append("event")
+	return event
+
+
+func _processing_log_marker(event: ObservabilityEvent) -> ObservabilityEvent:
+	_processing_order.append("log")
+	return _processing_event_with_message(event, event.message() + "-log")
+
+
+func _processing_log_to_event(event: ObservabilityEvent) -> ObservabilityEvent:
+	return ObservabilityEvent.new(p_kind = &"message", p_message = event.message())
+
+
+func _processing_event_to_log(event: ObservabilityEvent) -> ObservabilityEvent:
+	return ObservabilityEvent.new(p_kind = &"log", p_message = event.message())
+
+
+func _processing_drop(_event: ObservabilityEvent) -> Variant:
+	return null
+
+
+func _processing_wrong_type(_event: ObservabilityEvent) -> Variant:
+	return ObservabilityMetric.new(p_name = "wrong", p_value = 1.0)
+
+
+func _processing_metric_filter(metric: ObservabilityMetric) -> bool:
+	_processing_filter_values.append(metric.name())
+	return true
+
+
+func _processing_clock() -> int:
+	_processing_clock_calls += 1
+	return 100
+
+
+func _processing_frame() -> int:
+	_processing_frame_calls += 1
+	return 1
+
+
+func _processing_metric_false(_metric: ObservabilityMetric) -> bool:
+	return false
+
+
+func _processing_metric_non_bool(_metric: ObservabilityMetric) -> Variant:
+	return "not a bool"
+
+
+func _processing_metric_marker(metric: ObservabilityMetric) -> ObservabilityMetric:
+	_processing_order.append("metric")
+	return ObservabilityMetric.new(
+			metric.type(), metric.name() + "-processed", metric.value(), metric.unit(), metric.attributes())
+
+
+func _processing_metric_drop(_metric: ObservabilityMetric) -> Variant:
+	return null
+
+
+func _processing_metric_wrong_type(_metric: ObservabilityMetric) -> Variant:
+	return ObservabilityEvent.new()
+
+
+func _processing_metric_too_long_name(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(p_name = _repeated("n", 201), p_value = 1.0)
+
+
+func _processing_metric_control_name(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(p_name = "bad\nname", p_value = 1.0)
+
+
+func _processing_metric_invalid_unit(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0,
+			p_unit = "bad\u00a0unit",
+	)
+
+
+func _processing_metric_control_unit(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(
+			p_type = ObservabilityMetricType.GAUGE, p_name = "metric", p_value = 1.0,
+			p_unit = "bad\nunit",
+	)
+
+
+func _processing_metric_invalid_attribute_key(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(p_name = "metric", p_value = 1.0, p_attributes = {"bad\nkey": 1})
+
+
+func _processing_metric_invalid_attribute_value(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(p_name = "metric", p_value = 1.0, p_attributes = {"valid": []})
+
+
+func _processing_metric_nonfinite_attribute(_metric: ObservabilityMetric) -> ObservabilityMetric:
+	return ObservabilityMetric.new(p_name = "metric", p_value = 1.0, p_attributes = {"valid": NAN})
+
+
+func _processing_repeated_pipeline() -> ObservabilityProcessingPipeline:
+	var pipeline := ObservabilityProcessingPipeline.new(
+			func() -> int: return 10,
+			func() -> int: return 1,
+	)
+	pipeline.configure(ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(0, 1000),
+			p_log_limits = ObservabilitySignalLimits.new(0, 1000),
+			p_metric_limits = ObservabilitySignalLimits.new(0, 1000),
+	))
+	return pipeline
+
+
+func _processing_owner() -> int:
+	return _processing_owner_id
+
+
+func _record_exception_snapshot(event: ObservabilityEvent) -> ObservabilityEvent:
+	_processor_exception_snapshot = _exception_snapshot(event)
+	return event
+
+
+func _exception_snapshot(event: ObservabilityEvent) -> Dictionary:
+	var exception: ObservabilityException? = event.exception()
+	if exception == null:
+		return {}
+	var frame_files: Array[String] = []
+	for frame: ObservabilityStackFrame in exception.frames():
+		frame_files.append("" if frame == null else frame.file())
+	return {
+		"type_name": exception.type_name(),
+		"message": exception.message(),
+		"stack_trace": exception.stack_trace(),
+		"attributes": exception.attributes(),
+		"frame_files": frame_files,
+	}
+
+
+func _processing_config(processors: Array[Callable]) -> ObservabilityConfig:
+	return ObservabilityConfig.new(
+			p_global_attributes = {}, p_provider_options = {},
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = processors, p_log_processors = [], p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+	)
+
+
+func _processing_reconfigure_and_reenter(event: ObservabilityEvent) -> ObservabilityEvent:
+	_lifecycle_pipeline.configure(_processing_config([]))
+	_lifecycle_nested_result = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+	return event
+
+
+func _processing_reconfigure_and_drop(_event: ObservabilityEvent) -> Variant:
+	_lifecycle_pipeline.configure(_processing_config([]))
+	return null
+
+
+func _processing_overlap_different_owner(event: ObservabilityEvent) -> ObservabilityEvent:
+	if _overlap_stage == 0:
+		_overlap_stage = 1
+		_processing_owner_id = 2
+		_overlap_nested_result = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+		_processing_owner_id = 1
+		_overlap_stage = 2
+	return event
+
+
+func _processing_overlap_and_probe_original_owner(event: ObservabilityEvent) -> ObservabilityEvent:
+	if _overlap_stage == 0:
+		_overlap_stage = 1
+		_processing_owner_id = 2
+		_overlap_nested_result = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+		_processing_owner_id = 1
+		_overlap_stage = 3
+	elif _overlap_stage == 1:
+		_overlap_stage = 2
+		_processing_owner_id = 1
+		_overlap_recursive_result = _lifecycle_pipeline.process_event(ObservabilityEvent.new())
+		_processing_owner_id = 2
+	return event
+
+
+func _processing_reenter_metric(event: ObservabilityEvent) -> ObservabilityEvent:
+	_recursive_pipeline.process_metric(ObservabilityMetric.new(
+			p_name = "nested.metric", p_value = 1.0,
+		))
+	return event
+
+
+func _processing_reenter_state(event: ObservabilityEvent) -> ObservabilityEvent:
+	_recursive_state_result = _recursive_pipeline.redact_contexts({
+		"nested": {"value": "must not be admitted"},
+	})
+	return event
+
+
+func _processing_event_with_message(event: ObservabilityEvent, message: String) -> ObservabilityEvent:
+	return ObservabilityEvent.new(
+			event.kind(), event.level(), message, event.source(), event.timestamp_msec(),
+			event.attributes(), event.exception(), event.engine_ticks_msec(), event.scope())
+
+
+func _service_replace_event(event: ObservabilityEvent) -> ObservabilityEvent:
+	_service_event_processor_calls += 1
+	return _processing_event_with_message(event, "processed")
+
+
+func _service_drop_event(_event: ObservabilityEvent) -> Variant:
+	return null
+
+
+func _automatic_capture_nested_message(
+		event: ObservabilityEvent,
+) -> ObservabilityEvent:
+	_automatic_nested_capture_result = _automatic_nested_service.capture_message("nested")
+	var diagnostic: ObservabilityProcessingDiagnostic? = (
+			_automatic_nested_service.last_processing_diagnostic()
+		)
+	if diagnostic != null:
+		_automatic_nested_reason = diagnostic.reason()
+	return event
+
+
+func _service_set_context_during_processing(
+		event: ObservabilityEvent,
+) -> ObservabilityEvent:
+	_state_reentry_result = _state_reentry_service.set_context(
+			"nested",
+			{"value": "must not reach provider"},
+		)
+	_state_reentry_error = _state_reentry_service.last_error()
+	var diagnostic: ObservabilityProcessingDiagnostic = (
+			_state_reentry_service.last_processing_diagnostic()
+		)
+	_state_reentry_signal = diagnostic.processing_signal()
+	_state_reentry_reason = diagnostic.reason()
+	_state_reentry_diagnostic_error = diagnostic.error()
+	return event
+
+
+func _service_reconfigure_from_event_processor(
+		event: ObservabilityEvent,
+) -> ObservabilityEvent:
+	_service_lifecycle_configure_result = _service_lifecycle_service.configure(
+			_service_lifecycle_provider,
+			_service_lifecycle_config,
+		)
+	return _processing_event_with_message(event, "stale replacement")
+
+
+func _service_reconfigure_from_metric_processor(
+		metric: ObservabilityMetric,
+) -> ObservabilityMetric:
+	_service_lifecycle_configure_result = _service_lifecycle_service.configure(
+			_service_lifecycle_provider,
+			_service_lifecycle_config,
+		)
+	return ObservabilityMetric.new(
+			metric.type(),
+			"stale.metric",
+			metric.value(),
+			metric.unit(),
+			metric.attributes(),
+		)
+
+
+func _service_replace_with_unnormalized_exception(
+		_event: ObservabilityEvent,
+) -> ObservabilityEvent:
+	return ObservabilityEvent.new(
+			p_kind = &"exception",
+			p_level = ObservabilityLevel.ERROR,
+			p_message = "replacement",
+			p_source = &"processor",
+			p_timestamp_msec = ObservabilityEvent.UNASSIGNED_TIMESTAMP,
+			p_attributes = {},
+			p_exception = ObservabilityException.new(
+					p_type_name = "ReplacementFailure",
+					p_message = "replacement",
+					p_attributes = {},
+					p_frames = [
+						ObservabilityStackFrame.new(),
+						ObservabilityStackFrame.new(
+								p_file = "res://replacement.fs",
+								p_function = "run",
+								p_line = 0,
+								p_context_line = "secret context",
+								p_pre_context = PackedStringArray(["before"]),
+								p_post_context = PackedStringArray(["after"]),
+								p_variables = {"secret": "value"},
+							),
+					],
+				),
+			p_engine_ticks_msec = ObservabilityEvent.UNASSIGNED_TIMESTAMP,
+		)
+
+
+func _expect_service_per_frame_diagnostic(
+		service: FoundryObservability,
+		processing_signal: StringName,
+) -> void:
+	var diagnostic: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
+	Expect.that(diagnostic.processing_signal()).to_equal(processing_signal)
+	Expect.that(diagnostic.reason()).to_equal(ObservabilityProcessingDiagnostic.RATE_LIMITED)
+	Expect.that(diagnostic.limit_kind()).to_equal(ObservabilityProcessingDiagnostic.PER_FRAME)
+
+
+func _expect_service_diagnostic_unchanged(
+		service: FoundryObservability,
+		prior: ObservabilityProcessingDiagnostic,
+) -> void:
+	var current: ObservabilityProcessingDiagnostic = service.last_processing_diagnostic()
+	Expect.that(current.sequence()).to_equal(prior.sequence())
+	Expect.that(current.processing_signal()).to_equal(prior.processing_signal())
+	Expect.that(current.outcome()).to_equal(prior.outcome())
+	Expect.that(current.reason()).to_equal(prior.reason())
+	Expect.that(current.limit_kind()).to_equal(prior.limit_kind())
+	Expect.that(current.error()).to_equal(prior.error())
+
+
+func _processing_service() -> FoundryObservability:
+	var service_script: Script = ResourceLoader.load(
+			"res://addons/FoundryObservability/FoundryObservability.fs",
+		) as Script
+	@warning_ignore("unsafe_method_access")
+	var candidate: Variant = service_script.new(
+			ObservabilityStartupSettings.new(),
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs",
+			Callable(self, "_service_processing_clock"),
+			Callable(self, "_service_processing_frame"),
+	)
+	@warning_ignore("unsafe_cast")
+	return candidate as FoundryObservability
+
+
+func _reconfiguring_reservation_service() -> ReconfiguringReservationService:
+	return ReconfiguringReservationService.new(
+			ObservabilityStartupSettings.new(),
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs",
+			Callable(self, "_service_processing_clock"),
+			Callable(self, "_service_processing_frame"),
+		)
+
+
+func _ordinary_generation_config(enabled: bool) -> ObservabilityConfig:
+	return ObservabilityConfig.new(
+			p_enabled = enabled,
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture_enabled = false,
+			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(),
+			p_log_limits = ObservabilitySignalLimits.new(),
+			p_metric_limits = ObservabilitySignalLimits.new(),
+		)
+
+
+func _service_processing_clock() -> int:
+	_service_processing_clock_calls += 1
+	return _service_processing_clock_msec
+
+
+func _service_processing_frame() -> int:
+	_service_processing_frame_calls += 1
+	return _service_processing_frame_index
+
+
+func _shutdown_processing_service(service: FoundryObservability) -> void:
+	service.shutdown()
+	service.free()
+
+
+func _expect_state_redaction_failure(service: FoundryObservability) -> void:
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
+	var diagnostic: ObservabilityProcessingDiagnostic? = (
+			service.last_processing_diagnostic()
+		)
+	Expect.that(diagnostic).to_not_be_null()
+	if diagnostic == null:
+		return
+	Expect.that(diagnostic.processing_signal()).to_equal(
+			ObservabilityProcessingDiagnostic.STATE,
+		)
+	Expect.that(diagnostic.outcome()).to_equal(
+			ObservabilityProcessingDiagnostic.DROPPED,
+		)
+	Expect.that(diagnostic.reason()).to_equal(
+			ObservabilityProcessingDiagnostic.REDACTION_FAILED,
+		)
+	Expect.that(diagnostic.error()).to_equal(Error.ERR_INVALID_DATA)
 
 
 func _service() -> FoundryObservability:

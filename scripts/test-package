@@ -364,6 +364,20 @@ for attachment_resource in \
 	grep -qx "$resource_path.uid" <<<"$listing" \
 		|| fail "package is missing ${attachment_resource}.fs.uid"
 done
+for processing_resource in \
+	ObservabilitySignalLimits \
+	ObservabilityRedactionRule \
+	ObservabilityRedactionPolicy \
+	ObservabilityProcessingDiagnostic \
+	ObservabilityRedactor \
+	ObservabilitySignalLimiter \
+	ObservabilityProcessingPipeline; do
+	resource_path="addons/FoundryObservability/${processing_resource}.fs"
+	grep -qx "$resource_path" <<<"$listing" \
+		|| fail "package is missing $resource_path"
+	grep -qx "$resource_path.uid" <<<"$listing" \
+		|| fail "package is missing $resource_path.uid"
+done
 grep -qx 'addons/FoundryObservability/ObservabilityFeedback.fs' <<<"$listing" \
 	|| fail "package is missing the feedback value type"
 grep -qx 'addons/FoundryObservability/ObservabilityMetric.fs' <<<"$listing" \

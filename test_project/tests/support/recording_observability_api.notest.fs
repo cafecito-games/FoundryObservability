@@ -44,6 +44,10 @@ func last_error() -> int:
 	return Error.OK
 
 
+func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?:
+	return null
+
+
 func add_attachment(_attachment: ObservabilityAttachment) -> String:
 	return "recording-attachment:1"
 

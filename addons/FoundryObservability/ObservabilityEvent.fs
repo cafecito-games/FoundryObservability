@@ -36,7 +36,7 @@ func _init(
 	_source = p_source
 	_timestamp_msec = p_timestamp_msec
 	_attributes = p_attributes.duplicate(true)
-	_exception = p_exception
+	_exception = null if p_exception == null else p_exception.duplicate()
 	_engine_ticks_msec = p_engine_ticks_msec
 	_scope = null if p_scope == null else p_scope.duplicate()
 
@@ -76,9 +76,9 @@ func attributes() -> Dictionary:
 	return _attributes.duplicate(true)
 
 
-## Returns the optional exception payload associated with the event.
+## Returns an isolated copy of the optional exception payload associated with the event.
 func exception() -> ObservabilityException?:
-	return _exception
+	return null if _exception == null else _exception.duplicate()
 
 
 ## Returns an isolated copy of the optional event-local scope.

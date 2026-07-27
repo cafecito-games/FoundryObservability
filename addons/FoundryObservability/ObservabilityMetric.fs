@@ -4,11 +4,11 @@ namespace foundry.observability
 class_name ObservabilityMetric
 extends RefCounted
 
-var _type: int = ObservabilityMetricType.COUNTER
-var _name: String = ""
-var _value: float = 0.0
-var _unit: String = ""
-var _attributes: Dictionary = {}
+final var _type: int
+final var _name: String
+final var _value: float
+final var _unit: String
+final var _attributes: Dictionary
 
 
 ## Creates a metric with defensively copied attributes.
