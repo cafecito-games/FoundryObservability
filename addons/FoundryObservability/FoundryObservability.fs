@@ -1,6 +1,8 @@
 @autoload
 namespace foundry.observability
 
+import foundry.observability.runtime
+
 ## Autoload entry point for the provider-neutral game observability API.
 class_name FoundryObservability extends Node
 uses FoundryObservabilityApi
@@ -17,8 +19,7 @@ var _config: ObservabilityConfig
 var _last_error: int = Error.OK
 var _shutdown: bool = false
 var _shutdown_requested: bool = false
-var _processing_clock: Callable
-var _processing_frame: Callable
+var _runtime: ObservabilityRuntime
 var _pipeline: ObservabilityProcessingPipeline
 var _pipeline_mutex: Mutex = Mutex.new()
 var _provider_call_count: int = 0
@@ -43,13 +44,11 @@ const MAX_METRIC_ATTRIBUTE_KEY_LENGTH: int = 200
 func _init(
 	startup_settings: ObservabilityStartupSettings? = null,
 	startup_provider_path: String = _SENTRY_PROVIDER_PATH,
-	processing_clock: Callable = Callable(),
-	processing_frame: Callable = Callable(),
+	runtime: ObservabilityRuntime? = null,
 ) -> void:
 	_provider = NullObservabilityProvider.new()
 	_config = ObservabilityConfig.new(p_enabled = false)
-	_processing_clock = processing_clock
-	_processing_frame = processing_frame
+	_runtime = runtime if runtime != null else SystemObservabilityRuntime.new()
 	_pipeline = _new_disabled_pipeline()
 	_startup_provider_path = startup_provider_path
 	if startup_settings == null:
@@ -59,10 +58,7 @@ func _init(
 
 
 func _new_disabled_pipeline() -> ObservabilityProcessingPipeline:
-	var pipeline: ObservabilityProcessingPipeline = ObservabilityProcessingPipeline.new(
-			_processing_clock,
-			_processing_frame,
-	)
+	var pipeline: ObservabilityProcessingPipeline = ObservabilityProcessingPipeline.new(_runtime)
 	pipeline.configure(ObservabilityConfig.new(p_enabled = false))
 	return pipeline
 
@@ -217,10 +213,7 @@ func configure(provider: ObservabilityProvider, config: ObservabilityConfig? = n
 	var candidate_config: ObservabilityConfig = config
 	if candidate_config == null:
 		candidate_config = ObservabilityConfig.new(p_enabled = false)
-	var candidate_pipeline: ObservabilityProcessingPipeline = ObservabilityProcessingPipeline.new(
-			_processing_clock,
-			_processing_frame,
-	)
+	var candidate_pipeline: ObservabilityProcessingPipeline = ObservabilityProcessingPipeline.new(_runtime)
 	var pipeline_result: int = _configure_candidate_pipeline(
 			candidate_pipeline,
 			candidate_config,
@@ -401,7 +394,7 @@ func _record_state_processing_rejection(
 		else Error.ERR_INVALID_DATA
 	)
 	var reason: StringName = StringName(str(result.get("reason", &"")))
-	var owner_id: int = OS.get_thread_caller_id()
+	var owner_id: int = _runtime.caller_id()
 	_pipeline_mutex.lock()
 	if not _configuration_in_progress \
 			and generation == _configuration_generation \
@@ -416,7 +409,7 @@ func _record_state_processing_rejection(
 
 
 func _begin_processing_failure_scope() -> void:
-	var owner_id: int = OS.get_thread_caller_id()
+	var owner_id: int = _runtime.caller_id()
 	_pipeline_mutex.lock()
 	var depth: int = _processing_failure_depth(owner_id) + 1
 	_processing_failure_depths[owner_id] = depth
@@ -425,7 +418,7 @@ func _begin_processing_failure_scope() -> void:
 
 
 func _take_processing_failure() -> int:
-	var owner_id: int = OS.get_thread_caller_id()
+	var owner_id: int = _runtime.caller_id()
 	_pipeline_mutex.lock()
 	var depth: int = _processing_failure_depth(owner_id)
 	var key: String = _processing_failure_key(owner_id, depth)
@@ -591,8 +584,8 @@ func capture_event(event: ObservabilityEvent) -> String:
 	var generation: int = state["generation"]
 	if not config.enabled:
 		return ""
-	var capture_engine_ticks_msec: int = Time.get_ticks_msec()
-	var capture_unix_msec: int = floori(Time.get_unix_time_from_system() * 1000.0)
+	var capture_engine_ticks_msec: int = _runtime.monotonic_time_msec()
+	var capture_unix_msec: int = _runtime.unix_time_msec()
 	var normalized: ObservabilityEvent = _resolved_event_timestamp(
 			event,
 			capture_unix_msec,
@@ -1363,7 +1356,7 @@ func _finish_provider_call(error: int) -> void:
 
 
 func _record_capture_result_locked(error: int) -> void:
-	var automatic_owner: bool = _automatic_capture_owner == OS.get_thread_caller_id()
+	var automatic_owner: bool = _automatic_capture_owner == _runtime.caller_id()
 	if automatic_owner and error != Error.OK and _automatic_capture_failure == Error.OK:
 		_automatic_capture_failure = error
 	if automatic_owner and _automatic_capture_failure != Error.OK:
@@ -1381,7 +1374,7 @@ func try_begin_automatic_capture() -> bool:
 		_pipeline_mutex.unlock()
 		return false
 	_provider_call_count += 1
-	_automatic_capture_owner = OS.get_thread_caller_id()
+	_automatic_capture_owner = _runtime.caller_id()
 	_automatic_capture_failure = Error.OK
 	_pipeline_mutex.unlock()
 	return true
@@ -1413,7 +1406,7 @@ func _refresh_automatic_logger() -> void:
 	if _automatic_logger != null:
 		_automatic_logger.reconfigure(_config)
 		return
-	_automatic_logger = AutomaticObservabilityLogger.new(self, _config)
+	_automatic_logger = AutomaticObservabilityLogger.new(self, _config, _runtime)
 	OS.add_logger(_automatic_logger)
 
 

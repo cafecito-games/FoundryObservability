@@ -1,5 +1,7 @@
 namespace foundry.observability
 
+import foundry.observability.runtime
+
 ## Coordinates provider-neutral processing before provider delivery.
 class_name ObservabilityProcessingPipeline
 extends RefCounted
@@ -11,9 +13,7 @@ const _MAX_METRIC_ATTRIBUTE_KEY_LENGTH: int = 200
 ## Caps payload-free provider completion tokens retained between processing and delivery.
 const MAX_PENDING_PROVIDER_RESULTS: int = 1024
 
-var _clock: Callable
-var _frame: Callable
-var _owner: Callable
+var _runtime: ObservabilityRuntime
 var _redactor: ObservabilityRedactor = ObservabilityRedactor.new()
 var _event_processors: Array[Callable] = []
 var _log_processors: Array[Callable] = []
@@ -36,15 +36,10 @@ var _last_diagnostic: ObservabilityProcessingDiagnostic?
 var _state_mutex: Mutex = Mutex.new()
 
 
-## Creates a coordinator with optional deterministic admission suppliers.
-func _init(
-		clock: Callable = Callable(),
-		frame: Callable = Callable(),
-		owner: Callable = Callable(),
-) -> void:
-	_clock = clock if clock.is_valid() else func() -> int: return Time.get_ticks_msec()
-	_frame = frame if frame.is_valid() else func() -> int: return Engine.get_process_frames()
-	_owner = owner if owner.is_valid() else func() -> int: return OS.get_thread_caller_id()
+## Creates a coordinator with a shared observability runtime.
+func _init(runtime: ObservabilityRuntime) -> void:
+	assert(runtime != null, "ObservabilityProcessingPipeline requires a runtime.")
+	_runtime = runtime
 
 
 ## Atomically replaces all processing state after candidate validation succeeds.
@@ -409,8 +404,6 @@ func _reserve(p_signal: StringName, owner_id: int) -> Dictionary:
 		"metric_filter": _metric_filter,
 		"limiter": limiter,
 		"limiter_mutex": limiter_mutex,
-		"clock": _clock,
-		"frame": _frame,
 	}
 	_state_mutex.unlock()
 	return snapshot
@@ -547,12 +540,8 @@ func _admit(snapshot: Dictionary, identity: String) -> Dictionary:
 	var limiter: ObservabilitySignalLimiter = snapshot["limiter"] as ObservabilitySignalLimiter
 	@warning_ignore("unsafe_cast")
 	var limiter_mutex: Mutex = snapshot["limiter_mutex"] as Mutex
-	@warning_ignore("unsafe_cast")
-	var clock: Callable = snapshot["clock"] as Callable
-	@warning_ignore("unsafe_cast")
-	var frame: Callable = snapshot["frame"] as Callable
-	var now_msec: int = _now_msec(clock)
-	var frame_index: int = _frame_index(frame)
+	var now_msec: int = _now_msec()
+	var frame_index: int = _frame_index()
 	limiter_mutex.lock()
 	var admission: Dictionary = limiter.admit(identity, now_msec, frame_index)
 	limiter_mutex.unlock()
@@ -744,25 +733,16 @@ func _rule_index(redacted: Dictionary) -> int:
 	return -1
 
 
-func _now_msec(clock: Callable) -> int:
-	if not clock.is_valid():
-		return 0
-	var value: Variant = clock.call()
-	return value if value is int else 0
+func _now_msec() -> int:
+	return _runtime.monotonic_time_msec()
 
 
-func _frame_index(frame: Callable) -> int:
-	if not frame.is_valid():
-		return 0
-	var value: Variant = frame.call()
-	return value if value is int else 0
+func _frame_index() -> int:
+	return _runtime.process_frame()
 
 
 func _owner_id() -> int:
-	if not _owner.is_valid():
-		return 0
-	var value: Variant = _owner.call()
-	return value if value is int else 0
+	return _runtime.caller_id()
 
 
 func _copy_processors(source: Array[Callable]) -> Array[Callable]:

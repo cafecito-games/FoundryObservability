@@ -256,22 +256,28 @@ for pipeline_member in \
 		|| fail "processing pipeline is missing required API: $pipeline_member"
 done
 for pipeline_state in _redactor _event_processors _log_processors _metric_processors \
-	_metric_filter _owner _event_limiter _log_limiter _metric_limiter _processing_depth \
+	_metric_filter _runtime _event_limiter _log_limiter _metric_limiter _processing_depth \
 	_event_limiter_mutex _log_limiter_mutex _metric_limiter_mutex \
 	_config_generation _operation_sequence _active_operations _pending_provider_results \
 	_recursive_drops _diagnostic_sequence _last_diagnostic _state_mutex; do
 	rg -q "^var ${pipeline_state}:" "$addon/ObservabilityProcessingPipeline.fs" \
 		|| fail "processing pipeline is missing state: ${pipeline_state}"
 done
-for owner_seam_contract in \
-	'func _init(' \
-	'frame: Callable = Callable(),' \
-	'owner: Callable = Callable(),'; do
-	rg -Fq "$owner_seam_contract" "$addon/ObservabilityProcessingPipeline.fs" \
-		|| fail "processing pipeline constructor must expose the deterministic owner seam"
-done
-rg -Fq 'OS.get_thread_caller_id()' "$addon/ObservabilityProcessingPipeline.fs" \
-	|| fail "processing pipeline must default ownership to the current caller thread"
+if rg -n '\b(_processing_clock|_processing_frame|_clock: Callable|_frame: Callable|_owner: Callable)\b' \
+	"$addon/FoundryObservability.fs" \
+	"$addon/AutomaticObservabilityLogger.fs" \
+	"$addon/ObservabilityProcessingPipeline.fs"; then
+	fail "core runtime access must use ObservabilityRuntime"
+fi
+if rg -n '_frame_supplier' "$addon/AutomaticObservabilityLogger.fs"; then
+	fail "automatic logger retains the unused frame supplier"
+fi
+if rg -n '\b(Time\.get_ticks_msec|Time\.get_unix_time_from_system|Engine\.get_process_frames|OS\.get_thread_caller_id|OS\.get_main_thread_id)\(' \
+	"$addon/FoundryObservability.fs" \
+	"$addon/AutomaticObservabilityLogger.fs" \
+	"$addon/ObservabilityProcessingPipeline.fs"; then
+	fail "core runtime consumers must not call engine runtime facts directly"
+fi
 rg -Fq '"operation_token"' "$addon/ObservabilityProcessingPipeline.fs" \
 	|| fail "processing pipeline accepted results must expose an opaque operation token"
 rg -q '^const MAX_PENDING_PROVIDER_RESULTS: int = 1024$' \
