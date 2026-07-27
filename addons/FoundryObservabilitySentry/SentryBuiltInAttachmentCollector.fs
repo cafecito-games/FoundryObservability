@@ -22,8 +22,8 @@ func _init(p_probe: Object) -> void:
 func collect(event: ObservabilityEvent?, config: ObservabilityConfig) -> Dictionary:
 	var attachments: Array[Dictionary] = []
 	var failures: Array[ObservabilityAttachmentFailure] = []
-	if config.max_attachment_bytes == 0:
-		if config.attach_game_log:
+	if config.attachments().max_bytes() == 0:
+		if config.attachments().attach_game_log():
 			var game_log_path: String = str(_probe.call("game_log_path"))
 			var game_log_filename: String = (
 					game_log_path.get_file()
@@ -36,14 +36,14 @@ func collect(event: ObservabilityEvent?, config: ObservabilityConfig) -> Diction
 					ObservabilityAttachmentFailure.OVERSIZED,
 					Error.FAILED,
 				))
-		if event != null and config.attach_screenshot:
+		if event != null and config.attachments().attach_screenshot():
 			failures.append(_failure(
 					"built-in:screenshot",
 					"screenshot.png",
 					ObservabilityAttachmentFailure.OVERSIZED,
 					Error.FAILED,
 				))
-		if event != null and config.attach_scene_tree:
+		if event != null and config.attachments().attach_scene_tree():
 			failures.append(_failure(
 					"built-in:scene-tree",
 					"view-hierarchy.json",
@@ -54,17 +54,17 @@ func collect(event: ObservabilityEvent?, config: ObservabilityConfig) -> Diction
 			"attachments": attachments,
 			"failures": failures,
 		}
-	if config.attach_game_log:
+	if config.attachments().attach_game_log():
 		_collect_game_log(
 				event != null,
-				config.max_attachment_bytes,
+				config.attachments().max_bytes(),
 				attachments,
 				failures,
 			)
-	if event != null and config.attach_screenshot:
-		_collect_screenshot(config.max_attachment_bytes, attachments, failures)
-	if event != null and config.attach_scene_tree:
-		_collect_scene_tree(config.max_attachment_bytes, attachments, failures)
+	if event != null and config.attachments().attach_screenshot():
+		_collect_screenshot(config.attachments().max_bytes(), attachments, failures)
+	if event != null and config.attachments().attach_scene_tree():
+		_collect_scene_tree(config.attachments().max_bytes(), attachments, failures)
 	return {
 		"attachments": attachments,
 		"failures": failures,

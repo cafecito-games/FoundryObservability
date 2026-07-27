@@ -171,7 +171,7 @@ class RecordingScopeProvider extends RefCounted:
 		return _enabled and not _shutdown
 
 	func configure(config: ObservabilityConfig) -> int:
-		_enabled = config.enabled
+		_enabled = config.enabled()
 		_shutdown = false
 		return Error.OK
 
@@ -511,10 +511,12 @@ func test_global_scope_operations_delegate_and_clear_prior_errors() -> void:
 	var service: FoundryObservability = _service()
 	var provider := RecordingScopeProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.set_tag("", "invalid")).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
@@ -556,10 +558,12 @@ func test_global_scope_operations_validate_before_calling_provider() -> void:
 	var service: FoundryObservability = _service()
 	var provider := RecordingScopeProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.set_tag(" padded", "iad")).to_be_false()
 	Expect.that(service.remove_tag("bad\nname")).to_be_false()
@@ -577,10 +581,12 @@ func test_global_scope_requires_complete_capability_without_blocking_events() ->
 	var service: FoundryObservability = _service()
 	var provider := ScopelessObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.set_tag(" invalid", "iad")).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
@@ -595,10 +601,12 @@ func test_partial_scope_capability_is_unavailable_without_blocking_unscoped_even
 	var service: FoundryObservability = _service()
 	var provider := PartialScopeObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_message("unscoped")).to_equal("partial-scope:1")
 	Expect.that(provider.capture_count).to_equal(1)
@@ -625,10 +633,12 @@ func test_global_scope_provider_false_and_non_boolean_results_fail() -> void:
 	var service: FoundryObservability = _service()
 	var rejecting := RecordingScopeProvider.new()
 	Expect.that(service.configure(rejecting, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 	rejecting.operation_result = false
 	Expect.that(service.set_tag("region", "iad")).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.FAILED)
@@ -637,10 +647,12 @@ func test_global_scope_provider_false_and_non_boolean_results_fail() -> void:
 	var non_boolean_service: FoundryObservability = _service()
 	var non_boolean := NonBooleanScopeProvider.new()
 	Expect.that(non_boolean_service.configure(non_boolean, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(non_boolean_service.set_tag("region", "iad")).to_be_false()
 	Expect.that(non_boolean_service.last_error()).to_equal(Error.FAILED)
 	non_boolean_service.shutdown()
@@ -649,12 +661,16 @@ func test_global_scope_provider_false_and_non_boolean_results_fail() -> void:
 func test_disabled_scope_operations_do_not_call_provider() -> void:
 	var service: FoundryObservability = _service()
 	var provider := RecordingScopeProvider.new()
-	Expect.that(service.configure(provider, ObservabilityConfig.new(
+	var disabled_config := ObservabilityConfig.new(
+		p_enabled = false,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
 			p_enabled = false,
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+		),
+	)
+	Expect.that(disabled_config.enabled()).to_be_false()
+	Expect.that(service.configure(provider, disabled_config)).to_equal(Error.OK)
 
 	Expect.that(service.set_tag("region", "iad")).to_be_false()
 	Expect.that(service.remove_tag("region")).to_be_false()
@@ -674,10 +690,12 @@ func test_scopeless_provider_rejects_nonempty_event_scope_but_accepts_empty_scop
 	var service: FoundryObservability = _service()
 	var provider := ScopelessObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 	var nonempty_scope := ObservabilityScope.new()
 	Expect.that(nonempty_scope.set_tag("region", "iad")).to_be_true()
 
@@ -702,10 +720,12 @@ func test_convenience_capture_methods_append_and_preserve_event_scope() -> void:
 	var service: FoundryObservability = _service()
 	var provider := RecordingScopeProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 	var scope := ObservabilityScope.new()
 	Expect.that(scope.set_tag("region", "iad")).to_be_true()
 
@@ -730,10 +750,12 @@ func test_timestamp_and_exception_normalization_preserve_scope_snapshots() -> vo
 	var service: FoundryObservability = _service()
 	var provider := RecordingScopeProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 	var scope := ObservabilityScope.new()
 	Expect.that(scope.set_context("match", {"id": "m-1"})).to_be_true()
 
@@ -762,10 +784,12 @@ func test_clear_breadcrumbs_reports_capability_results() -> void:
 	var service: FoundryObservability = _service()
 	var provider := RecordingScopeProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.clear_breadcrumbs()).to_be_true()
 	Expect.that(service.last_error()).to_equal(Error.OK)
@@ -780,7 +804,9 @@ func test_clear_breadcrumbs_reports_capability_results() -> void:
 			ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {},
-				p_automatic_capture_enabled = false,
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
 			),
 		)).to_equal(Error.OK)
 	Expect.that(missing_service.clear_breadcrumbs()).to_be_false()
@@ -793,7 +819,9 @@ func test_clear_breadcrumbs_reports_capability_results() -> void:
 			ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {},
-				p_automatic_capture_enabled = false,
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
 			),
 		)).to_equal(Error.OK)
 	Expect.that(non_boolean_service.clear_breadcrumbs()).to_be_false()
@@ -872,12 +900,20 @@ func test_event_snapshots_original_exception_before_processing_and_capture() -> 
 	var provider := MemoryObservabilityProvider.new()
 	_processor_exception_snapshot = {}
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_record_exception_snapshot")],
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_record_exception_snapshot") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_event(event)).to_equal("memory:1")
 	Expect.that(_processor_exception_snapshot).to_equal(expected)
 	Expect.that(_exception_snapshot(provider.events()[0])).to_equal(expected)
@@ -1007,8 +1043,8 @@ func test_stack_frame_capture_defaults_keep_context_and_remove_variables() -> vo
 			p_variables = {"secret": "do not capture"},
 		)
 
-	Expect.that(config.stack_trace_source_context_enabled).to_be_true()
-	Expect.that(config.stack_trace_variables_enabled).to_be_false()
+	Expect.that(config.stack_traces().source_context_enabled()).to_be_true()
+	Expect.that(config.stack_traces().variables_enabled()).to_be_false()
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	Expect.that(service.capture_event(ObservabilityEvent.new(
 			p_kind = &"exception",
@@ -1041,10 +1077,12 @@ func test_stack_frame_capture_can_disable_context_and_enable_variables() -> void
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_source_context_enabled = false,
-			p_stack_trace_variables_enabled = true,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_stack_traces = ObservabilityStackTraceConfig.new(
+			p_source_context_enabled = false,
+			p_variables_enabled = true,
+		),
 	)
 	var frame := ObservabilityStackFrame.new(
 			p_function = "attack",
@@ -1066,8 +1104,8 @@ func test_stack_frame_capture_can_disable_context_and_enable_variables() -> void
 			},
 		)
 
-	Expect.that(config.stack_trace_source_context_enabled).to_be_false()
-	Expect.that(config.stack_trace_variables_enabled).to_be_true()
+	Expect.that(config.stack_traces().source_context_enabled()).to_be_false()
+	Expect.that(config.stack_traces().variables_enabled()).to_be_true()
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
@@ -1174,10 +1212,12 @@ func test_stack_frame_capture_drops_non_identity_frames_and_keeps_partial_identi
 			],
 	)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_source_context_enabled = true,
-			p_stack_trace_variables_enabled = true,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_stack_traces = ObservabilityStackTraceConfig.new(
+			p_source_context_enabled = true,
+			p_variables_enabled = true,
+		),
 	)
 
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
@@ -1198,10 +1238,12 @@ func test_stack_frame_capture_uses_bounded_internal_variables_and_skips_dropped_
 	var dropped_frame := VariableCaptureProbeFrame.new("", {"stored": true})
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_variables_enabled = true,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+					p_variables_enabled = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1263,10 +1305,12 @@ func test_stack_frame_capture_normalizes_string_name_variable_keys() -> void:
 		)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_variables_enabled = true,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+					p_variables_enabled = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1306,10 +1350,12 @@ func test_stack_frame_capture_bounds_variable_container_depth() -> void:
 		)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_variables_enabled = true,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+					p_variables_enabled = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1344,10 +1390,12 @@ func test_stack_frame_capture_bounds_total_variable_items() -> void:
 		)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_variables_enabled = true,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+					p_variables_enabled = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1381,10 +1429,12 @@ func test_stack_frame_construction_omits_cyclic_array_references() -> void:
 	Expect.that(frame.variables()).to_equal({"cycle": [], "finite": 7})
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_variables_enabled = true,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+					p_variables_enabled = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1420,10 +1470,12 @@ func test_stack_frame_construction_omits_cyclic_dictionary_references() -> void:
 	})
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_variables_enabled = true,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+					p_variables_enabled = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1470,10 +1522,12 @@ func test_stack_frame_construction_preserves_repeated_containers_as_isolated_cop
 	})
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_variables_enabled = true,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+					p_variables_enabled = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1503,10 +1557,12 @@ func test_stack_frame_capture_preserves_valid_repeat_after_unsupported_key() -> 
 	)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_stack_trace_variables_enabled = true,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+					p_variables_enabled = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1594,18 +1650,18 @@ func test_config_copies_attributes_and_options() -> void:
 	var attributes := {"build": 42}
 	var options := {"provider_key": "value"}
 	var config := ObservabilityConfig.new(
-			p_enabled = true,
-			p_environment = "production",
-			p_release = "1.2.3",
-			p_dist = "arm64",
-			p_global_attributes = attributes,
-			p_provider_options = options,
-		)
+		p_enabled = true,
+		p_environment = "production",
+		p_release = "1.2.3",
+		p_dist = "arm64",
+		p_global_attributes = attributes,
+		p_provider_options = options,
+	)
 	attributes["build"] = 99
 	options["provider_key"] = "changed"
 
-	Expect.that(config.enabled).to_be_true()
-	Expect.that(config.environment).to_equal("production")
+	Expect.that(config.enabled()).to_be_true()
+	Expect.that(config.environment()).to_equal("production")
 	Expect.that(config.global_attributes()).to_equal({"build": 42})
 	Expect.that(config.provider_options()).to_equal({"provider_key": "value"})
 
@@ -3041,6 +3097,68 @@ func test_focused_configuration_defaults_match_current_behavior() -> void:
 	Expect.that(mobile.android_anr_attach_thread_dump()).to_be_false()
 
 
+func test_root_configuration_is_an_immutable_aggregate() -> void:
+	var processing := ObservabilityProcessingConfig.new(
+		p_metrics_enabled = false,
+		p_event_processors = [],
+		p_log_processors = [],
+		p_metric_processors = [],
+	)
+	var automatic := ObservabilityAutomaticCaptureConfig.new(p_max_breadcrumbs = 7)
+	var attachments := ObservabilityAttachmentConfig.new(p_attach_game_log = true)
+	var stack_traces := ObservabilityStackTraceConfig.new(p_variables_enabled = true)
+	var mobile := ObservabilityMobileDiagnosticsConfig.new(
+		p_android_anr_timeout_msec = 6400,
+	)
+	var config := ObservabilityConfig.new(
+		p_enabled = true,
+		p_environment = "production",
+		p_release = "game@1",
+		p_dist = "arm64",
+		p_global_attributes = {"region": "iad"},
+		p_provider_options = {"dsn": "test"},
+		p_processing = processing,
+		p_automatic_capture = automatic,
+		p_attachments = attachments,
+		p_stack_traces = stack_traces,
+		p_mobile_diagnostics = mobile,
+	)
+
+	Expect.that(config.processing().metrics_enabled()).to_be_false()
+	Expect.that(config.automatic_capture().max_breadcrumbs()).to_equal(7)
+	Expect.that(config.attachments().attach_game_log()).to_be_true()
+	Expect.that(config.stack_traces().variables_enabled()).to_be_true()
+	Expect.that(config.mobile_diagnostics().android_anr_timeout_msec()).to_equal(6400)
+	Expect.that(is_same(config.processing(), processing)).to_be_true()
+	Expect.that(is_same(config.automatic_capture(), automatic)).to_be_true()
+	Expect.that(is_same(config.attachments(), attachments)).to_be_true()
+	Expect.that(is_same(config.stack_traces(), stack_traces)).to_be_true()
+	Expect.that(is_same(config.mobile_diagnostics(), mobile)).to_be_true()
+	Expect.that(config.global_attributes()).to_equal({"region": "iad"})
+	Expect.that(config.provider_options()).to_equal({"dsn": "test"})
+
+
+func test_root_configuration_isolates_dictionaries_and_retains_focused_identity() -> void:
+	var attributes := {"region": "iad", "nested": {"attempt": 1}}
+	var options := {"dsn": "test", "nested": {"retries": 2}}
+	var processing := ObservabilityProcessingConfig.new()
+	var config := ObservabilityConfig.new(
+		p_global_attributes = attributes,
+		p_provider_options = options,
+		p_processing = processing,
+	)
+	attributes["nested"]["attempt"] = 9
+	options["nested"]["retries"] = 8
+	var exposed_attributes := config.global_attributes()
+	var exposed_options := config.provider_options()
+	exposed_attributes["nested"]["attempt"] = 7
+	exposed_options["nested"]["retries"] = 6
+
+	Expect.that(config.global_attributes()).to_equal({"region": "iad", "nested": {"attempt": 1}})
+	Expect.that(config.provider_options()).to_equal({"dsn": "test", "nested": {"retries": 2}})
+	Expect.that(is_same(config.processing(), processing)).to_be_true()
+
+
 func test_processing_configuration_uses_exact_callable_types_and_copies_arrays() -> void:
 	var event_processors: Array[Callable[[ObservabilityEvent], ObservabilityEvent?]] = [
 			func(event: ObservabilityEvent) -> ObservabilityEvent?: return event]
@@ -3049,18 +3167,18 @@ func test_processing_configuration_uses_exact_callable_types_and_copies_arrays()
 	var metric_filter: Callable[[ObservabilityMetric], bool]? = (
 			func(_metric: ObservabilityMetric) -> bool: return true
 		)
-	var config := ObservabilityProcessingConfig.new(
-			p_event_processors = event_processors,
-			p_log_processors = [],
-			p_metric_processors = metric_processors,
-			p_metric_filter = metric_filter,
-		)
+	var processing := ObservabilityProcessingConfig.new(
+		p_event_processors = event_processors,
+		p_log_processors = [],
+		p_metric_processors = metric_processors,
+		p_metric_filter = metric_filter,
+	)
 
 	event_processors.clear()
 	metric_processors.clear()
-	Expect.that(config.event_processors()).to_have_size(1)
-	Expect.that(config.metric_processors()).to_have_size(1)
-	Expect.that(config.metric_filter()).to_not_equal(null)
+	Expect.that(processing.event_processors()).to_have_size(1)
+	Expect.that(processing.metric_processors()).to_have_size(1)
+	Expect.that(processing.metric_filter()).to_not_equal(null)
 
 
 func test_focused_configurations_normalize_and_defensively_copy_values() -> void:
@@ -3079,20 +3197,20 @@ func test_focused_configurations_normalize_and_defensively_copy_values() -> void
 			ObservabilityRedactionRule.sensitive_key("authorization"),
 		])
 	var processing := ObservabilityProcessingConfig.new(
-			p_log_rate_limit_per_second = -1,
-			p_metric_filter = metric_filter,
-			p_event_processors = event_processors,
-			p_log_processors = log_processors,
-			p_metric_processors = metric_processors,
-			p_event_limits = limits,
-			p_log_limits = limits,
-			p_metric_limits = limits,
-			p_redaction_policy = policy,
-		)
+		p_log_rate_limit_per_second = -1,
+		p_metric_filter = metric_filter,
+		p_event_processors = event_processors,
+		p_log_processors = log_processors,
+		p_metric_processors = metric_processors,
+		p_event_limits = limits,
+		p_log_limits = limits,
+		p_metric_limits = limits,
+		p_redaction_policy = policy,
+	)
 	var automatic := ObservabilityAutomaticCaptureConfig.new(
-			p_max_breadcrumbs = -1,
-			p_message_filter_prefixes = prefixes,
-		)
+		p_max_breadcrumbs = -1,
+		p_message_filter_prefixes = prefixes,
+	)
 	var attachments := ObservabilityAttachmentConfig.new(-1)
 	var mobile := ObservabilityMobileDiagnosticsConfig.new(true, 1, true, 2)
 
@@ -3151,123 +3269,6 @@ func test_focused_configurations_normalize_and_defensively_copy_values() -> void
 	Expect.that(log_result).to_equal(event)
 	Expect.that(metric_result).to_equal(metric)
 	Expect.that(filter_result).to_be_true()
-
-
-func test_processing_config_defaults_and_defensively_copies_inputs() -> void:
-	var processors: Array[Callable] = [Callable()]
-	var limits := ObservabilitySignalLimits.new(8, 9, 10, 11)
-	var log_limits := ObservabilitySignalLimits.new(12, 13, 14, 15)
-	var metric_limits := ObservabilitySignalLimits.new(16, 17, 18, 19)
-	var policy := ObservabilityRedactionPolicy.new([
-			ObservabilityRedactionRule.sensitive_key("authorization"),
-	])
-	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_sample_rate = -0.5,
-			p_log_sample_rate = 2.0,
-			p_event_processors = processors,
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_event_limits = limits,
-			p_log_limits = log_limits,
-			p_metric_limits = metric_limits,
-			p_redaction_policy = policy,
-	)
-	processors.clear()
-	var exposed_processors: Array[Callable] = config.event_processors()
-	exposed_processors.clear()
-	var exposed_policy: ObservabilityRedactionPolicy = config.redaction_policy()
-	var exposed_rules: Array[ObservabilityRedactionRule] = exposed_policy.rules()
-	exposed_rules.clear()
-
-	Expect.that(config.event_sample_rate).to_be_close_to(-0.5)
-	Expect.that(config.log_sample_rate).to_be_close_to(2.0)
-	Expect.that(config.metric_sample_rate).to_be_close_to(1.0)
-	Expect.that(config.event_processors()).to_have_size(1)
-	Expect.that(config.log_processors()).to_have_size(0)
-	Expect.that(config.metric_processors()).to_have_size(0)
-	Expect.that(config.event_limits().per_frame()).to_equal(8)
-	Expect.that(config.log_limits()).to_not_equal(log_limits)
-	Expect.that(config.log_limits().per_frame()).to_equal(12)
-	Expect.that(config.metric_limits()).to_not_equal(metric_limits)
-	Expect.that(config.metric_limits().window_msec()).to_equal(19)
-	Expect.that(config.redaction_policy().rules()).to_have_size(1)
-
-
-func test_processing_config_default_and_legacy_event_limits() -> void:
-	var defaults := ObservabilityConfig.new()
-	var legacy := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_automatic_events_per_frame = -1,
-			p_automatic_repeated_error_window_msec = 2000,
-			p_automatic_event_throttle_count = 30,
-			p_automatic_event_throttle_window_msec = 4000,
-	)
-
-	Expect.that(defaults.event_sample_rate).to_be_close_to(1.0)
-	Expect.that(defaults.log_sample_rate).to_be_close_to(1.0)
-	Expect.that(defaults.event_processors()).to_have_size(0)
-	Expect.that(defaults.log_processors()).to_have_size(0)
-	Expect.that(defaults.metric_processors()).to_have_size(0)
-	Expect.that(defaults.event_limits().per_frame()).to_equal(5)
-	Expect.that(defaults.event_limits().repeated_window_msec()).to_equal(1000)
-	Expect.that(defaults.event_limits().window_count()).to_equal(20)
-	Expect.that(defaults.event_limits().window_msec()).to_equal(10000)
-	Expect.that(defaults.log_limits()).to_not_equal(defaults.log_limits())
-	Expect.that(defaults.metric_limits()).to_not_equal(defaults.metric_limits())
-	Expect.that(defaults.log_limits().per_frame()).to_equal(0)
-	Expect.that(defaults.log_limits().repeated_window_msec()).to_equal(0)
-	Expect.that(defaults.log_limits().window_count()).to_equal(0)
-	Expect.that(defaults.log_limits().window_msec()).to_equal(0)
-	Expect.that(defaults.metric_limits().per_frame()).to_equal(0)
-	Expect.that(defaults.metric_limits().repeated_window_msec()).to_equal(0)
-	Expect.that(defaults.metric_limits().window_count()).to_equal(0)
-	Expect.that(defaults.metric_limits().window_msec()).to_equal(0)
-	Expect.that(defaults.redaction_policy().rules()).to_have_size(0)
-	Expect.that(legacy.event_limits().per_frame()).to_equal(0)
-	Expect.that(legacy.event_limits().repeated_window_msec()).to_equal(2000)
-	Expect.that(legacy.event_limits().window_count()).to_equal(30)
-	Expect.that(legacy.event_limits().window_msec()).to_equal(4000)
-
-
-func test_processing_config_derives_implicit_event_limits_from_current_legacy_fields() -> void:
-	var config := ObservabilityConfig.new()
-	config.automatic_events_per_frame = 11
-	config.automatic_repeated_error_window_msec = 12
-	config.automatic_event_throttle_count = 13
-	config.automatic_event_throttle_window_msec = 14
-
-	Expect.that(config.event_limits().per_frame()).to_equal(11)
-	Expect.that(config.event_limits().repeated_window_msec()).to_equal(12)
-	Expect.that(config.event_limits().window_count()).to_equal(13)
-	Expect.that(config.event_limits().window_msec()).to_equal(14)
-
-
-func test_processing_config_keeps_explicit_event_limits_after_legacy_mutation() -> void:
-	var limits := ObservabilitySignalLimits.new(21, 22, 23, 24)
-	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_event_limits = limits,
-	)
-	config.automatic_events_per_frame = 31
-	config.automatic_repeated_error_window_msec = 32
-	config.automatic_event_throttle_count = 33
-	config.automatic_event_throttle_window_msec = 34
-
-	Expect.that(config.event_limits()).to_not_equal(limits)
-	Expect.that(config.event_limits().per_frame()).to_equal(21)
-	Expect.that(config.event_limits().repeated_window_msec()).to_equal(22)
-	Expect.that(config.event_limits().window_count()).to_equal(23)
-	Expect.that(config.event_limits().window_msec()).to_equal(24)
 
 
 func test_byte_attachment_defensively_copies_data_and_preserves_metadata() -> void:
@@ -3382,174 +3383,89 @@ func test_attachment_failure_preserves_diagnostic_fields() -> void:
 	Expect.that(copied_failure.error()).to_equal(Error.ERR_FILE_NOT_FOUND)
 
 
-func test_automatic_capture_masks_and_config_defaults() -> void:
-	var config := ObservabilityConfig.new()
-
-	Expect.that(config.max_breadcrumbs).to_equal(100)
-	Expect.that(config.max_attachment_bytes).to_equal(20 * 1024 * 1024)
-	Expect.that(config.attach_game_log).to_be_false()
-	Expect.that(config.attach_screenshot).to_be_false()
-	Expect.that(config.attach_scene_tree).to_be_false()
-	Expect.that(config.automatic_capture_enabled).to_be_true()
-	Expect.that(config.automatic_event_mask).to_equal(
-			ObservabilityCaptureMask.ERROR
-			| ObservabilityCaptureMask.SCRIPT
-			| ObservabilityCaptureMask.SHADER)
-	Expect.that(config.automatic_breadcrumb_mask).to_equal(ObservabilityCaptureMask.ALL)
-	Expect.that(config.automatic_log_mask).to_equal(ObservabilityCaptureMask.NONE)
-	Expect.that(config.automatic_events_per_frame).to_equal(5)
-	Expect.that(config.automatic_repeated_error_window_msec).to_equal(1000)
-	Expect.that(config.automatic_event_throttle_count).to_equal(20)
-	Expect.that(config.automatic_event_throttle_window_msec).to_equal(10000)
-
-
-func test_breadcrumb_config_appends_capacity_and_normalizes_negative_values() -> void:
-	var positional := ObservabilityConfig.new(
-			true,
-			"production",
-			"1.2.3",
-			"arm64",
-			{},
-			{},
-			true,
-			ObservabilityLevel.TRACE,
-			0,
-			true,
-			1.0,
-			Callable(),
-			true,
-			ObservabilityCaptureMask.DEFAULT_EVENTS,
-			ObservabilityCaptureMask.DEFAULT_BREADCRUMBS,
-			ObservabilityCaptureMask.NONE,
-			5,
-			1000,
-			20,
-			10000,
-			true,
-			false,
-			PackedStringArray(["FoundryObservability: "]),
-			true,
-			5000,
-			true,
-			5000,
-			false,
-			7,
-		)
-	var negative := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_breadcrumbs = -1,
-		)
-
-	Expect.that(positional.max_breadcrumbs).to_equal(7)
-	Expect.that(negative.max_breadcrumbs).to_equal(0)
-
-
 func test_attachment_config_appends_limits_and_normalizes_negative_values() -> void:
 	var explicit := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_attachment_bytes = -1,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(
+				["FoundryObservability: "],
+			),
+		),
+		p_attachments = ObservabilityAttachmentConfig.new(
+			p_max_bytes = -1,
 			p_attach_game_log = true,
 			p_attach_screenshot = true,
 			p_attach_scene_tree = true,
-		)
+		),
+	)
 
-	Expect.that(explicit.max_attachment_bytes).to_equal(0)
-	Expect.that(explicit.attach_game_log).to_be_true()
-	Expect.that(explicit.attach_screenshot).to_be_true()
-	Expect.that(explicit.attach_scene_tree).to_be_true()
+	Expect.that(explicit.attachments().max_bytes()).to_equal(0)
+	Expect.that(explicit.attachments().attach_game_log()).to_be_true()
+	Expect.that(explicit.attachments().attach_screenshot()).to_be_true()
+	Expect.that(explicit.attachments().attach_scene_tree()).to_be_true()
 
 
 func test_mobile_diagnostic_config_defaults_match_native_integrations() -> void:
 	var config := ObservabilityConfig.new()
 
-	Expect.that(config.application_hang_detection_enabled).to_be_true()
-	Expect.that(config.application_hang_timeout_msec).to_equal(5000)
-	Expect.that(config.android_anr_detection_enabled).to_be_true()
-	Expect.that(config.android_anr_timeout_msec).to_equal(5000)
-	Expect.that(config.android_anr_attach_thread_dump).to_be_false()
+	Expect.that(config.mobile_diagnostics().application_hang_detection_enabled()).to_be_true()
+	Expect.that(config.mobile_diagnostics().application_hang_timeout_msec()).to_equal(5000)
+	Expect.that(config.mobile_diagnostics().android_anr_detection_enabled()).to_be_true()
+	Expect.that(config.mobile_diagnostics().android_anr_timeout_msec()).to_equal(5000)
+	Expect.that(config.mobile_diagnostics().android_anr_attach_thread_dump()).to_be_false()
 
 
 func test_mobile_diagnostic_timeouts_have_a_safe_minimum() -> void:
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(["FoundryObservability: "]),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(["FoundryObservability: "]),
+		),
+		p_mobile_diagnostics = ObservabilityMobileDiagnosticsConfig.new(
 			p_application_hang_timeout_msec = 25,
 			p_android_anr_timeout_msec = -1,
-		)
+		),
+	)
 
-	Expect.that(config.application_hang_timeout_msec).to_equal(1000)
-	Expect.that(config.android_anr_timeout_msec).to_equal(1000)
-
-
-func test_config_legacy_positional_prefix_argument_is_preserved() -> void:
-	var prefixes := PackedStringArray(["Legacy: "])
-	var config := ObservabilityConfig.new(
-			true,
-			"production",
-			"1.2.3",
-			"arm64",
-			{},
-			{},
-			true,
-			ObservabilityLevel.TRACE,
-			0,
-			true,
-			1.0,
-			Callable(),
-			true,
-			ObservabilityCaptureMask.DEFAULT_EVENTS,
-			ObservabilityCaptureMask.DEFAULT_BREADCRUMBS,
-			ObservabilityCaptureMask.NONE,
-			5,
-			1000,
-			20,
-			10000,
-			true,
-			false,
-			prefixes,
-		)
-
-	Expect.that(config.automatic_message_filter_prefixes()).to_equal(prefixes)
+	Expect.that(config.mobile_diagnostics().application_hang_timeout_msec()).to_equal(1000)
+	Expect.that(config.mobile_diagnostics().android_anr_timeout_msec()).to_equal(1000)
 
 
 func test_mobile_diagnostic_config_preserves_explicit_values() -> void:
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(["FoundryObservability: "]),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(["FoundryObservability: "]),
+		),
+		p_mobile_diagnostics = ObservabilityMobileDiagnosticsConfig.new(
 			p_application_hang_detection_enabled = false,
 			p_application_hang_timeout_msec = 3200,
 			p_android_anr_detection_enabled = false,
 			p_android_anr_timeout_msec = 6400,
 			p_android_anr_attach_thread_dump = true,
-		)
+		),
+	)
 
-	Expect.that(config.application_hang_detection_enabled).to_be_false()
-	Expect.that(config.application_hang_timeout_msec).to_equal(3200)
-	Expect.that(config.android_anr_detection_enabled).to_be_false()
-	Expect.that(config.android_anr_timeout_msec).to_equal(6400)
-	Expect.that(config.android_anr_attach_thread_dump).to_be_true()
+	Expect.that(config.mobile_diagnostics().application_hang_detection_enabled()).to_be_false()
+	Expect.that(config.mobile_diagnostics().application_hang_timeout_msec()).to_equal(3200)
+	Expect.that(config.mobile_diagnostics().android_anr_detection_enabled()).to_be_false()
+	Expect.that(config.mobile_diagnostics().android_anr_timeout_msec()).to_equal(6400)
+	Expect.that(config.mobile_diagnostics().android_anr_attach_thread_dump()).to_be_true()
 
 
 func test_automatic_capture_config_and_breadcrumb_copy_inputs() -> void:
 	var prefixes := PackedStringArray(["Internal: "])
 	var attributes := {"file": "res://player.fs"}
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_events_per_frame = -1,
-			p_automatic_repeated_error_window_msec = -1,
-			p_automatic_event_throttle_count = -1,
-			p_automatic_event_throttle_window_msec = -1,
-			p_automatic_message_filter_prefixes = prefixes,
-		)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = prefixes,
+		),
+	)
 	var breadcrumb := ObservabilityBreadcrumb.new(
 			p_message = "warning",
 			p_level = ObservabilityLevel.WARN,
@@ -3560,11 +3476,7 @@ func test_automatic_capture_config_and_breadcrumb_copy_inputs() -> void:
 	prefixes[0] = "changed"
 	attributes["file"] = "changed"
 
-	Expect.that(config.automatic_events_per_frame).to_equal(0)
-	Expect.that(config.automatic_repeated_error_window_msec).to_equal(0)
-	Expect.that(config.automatic_event_throttle_count).to_equal(0)
-	Expect.that(config.automatic_event_throttle_window_msec).to_equal(0)
-	Expect.that(config.automatic_message_filter_prefixes()).to_equal(
+	Expect.that(config.automatic_capture().message_filter_prefixes()).to_equal(
 			PackedStringArray(["Internal: "]))
 	Expect.that(breadcrumb.message()).to_equal("warning")
 	Expect.that(breadcrumb.level()).to_equal(ObservabilityLevel.WARN)
@@ -3602,8 +3514,9 @@ func test_metric_convenience_methods_store_normalized_payloads() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {"build": 42, "shared": "global"},
-		))).to_equal(Error.OK)
+				p_global_attributes = {"build": 42, "shared": "global"},
+				p_provider_options = {},
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_counter(
 			"match.started", 2, {"shared": "metric"},
@@ -3648,8 +3561,9 @@ func test_metrics_reject_invalid_names_values_units_and_attributes() -> void:
 			"match.started", 1, {"nested": {"unsupported": true}},
 		)).to_be_false()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {42: "unsupported key"},
-		))).to_equal(Error.OK)
+				p_global_attributes = {42: "unsupported key"},
+				p_provider_options = {},
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_counter("match.started")).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
 	Expect.that(provider.metrics()).to_have_size(0)
@@ -3661,19 +3575,29 @@ func test_metrics_honor_disabled_configuration_and_filter() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_metrics_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metrics_enabled = false,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_counter("combat.hit")).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.OK)
 	Expect.that(provider.metrics()).to_have_size(0)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_metric_filter = Callable(self, "_keep_combat_metric"),
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metric_filter = Callable(self, "_keep_combat_metric") as Callable[[ObservabilityMetric], bool],
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_counter("menu.opened")).to_be_false()
 	Expect.that(service.capture_counter("combat.hit")).to_be_true()
 	Expect.that(provider.metrics()).to_have_size(1)
@@ -3684,10 +3608,15 @@ func test_metrics_apply_deterministic_sampling_after_filtering() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_metric_sample_rate = 0.25,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metric_sample_rate = 0.25,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 
 	for index: int in range(8):
 		service.capture_counter("sampled.metric", index + 1)
@@ -3702,18 +3631,28 @@ func test_metrics_support_sampling_boundaries_and_memory_clearing() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_metric_sample_rate = 0.0,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metric_sample_rate = 0.0,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_counter("sampled.metric")).to_be_false()
 	Expect.that(provider.metrics()).to_have_size(0)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_metric_sample_rate = 1.0,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metric_sample_rate = 1.0,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_counter("sampled.metric")).to_be_true()
 	Expect.that(provider.metrics()).to_have_size(1)
 	provider.clear_metrics()
@@ -3725,10 +3664,15 @@ func test_metrics_reject_non_boolean_filter_results() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_metric_filter = Callable(self, "_invalid_metric_filter"),
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metric_filter = Callable(self, "_invalid_metric_filter") as Callable[[ObservabilityMetric], bool],
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_counter("combat.hit")).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_DATA)
@@ -3768,10 +3712,15 @@ func test_metrics_do_not_affect_events_feedback_logs_or_flush() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_log_rate_limit_per_second = 1,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_log_rate_limit_per_second = 1,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_counter("match.started")).to_be_true()
 	Expect.that(service.capture_log(
@@ -3798,10 +3747,15 @@ func test_invalid_metric_configuration_keeps_active_provider() -> void:
 	Expect.that(service.configure(working, ObservabilityConfig.new())).to_equal(Error.OK)
 
 	Expect.that(service.configure(candidate, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_metric_sample_rate = 1.5,
-		))).to_equal(Error.ERR_INVALID_PARAMETER)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metric_sample_rate = 1.5,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.ERR_INVALID_PARAMETER)
 	Expect.that(service.capture_message("still active")).to_equal("memory:1")
 	Expect.that(working.events()).to_have_size(1)
 	Expect.that(candidate.events()).to_have_size(0)
@@ -3889,10 +3843,12 @@ func test_memory_provider_captures_and_clears_breadcrumbs() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 	var breadcrumb := ObservabilityBreadcrumb.new(p_message = "trail")
 
 	Expect.that(service.capture_breadcrumb(breadcrumb)).to_be_true()
@@ -3930,15 +3886,19 @@ func test_service_redacts_rebuilt_provider_owned_state_without_retaining_inputs(
 			),
 	])
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = policy,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = policy,
+				),
+			))).to_equal(Error.OK)
 
 	var context_source: Dictionary = {
 		"token": "secret",
@@ -3988,32 +3948,38 @@ func test_service_state_redaction_failures_skip_provider_mutations_and_report_st
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_value(
-						PackedStringArray(["contexts", "account"]),
-						7,
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.replace_value(
+								PackedStringArray(["contexts", "account"]),
+								7,
+							),
+							ObservabilityRedactionRule.replace_value(
+								PackedStringArray(["user", "contact_email"]),
+								7,
+							),
+							ObservabilityRedactionRule.replace_value(
+								PackedStringArray(["breadcrumbs", "level"]),
+								"invalid",
+							),
+							ObservabilityRedactionRule.replace_value(
+								PackedStringArray(["attachments", "filename"]),
+								7,
+							),
+						],
 					),
-				ObservabilityRedactionRule.replace_value(
-						PackedStringArray(["user", "contact_email"]),
-						7,
-					),
-				ObservabilityRedactionRule.replace_value(
-						PackedStringArray(["breadcrumbs", "level"]),
-						"invalid",
-					),
-				ObservabilityRedactionRule.replace_value(
-						PackedStringArray(["attachments", "filename"]),
-						7,
-					),
-			]),
-	))).to_equal(Error.OK)
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.set_context("account", {"token": "secret"})).to_be_false()
 	_expect_state_redaction_failure(service)
@@ -4057,17 +4023,21 @@ func test_service_rejects_recursive_state_mutation_with_operation_local_error() 
 	_state_reentry_diagnostic_error = Error.OK
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(_state_reentry_service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [
-				Callable(self, "_service_set_context_during_processing"),
-			],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_service_set_context_during_processing") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(_state_reentry_service.capture_message("outer")).to_equal("memory:1")
 	Expect.that(_state_reentry_result).to_be_false()
@@ -4089,10 +4059,12 @@ func test_memory_scope_merges_local_overrides_and_defensively_snapshots_user() -
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.set_tag("region", "iad")).to_be_true()
 	Expect.that(service.set_tag("build", "42")).to_be_true()
@@ -4197,14 +4169,21 @@ func test_memory_global_scope_reaches_automatic_godot_events() -> void:
 	var service: FoundryObservability = _service_with_runtime(runtime)
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_repeated_error_window_msec = 0,
-		)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_event_mask = ObservabilityCaptureMask.ERROR,
+			p_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_log_mask = ObservabilityCaptureMask.NONE,
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_limits = ObservabilitySignalLimits.new(5, 0, 20, 10000),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	Expect.that(service.set_tag("capture", "automatic")).to_be_true()
 	Expect.that(service.set_context("engine", {"frame": 7})).to_be_true()
@@ -4239,13 +4218,16 @@ func test_memory_successful_reconfigure_resets_session_scope_and_updates_bound()
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	var initial := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_message_filter_prefixes = PackedStringArray(
+				["FoundryObservability: "],
+			),
 			p_max_breadcrumbs = 3,
-		)
+		),
+	)
 	Expect.that(service.configure(provider, initial)).to_equal(Error.OK)
 	Expect.that(service.set_tag("region", "iad")).to_be_true()
 	Expect.that(service.set_context("game", {"round": 1})).to_be_true()
@@ -4275,13 +4257,16 @@ func test_memory_successful_reconfigure_resets_session_scope_and_updates_bound()
 			ObservabilityBreadcrumb.new(p_message = "before reduction"))).to_be_true()
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_breadcrumbs = 1,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(
+						["FoundryObservability: "],
+					),
+					p_max_breadcrumbs = 1,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(provider.breadcrumbs()).to_have_size(0)
 	Expect.that(service.capture_breadcrumb(
 			ObservabilityBreadcrumb.new(p_message = "one"))).to_be_true()
@@ -4307,13 +4292,16 @@ func test_memory_failed_same_provider_reconfigure_preserves_active_session() -> 
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_breadcrumbs = 2,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(
+						["FoundryObservability: "],
+					),
+					p_max_breadcrumbs = 2,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.set_tag("region", "iad")).to_be_true()
 	Expect.that(service.set_context("game", {"round": 1})).to_be_true()
 	Expect.that(service.set_user(ObservabilityUser.new("player-7"))).to_be_true()
@@ -4322,14 +4310,17 @@ func test_memory_failed_same_provider_reconfigure_preserves_active_session() -> 
 
 	provider.configure_result = Error.FAILED
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_enabled = false,
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_breadcrumbs = 0,
-		))).to_equal(Error.FAILED)
+				p_enabled = false,
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(
+						["FoundryObservability: "],
+					),
+					p_max_breadcrumbs = 0,
+				),
+			))).to_equal(Error.FAILED)
 	Expect.that(service.is_enabled()).to_be_true()
 	Expect.that(service.capture_breadcrumb(
 			ObservabilityBreadcrumb.new(p_message = "two"))).to_be_true()
@@ -4352,10 +4343,12 @@ func test_memory_provider_replacement_and_shutdown_clear_only_live_session_state
 	var first := MemoryObservabilityProvider.new()
 	var second := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+		),
+	)
 	Expect.that(service.configure(first, config)).to_equal(Error.OK)
 	Expect.that(service.set_tag("provider", "first")).to_be_true()
 	Expect.that(service.set_user(ObservabilityUser.new("player-7"))).to_be_true()
@@ -4413,13 +4406,16 @@ func test_memory_breadcrumb_bound_zero_and_service_clear_results() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_breadcrumbs = 2,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(
+						["FoundryObservability: "],
+					),
+					p_max_breadcrumbs = 2,
+				),
+			))).to_equal(Error.OK)
 	var one := ObservabilityBreadcrumb.new(p_message = "one")
 	var two := ObservabilityBreadcrumb.new(p_message = "two")
 	var three := ObservabilityBreadcrumb.new(p_message = "three")
@@ -4435,25 +4431,31 @@ func test_memory_breadcrumb_bound_zero_and_service_clear_results() -> void:
 	Expect.that(provider.breadcrumbs()).to_have_size(0)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_breadcrumbs = 0,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(
+						["FoundryObservability: "],
+					),
+					p_max_breadcrumbs = 0,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_breadcrumb(one)).to_be_false()
 	Expect.that(provider.breadcrumbs()).to_have_size(0)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_enabled = false,
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_breadcrumbs = 2,
-		))).to_equal(Error.OK)
+				p_enabled = false,
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(
+						["FoundryObservability: "],
+					),
+					p_max_breadcrumbs = 2,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.clear_breadcrumbs()).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.OK)
 	service.shutdown()
@@ -4464,10 +4466,12 @@ func test_missing_breadcrumb_capability_is_observable_and_isolated() -> void:
 	var service: FoundryObservability = _service()
 	var provider := BreadcrumblessObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_breadcrumb(
 			ObservabilityBreadcrumb.new(p_message = "unsupported"))).to_be_false()
@@ -4481,13 +4485,20 @@ func test_automatic_logger_routes_error_metadata_by_independent_masks() -> void:
 	var service: FoundryObservability = _service_with_runtime(runtime)
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_repeated_error_window_msec = 0,
-		)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_event_mask = ObservabilityCaptureMask.ERROR,
+			p_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_log_mask = ObservabilityCaptureMask.ERROR,
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_limits = ObservabilitySignalLimits.new(5, 0, 20, 10000),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
 	var backtraces: Array[ScriptBacktrace] = Engine.capture_script_backtraces(false)
@@ -4525,12 +4536,19 @@ func test_automatic_logger_maps_error_categories_and_levels() -> void:
 	var service: FoundryObservability = _service_with_runtime(runtime)
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_event_mask = ObservabilityCaptureMask.ALL_ERRORS,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_repeated_error_window_msec = 0,
-		)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_event_mask = ObservabilityCaptureMask.ALL_ERRORS,
+			p_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_limits = ObservabilitySignalLimits.new(5, 0, 20, 10000),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
 
@@ -4558,13 +4576,15 @@ func test_automatic_logger_filters_and_routes_messages_without_events() -> void:
 	var service: FoundryObservability = _service_with_runtime(runtime)
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_event_mask = ObservabilityCaptureMask.ALL_ERRORS,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.MESSAGE,
-			p_automatic_log_mask = ObservabilityCaptureMask.MESSAGE,
-			p_automatic_message_filter_prefixes = PackedStringArray(["Internal: "]),
-		)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_event_mask = ObservabilityCaptureMask.ALL_ERRORS,
+			p_breadcrumb_mask = ObservabilityCaptureMask.MESSAGE,
+			p_log_mask = ObservabilityCaptureMask.MESSAGE,
+			p_message_filter_prefixes = PackedStringArray(["Internal: "]),
+		),
+	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
 
@@ -4585,21 +4605,22 @@ func test_automatic_errors_share_event_limits_without_suppressing_other_destinat
 	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_repeated_error_window_msec = 1000,
-			p_automatic_events_per_frame = 1,
-			p_automatic_event_throttle_count = 2,
-			p_automatic_event_throttle_window_msec = 10000,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_event_mask = ObservabilityCaptureMask.ERROR,
+			p_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_log_mask = ObservabilityCaptureMask.ERROR,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_log_limits = ObservabilitySignalLimits.new(),
+			p_event_limits = ObservabilitySignalLimits.new(1, 1000, 2, 10000),
+		),
 	)
 	var runtime: FakeObservabilityRuntime = _service_processing_runtime
 	runtime.monotonic_msec = 1000
@@ -4687,17 +4708,21 @@ func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> 
 	var service := _processing_service()
 	var provider := RejectingObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_repeated_error_window_msec = 1000,
-			p_automatic_events_per_frame = 1,
-			p_automatic_event_throttle_count = 1,
-			p_automatic_event_throttle_window_msec = 1000,
-		)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_event_mask = ObservabilityCaptureMask.ERROR,
+			p_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_log_mask = ObservabilityCaptureMask.ERROR,
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_limits = ObservabilitySignalLimits.new(1, 1000, 1, 1000),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 	var runtime: FakeObservabilityRuntime = _service_processing_runtime
 	runtime.monotonic_msec = 1000
 	runtime.frame = 1
@@ -4719,14 +4744,21 @@ func test_successful_automatic_breadcrumb_does_not_clear_event_failure() -> void
 	var provider := RejectingObservabilityProvider.new()
 	provider.breadcrumb_capture_result = true
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_repeated_error_window_msec = 0,
-		)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_event_mask = ObservabilityCaptureMask.ERROR,
+			p_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_log_mask = ObservabilityCaptureMask.NONE,
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_limits = ObservabilitySignalLimits.new(5, 0, 20, 10000),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 
 	Expect.that(service.capture_message("rejected event")).to_equal("")
@@ -4745,14 +4777,21 @@ func test_rejected_automatic_breadcrumb_reports_failure_after_accepted_event() -
 	var provider := RejectingObservabilityProvider.new()
 	provider.event_capture_result = true
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_repeated_error_window_msec = 0,
-		)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_event_mask = ObservabilityCaptureMask.ERROR,
+			p_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_log_mask = ObservabilityCaptureMask.NONE,
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_limits = ObservabilitySignalLimits.new(5, 0, 20, 10000),
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
 
@@ -4769,19 +4808,22 @@ func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
 	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_repeated_error_window_msec = 0,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_event_mask = ObservabilityCaptureMask.ERROR,
+			p_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_log_mask = ObservabilityCaptureMask.ERROR,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(1, 0, 0, 0),
 			p_log_limits = ObservabilitySignalLimits.new(2, 0, 0, 0),
+		),
 	)
 	var runtime: FakeObservabilityRuntime = _service_processing_runtime
 	runtime.monotonic_msec = 1000
@@ -4815,19 +4857,23 @@ func test_automatic_processor_recursion_drops_nested_message_without_payload_del
 	_automatic_nested_capture_result = "not called"
 	_automatic_nested_reason = &""
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_log_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_event_mask = ObservabilityCaptureMask.ERROR,
+			p_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_log_mask = ObservabilityCaptureMask.NONE,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [
-				Callable(self, "_automatic_capture_nested_message"),
+				Callable(self, "_automatic_capture_nested_message") as Callable[[ObservabilityEvent], ObservabilityEvent?],
 			],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(),
+		),
 	)
 	var runtime: FakeObservabilityRuntime = _service_processing_runtime
 	runtime.monotonic_msec = 1000
@@ -4878,11 +4924,13 @@ func test_automatic_capture_installs_only_after_successful_enabled_configuration
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 	var disabled := ObservabilityConfig.new(
-			p_enabled = true,
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-		)
+		p_enabled = true,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+		),
+	)
 
 	Expect.that(service.configure(provider, disabled)).to_equal(Error.OK)
 	push_error("automatic disabled")
@@ -4949,10 +4997,12 @@ func test_automatic_capture_blocks_provider_generated_diagnostic_recursion() -> 
 	var service: FoundryObservability = _service()
 	var provider: ReentrantObservabilityProvider = ReentrantObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
-		)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+		),
+	)
 
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	Expect.that(service.capture_message("outer diagnostic")).to_equal("reentrant:1")
@@ -5035,8 +5085,9 @@ func test_structured_logs_are_enabled_by_default_and_preserve_shape() -> void:
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {"build": 42},
-		))).to_equal(Error.OK)
+				p_global_attributes = {"build": 42},
+				p_provider_options = {},
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_log(
 			"player {id} missed",
 			ObservabilityLevel.WARN,
@@ -5059,18 +5110,33 @@ func test_structured_logs_honor_disabled_and_minimum_level_configuration() -> vo
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_processing = ObservabilityProcessingConfig.new(
 			p_logs_enabled = false,
 			p_log_minimum_level = ObservabilityLevel.ERROR,
-		)
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	Expect.that(service.capture_log("disabled")).to_equal("")
 	Expect.that(provider.events()).to_have_size(0)
 
-	config.logs_enabled = true
-	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var enabled_config := ObservabilityConfig.new(
+		p_processing = ObservabilityProcessingConfig.new(
+			p_logs_enabled = true,
+			p_log_minimum_level = ObservabilityLevel.ERROR,
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+		p_global_attributes = {},
+		p_provider_options = {},
+	)
+	Expect.that(service.configure(provider, enabled_config)).to_equal(Error.OK)
 	Expect.that(service.capture_log("filtered", ObservabilityLevel.WARN)).to_equal("")
 	Expect.that(service.capture_log("kept", ObservabilityLevel.ERROR)).to_equal("memory:1")
 	Expect.that(provider.events()).to_have_size(1)
@@ -5083,10 +5149,15 @@ func test_structured_logs_apply_deterministic_per_second_rate_limit() -> void:
 	_service_processing_runtime.frame = 1
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_log_rate_limit_per_second = 1,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_log_rate_limit_per_second = 1,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 	_service_processing_runtime.monotonic_msec = 1000
 	Expect.that(service.capture_log(
 			"first", ObservabilityLevel.INFO, &"game", -1, {}, 1000,
@@ -5108,11 +5179,19 @@ func test_service_processes_replacement_event_before_memory_provider_delivery() 
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 	_service_event_processor_calls = 0
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_service_replace_event")],
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_service_replace_event") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_message("original")).to_equal("memory:1")
 	Expect.that(_service_event_processor_calls).to_equal(1)
@@ -5128,11 +5207,19 @@ func test_service_processor_drop_preserves_ok_error_and_publishes_diagnostic() -
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_service_drop_event")],
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_service_drop_event") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_message("dropped")).to_equal("")
 	Expect.that(provider.events()).to_have_size(0)
@@ -5152,16 +5239,20 @@ func test_service_processing_capacity_is_independent_per_event_log_and_metric() 
 	_service_processing_runtime.frame = 1
 	var one_per_frame := ObservabilitySignalLimits.new(1, 0, 0, 0)
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_event_limits = one_per_frame,
-			p_log_limits = one_per_frame,
-			p_metric_limits = one_per_frame,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = one_per_frame,
+					p_log_limits = one_per_frame,
+					p_metric_limits = one_per_frame,
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_message("event first")).to_equal("memory:1")
 	Expect.that(service.capture_log("log first")).to_equal("memory:2")
@@ -5186,14 +5277,18 @@ func test_service_failed_reconfiguration_preserves_processing_diagnostic_and_adm
 	_service_processing_runtime.monotonic_msec = 1000
 	_service_processing_runtime.frame = 1
 	var active_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(1, 0, 0, 0),
-		)
+		),
+	)
 	Expect.that(service.configure(active, active_config)).to_equal(Error.OK)
 	Expect.that(service.capture_message("accepted")).to_equal("memory:1")
 	Expect.that(service.capture_message("limited")).to_equal("")
@@ -5201,11 +5296,17 @@ func test_service_failed_reconfiguration_preserves_processing_diagnostic_and_adm
 
 	var invalid_candidate := ConfigureCountingMemoryProvider.new()
 	Expect.that(service.configure(invalid_candidate, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable()],
-		))).to_equal(Error.ERR_INVALID_DATA)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [Callable() as Callable[[ObservabilityEvent], ObservabilityEvent?]],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.ERR_INVALID_DATA)
 	Expect.that(invalid_candidate.configure_calls).to_equal(0)
 	_expect_service_diagnostic_unchanged(service, prior)
 	Expect.that(service.capture_message("still limited after invalid")).to_equal("")
@@ -5232,14 +5333,18 @@ func test_service_constructor_preserves_positional_arguments_and_uses_injected_r
 	_service_processing_runtime.monotonic_msec = 0
 	_service_processing_runtime.frame = 1
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(1, 0, 0, 0),
-		)
+		),
+	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 
 	Expect.that(service.capture_message("first")).to_equal("memory:1")
@@ -5257,31 +5362,39 @@ func test_service_event_capture_does_not_cross_reconfigured_generation() -> void
 	var original := MemoryObservabilityProvider.new()
 	var replacement := MemoryObservabilityProvider.new()
 	var replacement_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(),
-		)
+		),
+	)
 	_service_lifecycle_service = service
 	_service_lifecycle_provider = replacement
 	_service_lifecycle_config = replacement_config
 	_service_lifecycle_configure_result = Error.FAILED
 	Expect.that(service.configure(original, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [
-				Callable(self, "_service_reconfigure_from_event_processor"),
-			],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(),
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_service_reconfigure_from_event_processor") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_message("old generation")).to_equal("")
 	Expect.that(_service_lifecycle_configure_result).to_equal(Error.OK)
@@ -5300,31 +5413,39 @@ func test_service_metric_capture_does_not_cross_reconfigured_generation() -> voi
 	var original := MemoryObservabilityProvider.new()
 	var replacement := MemoryObservabilityProvider.new()
 	var replacement_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_metric_limits = ObservabilitySignalLimits.new(),
-		)
+		),
+	)
 	_service_lifecycle_service = service
 	_service_lifecycle_provider = replacement
 	_service_lifecycle_config = replacement_config
 	_service_lifecycle_configure_result = Error.FAILED
 	Expect.that(service.configure(original, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [
-				Callable(self, "_service_reconfigure_from_metric_processor"),
-			],
-			p_metric_limits = ObservabilitySignalLimits.new(),
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [
+						Callable(self, "_service_reconfigure_from_metric_processor") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+					],
+					p_metric_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_counter("old.metric")).to_be_false()
 	Expect.that(_service_lifecycle_configure_result).to_equal(Error.OK)
@@ -5343,15 +5464,19 @@ func test_service_rejects_reconfiguration_during_provider_capture() -> void:
 	var active := ReconfiguringCaptureMemoryProvider.new()
 	var replacement := ConfigureCountingMemoryProvider.new()
 	var replacement_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(),
-		)
+		),
+	)
 	active.service = service
 	active.replacement_provider = replacement
 	active.replacement_config = replacement_config
@@ -5374,15 +5499,19 @@ func test_service_blocks_other_provider_calls_during_reconfiguration() -> void:
 	var active := MemoryObservabilityProvider.new()
 	var replacement := ReentrantConfigureMemoryProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(),
-		)
+		),
+	)
 	Expect.that(service.configure(active, config)).to_equal(Error.OK)
 	replacement.service = service
 
@@ -5595,19 +5724,25 @@ func test_service_normalizes_final_processor_replacement_before_delivery() -> vo
 	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_stack_trace_source_context_enabled = false,
-			p_stack_trace_variables_enabled = false,
-			p_event_processors = [
-				Callable(self, "_service_replace_with_unnormalized_exception"),
-			],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(),
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+					p_source_context_enabled = false,
+					p_variables_enabled = false,
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_service_replace_with_unnormalized_exception") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(service.capture_message("input")).to_equal("memory:1")
 	var captured: ObservabilityEvent = provider.events()[0]
@@ -5628,20 +5763,25 @@ func test_automatic_logger_preserves_event_failure_after_successful_log() -> voi
 	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_event_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_repeated_error_window_msec = 0,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_processing_wrong_type")],
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_event_mask = ObservabilityCaptureMask.ERROR,
+			p_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_log_mask = ObservabilityCaptureMask.ERROR,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_processors = [
+				Callable(self, "_processing_wrong_type") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+			],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(),
 			p_log_limits = ObservabilitySignalLimits.new(),
-		)
+		),
+	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(service, config, _service_processing_runtime)
 
@@ -5666,25 +5806,31 @@ func test_automatic_logger_preserves_breadcrumb_redaction_failure_after_log() ->
 	var service := _processing_service()
 	var provider := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_event_mask = ObservabilityCaptureMask.NONE,
-			p_automatic_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_log_mask = ObservabilityCaptureMask.ERROR,
-			p_automatic_repeated_error_window_msec = 0,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_event_mask = ObservabilityCaptureMask.NONE,
+			p_breadcrumb_mask = ObservabilityCaptureMask.ERROR,
+			p_log_mask = ObservabilityCaptureMask.ERROR,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_log_limits = ObservabilitySignalLimits.new(),
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_value(
+			p_redaction_policy = ObservabilityRedactionPolicy.new(
+				[
+					ObservabilityRedactionRule.replace_value(
 						PackedStringArray(["breadcrumbs", "level"]),
 						"invalid",
 					),
-			]),
-		)
+				],
+			),
+			p_event_limits = ObservabilitySignalLimits.new(5, 0, 20, 10000),
+		),
+	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	var logger := AutomaticObservabilityLogger.new(service, config, _service_processing_runtime)
 
@@ -5710,18 +5856,33 @@ func test_disabled_structured_logs_do_not_consume_rate_limit() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_enabled = true,
-			p_global_attributes = {},
-			p_provider_options = {},
+		p_enabled = true,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_processing = ObservabilityProcessingConfig.new(
 			p_log_rate_limit_per_second = 1,
-		)
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	config.enabled = false
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+				p_enabled = false,
+				p_processing = ObservabilityProcessingConfig.new(
+					p_log_rate_limit_per_second = 1,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+				p_global_attributes = {},
+				p_provider_options = {},
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_log(
 			"suppressed", ObservabilityLevel.INFO, &"game", -1, {}, 1000,
 		)).to_equal("")
-	config.enabled = true
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	Expect.that(service.capture_log(
 			"accepted", ObservabilityLevel.INFO, &"game", -1, {}, 1000,
 		)).to_equal("memory:1")
@@ -5732,11 +5893,16 @@ func test_direct_structured_log_events_apply_enabled_gate_before_rate_limit() ->
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_enabled = true,
-			p_global_attributes = {},
-			p_provider_options = {},
+		p_enabled = true,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_processing = ObservabilityProcessingConfig.new(
 			p_log_rate_limit_per_second = 1,
-		)
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 	var event := ObservabilityEvent.new(
 			p_kind = &"log",
 			p_level = ObservabilityLevel.INFO,
@@ -5749,9 +5915,19 @@ func test_direct_structured_log_events_apply_enabled_gate_before_rate_limit() ->
 		)
 
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	config.enabled = false
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+				p_enabled = false,
+				p_processing = ObservabilityProcessingConfig.new(
+					p_log_rate_limit_per_second = 1,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+				p_global_attributes = {},
+				p_provider_options = {},
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_event(event)).to_equal("")
-	config.enabled = true
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
 	Expect.that(service.capture_event(event)).to_equal("memory:1")
 	service.shutdown()
 
@@ -5855,9 +6031,9 @@ func test_startup_settings_resolve_project_environment_and_default_precedence() 
 	Expect.that(explicit_config.provider_options().get("dsn")).to_equal(
 			"https://project@example/1",
 		)
-	Expect.that(explicit_config.release).to_equal("Oakhaven-custom-1.2.3")
-	Expect.that(explicit_config.environment).to_equal("staging")
-	Expect.that(explicit_config.dist).to_equal("ios")
+	Expect.that(explicit_config.release()).to_equal("Oakhaven-custom-1.2.3")
+	Expect.that(explicit_config.environment()).to_equal("staging")
+	Expect.that(explicit_config.dist()).to_equal("ios")
 
 	var environment := ObservabilityStartupSettings.from_sources(
 			{},
@@ -5872,8 +6048,8 @@ func test_startup_settings_resolve_project_environment_and_default_precedence() 
 	Expect.that(environment_config.provider_options().get("dsn")).to_equal(
 			"https://environment@example/2",
 		)
-	Expect.that(environment_config.release).to_equal("environment-release")
-	Expect.that(environment_config.environment).to_equal("environment-name")
+	Expect.that(environment_config.release()).to_equal("environment-release")
+	Expect.that(environment_config.environment()).to_equal("environment-name")
 
 	var defaults := ObservabilityStartupSettings.from_sources(
 			{},
@@ -5885,8 +6061,8 @@ func test_startup_settings_resolve_project_environment_and_default_precedence() 
 			},
 		)
 	var default_config: ObservabilityConfig = defaults.observability_config()
-	Expect.that(default_config.release).to_equal("Oakhaven@1.2.3")
-	Expect.that(default_config.environment).to_equal("export_release")
+	Expect.that(default_config.release()).to_equal("Oakhaven@1.2.3")
+	Expect.that(default_config.environment()).to_equal("export_release")
 
 
 func test_startup_settings_reject_declared_project_setting_type_mismatches() -> void:
@@ -5907,21 +6083,21 @@ func test_startup_settings_reject_declared_project_setting_type_mismatches() -> 
 	var array_environment := ObservabilityStartupSettings.from_sources({
 		ObservabilityStartupSettings.ENVIRONMENT: ["production"],
 	})
-	Expect.that(array_environment.observability_config().environment).to_equal(
+	Expect.that(array_environment.observability_config().environment()).to_equal(
 			"export_release",
 		)
 
 	var numeric_release := ObservabilityStartupSettings.from_sources({
 		ObservabilityStartupSettings.RELEASE: 123,
 	})
-	Expect.that(numeric_release.observability_config().release).to_equal(
+	Expect.that(numeric_release.observability_config().release()).to_equal(
 			"Unknown Foundry project@noversion",
 		)
 
 	var array_dist := ObservabilityStartupSettings.from_sources({
 		ObservabilityStartupSettings.DIST: ["ios"],
 	})
-	Expect.that(array_dist.observability_config().dist).to_equal("")
+	Expect.that(array_dist.observability_config().dist()).to_equal("")
 
 	var provider_options: Dictionary = {"kept": true}
 	var mixed_values := ObservabilityStartupSettings.from_sources({
@@ -5936,9 +6112,9 @@ func test_startup_settings_reject_declared_project_setting_type_mismatches() -> 
 	Expect.that(mixed_values.validation_error()).to_equal(
 			Error.ERR_INVALID_PARAMETER,
 		)
-	Expect.that(mixed_config.environment).to_equal("production")
-	Expect.that(mixed_config.release).to_equal("1.2.3")
-	Expect.that(mixed_config.dist).to_equal("ios")
+	Expect.that(mixed_config.environment()).to_equal("production")
+	Expect.that(mixed_config.release()).to_equal("1.2.3")
+	Expect.that(mixed_config.dist()).to_equal("ios")
 	Expect.that(mixed_config.provider_options().get("kept")).to_be_true()
 
 
@@ -5955,7 +6131,7 @@ func test_startup_settings_expands_release_tokens_in_a_single_pass() -> void:
 			},
 		)
 
-	Expect.that(settings.observability_config().release).to_equal(
+	Expect.that(settings.observability_config().release()).to_equal(
 			"Oakhaven-{app_version}|1.2.3-{app_name}",
 		)
 
@@ -5966,7 +6142,7 @@ func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
 			{},
 			{"dedicated_server": true, "editor_hint": true, "debug_build": true},
 		)
-	Expect.that(dedicated.observability_config().environment).to_equal(
+	Expect.that(dedicated.observability_config().environment()).to_equal(
 			"dedicated_server",
 		)
 	Expect.that(dedicated.skip_status()).to_equal(
@@ -5985,7 +6161,7 @@ func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
 				"debug_build": true,
 			},
 		)
-	Expect.that(editor.observability_config().environment).to_equal("editor_dev")
+	Expect.that(editor.observability_config().environment()).to_equal("editor_dev")
 	Expect.that(editor.skip_status()).to_equal(
 			ObservabilityStartupStatus.SKIPPED_EDITOR,
 		)
@@ -6001,7 +6177,7 @@ func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
 	Expect.that(editor_play.skip_status()).to_equal(
 			ObservabilityStartupStatus.SKIPPED_EDITOR_PLAY,
 		)
-	Expect.that(editor_play.observability_config().environment).to_equal(
+	Expect.that(editor_play.observability_config().environment()).to_equal(
 			"editor_dev_run",
 		)
 
@@ -6013,7 +6189,7 @@ func test_startup_settings_classify_runtime_and_skip_contexts() -> void:
 	Expect.that(debug_export.skip_status()).to_equal(
 			ObservabilityStartupStatus.SKIPPED_DEBUG,
 		)
-	Expect.that(debug_export.observability_config().environment).to_equal(
+	Expect.that(debug_export.observability_config().environment()).to_equal(
 			"export_debug",
 		)
 
@@ -6770,10 +6946,12 @@ func test_attachment_service_validates_and_maps_provider_results() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 	var attachment := ObservabilityAttachment.from_bytes(
 			PackedByteArray([1, 2, 3]),
 			"diagnostics.bin",
@@ -6808,10 +6986,12 @@ func test_attachment_capability_is_optional_and_malformed_results_fail_safely() 
 	var service: FoundryObservability = _service()
 	var attachmentless := AttachmentlessObservabilityProvider.new()
 	Expect.that(service.configure(attachmentless, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 	var attachment := ObservabilityAttachment.from_bytes(
 			PackedByteArray([7]),
 			"optional.bin",
@@ -6830,10 +7010,12 @@ func test_attachment_capability_is_optional_and_malformed_results_fail_safely() 
 
 	var malformed := MalformedAttachmentsProvider.new()
 	Expect.that(service.configure(malformed, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.add_attachment(attachment)).to_equal("")
 	Expect.that(service.last_error()).to_equal(Error.FAILED)
 	Expect.that(service.remove_attachment("valid-handle")).to_be_false()
@@ -6853,10 +7035,12 @@ func test_memory_byte_attachments_persist_snapshot_and_isolate_mutation() -> voi
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			))).to_equal(Error.OK)
 	var source: PackedByteArray = PackedByteArray([1, 2, 3])
 	var attachment := ObservabilityAttachment.from_bytes(
 			source,
@@ -6920,13 +7104,18 @@ func test_memory_path_attachments_are_lazy_and_report_isolated_event_failures() 
 	file.store_buffer(PackedByteArray([1, 2]))
 	file.close()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_attachment_bytes = 2,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(
+						["FoundryObservability: "],
+					),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_max_bytes = 2,
+				),
+			))).to_equal(Error.OK)
 	var attachment := ObservabilityAttachment.from_path(
 			path,
 			"lazy.bin",
@@ -7028,9 +7217,11 @@ func test_memory_attachment_session_boundaries_are_atomic() -> void:
 	var first := MemoryObservabilityProvider.new()
 	var second := MemoryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+		),
 	)
 	Expect.that(service.configure(first, config)).to_equal(Error.OK)
 	var attachment := ObservabilityAttachment.from_bytes(
@@ -7044,13 +7235,18 @@ func test_memory_attachment_session_boundaries_are_atomic() -> void:
 
 	first.configure_result = Error.FAILED
 	Expect.that(service.configure(first, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_attachment_bytes = 0,
-	))).to_equal(Error.FAILED)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(
+						["FoundryObservability: "],
+					),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_max_bytes = 0,
+				),
+			))).to_equal(Error.FAILED)
 	Expect.that(service.capture_message("failed reconfigure preserves")).to_equal("memory:1")
 	Expect.that(first.captured_attachments()[0]).to_have_size(1)
 	Expect.that(service.remove_attachment(original_handle)).to_be_true()
@@ -7060,17 +7256,7 @@ func test_memory_attachment_session_boundaries_are_atomic() -> void:
 	Expect.that(service.configure(first, config)).to_equal(Error.OK)
 	Expect.that(service.remove_attachment(replacement_handle)).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.ERR_DOES_NOT_EXIST)
-	var current_handle: String = service.add_attachment(attachment)
-	config.enabled = false
-	Expect.that(service.add_attachment(attachment)).to_equal("")
-	Expect.that(service.remove_attachment(current_handle)).to_be_false()
-	Expect.that(service.clear_attachments()).to_be_false()
-	config.enabled = true
-	Expect.that(service.capture_message("disabled operations preserved")).to_equal("memory:2")
-	Expect.that(first.captured_attachments()[1]).to_have_size(1)
-
 	Expect.that(service.configure(second, config)).to_equal(Error.OK)
-	Expect.that(first.remove_attachment(current_handle)).to_equal(Error.FAILED)
 	Expect.that(first.clear_attachments()).to_be_false()
 	Expect.that(service.capture_message("replacement starts empty")).to_equal("memory:1")
 	Expect.that(second.captured_attachments()[0]).to_have_size(0)
@@ -7081,13 +7267,18 @@ func test_memory_attachment_zero_limit_clear_history_and_shutdown_state() -> voi
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(
-					["FoundryObservability: "]),
-			p_max_attachment_bytes = 0,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+					p_message_filter_prefixes = PackedStringArray(
+						["FoundryObservability: "],
+					),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_max_bytes = 0,
+				),
+			))).to_equal(Error.OK)
 	var empty := ObservabilityAttachment.from_bytes(PackedByteArray(), "empty.bin")
 	var positive := ObservabilityAttachment.from_bytes(PackedByteArray([1]), "positive.bin")
 	var empty_file: FileAccess = FileAccess.open(
@@ -7131,19 +7322,31 @@ func test_processing_pipeline_redacts_before_processors_and_again_after_replacem
 	_processing_order.clear()
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime(10, 2))
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [
-				Callable(self, "_processing_replace_first"),
-				Callable(self, "_processing_reintroduce_secret"),
-				Callable(self, "_processing_replace_second"),
-			],
-			p_log_processors = [], p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(),
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(["event", "message"]), "secret", "safe"),
-			]),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_processing_replace_first") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+						Callable(self, "_processing_reintroduce_secret") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+						Callable(self, "_processing_replace_second") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(["event", "message"]),
+								"secret",
+								"safe",
+							),
+						],
+					),
+				),
+			))).to_equal(Error.OK)
 	var result: Dictionary = pipeline.process_event(ObservabilityEvent.new(
 			p_message = "secret",
 	))
@@ -7157,18 +7360,22 @@ func test_processing_pipeline_uses_injected_runtime_for_admission() -> void:
 	var runtime := FakeObservabilityRuntime.new(10, 20, 30, 40, 50)
 	var pipeline := ObservabilityProcessingPipeline.new(runtime)
 	var config := ObservabilityConfig.new(
-			p_enabled = true,
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_enabled = true,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(1, 0, 1, 100),
 			p_log_limits = ObservabilitySignalLimits.new(),
 			p_metric_limits = ObservabilitySignalLimits.new(),
-		)
+		),
+	)
 	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
 
 	var event := ObservabilityEvent.new(
@@ -7210,13 +7417,23 @@ func test_processing_pipeline_separates_logs_and_rejects_signal_crossing_process
 	_processing_order.clear()
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_processing_event_marker")],
-			p_log_processors = [Callable(self, "_processing_log_marker")],
-			p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(),
-			p_log_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_processing_event_marker") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [
+						Callable(self, "_processing_log_marker") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+					p_log_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 	var log_result: Dictionary = pipeline.process_event(ObservabilityEvent.new(
 			p_kind = &"log", p_message = "line",
 	))
@@ -7227,11 +7444,20 @@ func test_processing_pipeline_separates_logs_and_rejects_signal_crossing_process
 
 	var crossing := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(crossing.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_log_processors = [Callable(self, "_processing_log_to_event")],
-			p_event_processors = [], p_metric_processors = [],
-			p_log_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_log_processors = [
+						Callable(self, "_processing_log_to_event") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_event_processors = [],
+					p_metric_processors = [],
+					p_log_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(crossing.process_event(ObservabilityEvent.new(
 			p_kind = &"log",
 	))["accepted"]).to_be_false()
@@ -7243,11 +7469,18 @@ func test_processing_pipeline_separates_logs_and_rejects_signal_crossing_process
 func test_processing_pipeline_reports_processor_drops_and_wrong_types() -> void:
 	var dropped := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(dropped.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_processing_drop")],
-			p_log_processors = [], p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [Callable(self, "_processing_drop") as Callable[[ObservabilityEvent], ObservabilityEvent?]],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(dropped.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
 	Expect.that(dropped.last_diagnostic().reason()).to_equal(
 			ObservabilityProcessingDiagnostic.PROCESSOR)
@@ -7256,11 +7489,20 @@ func test_processing_pipeline_reports_processor_drops_and_wrong_types() -> void:
 
 	var invalid := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(invalid.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_processing_wrong_type")],
-			p_log_processors = [], p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_processing_wrong_type") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(invalid.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
 	Expect.that(invalid.last_diagnostic().reason()).to_equal(
 			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
@@ -7284,12 +7526,19 @@ func test_processing_pipeline_fails_closed_when_metric_filter_target_expires() -
 	var callbacks := MutableProcessingCallbacks.new()
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_metric_filter = Callable(callbacks, "filter_metric"),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_metric_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metric_filter = Callable(callbacks, "filter_metric") as Callable[[ObservabilityMetric], bool],
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_metric_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 	callbacks.free()
 
 	Expect.that(pipeline.process_metric(ObservabilityMetric.new(
@@ -7299,21 +7548,58 @@ func test_processing_pipeline_fails_closed_when_metric_filter_target_expires() -
 			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
 
 
+func test_processing_pipeline_rejects_expired_metric_filter_during_configure() -> void:
+	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
+	Expect.that(pipeline.configure(ObservabilityConfig.new())).to_equal(Error.OK)
+	var callbacks := MutableProcessingCallbacks.new()
+	var candidate := ObservabilityConfig.new(
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_processing = ObservabilityProcessingConfig.new(
+			p_metric_filter = Callable(callbacks, "filter_metric") as Callable[[ObservabilityMetric], bool],
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
+	callbacks.free()
+
+	Expect.that(pipeline.configure(candidate)).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(pipeline.process_metric(ObservabilityMetric.new(
+			p_name = "committed.metric",
+			p_value = 1.0,
+	))["accepted"]).to_be_true()
+
+
 func test_processing_pipeline_metric_filter_is_pre_redacted_and_precedes_processors() -> void:
 	_processing_order.clear()
 	_processing_filter_values.clear()
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_metric_filter = Callable(self, "_processing_metric_filter"),
-			p_metric_processors = [Callable(self, "_processing_metric_marker")],
-			p_event_processors = [], p_log_processors = [],
-			p_metric_limits = ObservabilitySignalLimits.new(),
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(["metric", "name"]), "secret", "safe"),
-			]),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metric_filter = Callable(self, "_processing_metric_filter") as Callable[[ObservabilityMetric], bool],
+					p_metric_processors = [
+						Callable(self, "_processing_metric_marker") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+					],
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_limits = ObservabilitySignalLimits.new(),
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(["metric", "name"]),
+								"secret",
+								"safe",
+							),
+						],
+					),
+				),
+			))).to_equal(Error.OK)
 	var result: Dictionary = pipeline.process_metric(ObservabilityMetric.new(
 			p_name = "secret.metric", p_value = 1.0,
 	))
@@ -7325,11 +7611,19 @@ func test_processing_pipeline_metric_filter_is_pre_redacted_and_precedes_process
 
 	var rejected := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(rejected.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_metric_filter = Callable(self, "_processing_metric_false"),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_metric_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metric_filter = Callable(self, "_processing_metric_false") as Callable[[ObservabilityMetric], bool],
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_metric_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(rejected.process_metric(ObservabilityMetric.new(
 			p_name = "metric", p_value = 1.0,
 	))["accepted"]).to_be_false()
@@ -7338,11 +7632,19 @@ func test_processing_pipeline_metric_filter_is_pre_redacted_and_precedes_process
 
 	var malformed := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(malformed.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_metric_filter = Callable(self, "_processing_metric_non_bool"),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_metric_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metric_filter = Callable(self, "_processing_metric_non_bool") as Callable[[ObservabilityMetric], bool],
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_metric_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(malformed.process_metric(ObservabilityMetric.new(
 			p_name = "metric", p_value = 1.0,
 	))["accepted"]).to_be_false()
@@ -7353,12 +7655,21 @@ func test_processing_pipeline_metric_filter_is_pre_redacted_and_precedes_process
 func test_processing_pipeline_blocks_recursive_entries_before_callbacks_or_limits() -> void:
 	_recursive_pipeline = ObservabilityProcessingPipeline.new(_test_runtime(1, 1, 1))
 	Expect.that(_recursive_pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_processing_reenter_metric")],
-			p_log_processors = [], p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(1),
-			p_metric_limits = ObservabilitySignalLimits.new(1),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_processing_reenter_metric") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(1),
+					p_metric_limits = ObservabilitySignalLimits.new(1),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(_recursive_pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
 	Expect.that(_recursive_pipeline.recursive_drop_count()).to_equal(1)
 	Expect.that(_recursive_pipeline.last_diagnostic().reason()).to_equal(
@@ -7372,14 +7683,20 @@ func test_processing_pipeline_recursive_state_result_is_operation_local() -> voi
 	_recursive_state_result = {}
 	_recursive_pipeline = ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(_recursive_pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_processing_reenter_state")],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_processing_reenter_state") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(
 			_recursive_pipeline.process_event(ObservabilityEvent.new())["accepted"],
@@ -7399,19 +7716,27 @@ func test_processing_pipeline_recursive_state_result_is_operation_local() -> voi
 func test_processing_pipeline_state_result_survives_later_diagnostic_overwrite() -> void:
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_service_drop_event")],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_value(
-						PackedStringArray(["contexts", "account"]),
-						7,
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_service_drop_event") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.replace_value(
+								PackedStringArray(["contexts", "account"]),
+								7,
+							),
+						],
 					),
-			]),
-	))).to_equal(Error.OK)
+				),
+			))).to_equal(Error.OK)
 
 	var state_result: Dictionary = pipeline.redact_contexts({
 		"account": {"token": "secret"},
@@ -7503,12 +7828,20 @@ func test_processing_pipeline_uses_signal_local_limiters_and_publishes_limit_dia
 	var runtime := _test_runtime(100, 1)
 	var pipeline := ObservabilityProcessingPipeline.new(runtime)
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(1),
-			p_log_limits = ObservabilitySignalLimits.new(1),
-			p_metric_limits = ObservabilitySignalLimits.new(1),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(1),
+					p_log_limits = ObservabilitySignalLimits.new(1),
+					p_metric_limits = ObservabilitySignalLimits.new(1),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
 	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
 	Expect.that(pipeline.last_diagnostic().limit_kind()).to_equal(
@@ -7526,57 +7859,114 @@ func test_processing_pipeline_uses_signal_local_limiters_and_publishes_limit_dia
 func test_processing_pipeline_configure_is_atomic_and_success_resets_state() -> void:
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime(10, 1))
 	var active := ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(1))
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_limits = ObservabilitySignalLimits.new(1),
+		),
+	)
 	Expect.that(pipeline.configure(active)).to_equal(Error.OK)
 	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
 	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
 	var prior: ObservabilityProcessingDiagnostic = pipeline.last_diagnostic()
 	var invalid := ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [], p_event_sample_rate = NAN)
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_event_sample_rate = NAN,
+		),
+	)
 	Expect.that(pipeline.configure(invalid)).to_equal(Error.ERR_INVALID_PARAMETER)
 	var infinite := ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
 			p_log_sample_rate = INF,
+		),
 	)
 	Expect.that(pipeline.configure(infinite)).to_equal(Error.ERR_INVALID_PARAMETER)
 	var invalid_processor := ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable()], p_log_processors = [], p_metric_processors = [],
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_processors = [Callable() as Callable[[ObservabilityEvent], ObservabilityEvent?]],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
 	)
 	Expect.that(pipeline.configure(invalid_processor)).to_equal(Error.ERR_INVALID_DATA)
 	var invalid_rule := ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
 			p_redaction_policy = ObservabilityRedactionPolicy.new([null]),
+		),
 	)
 	Expect.that(pipeline.configure(invalid_rule)).to_equal(Error.ERR_INVALID_DATA)
 	var overlong_path := PackedStringArray()
 	for _index: int in range(ObservabilityRedactor.MAX_RULE_PATH_SEGMENTS + 1):
 		overlong_path.append("segment")
 	var overlong_policy := ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_text(overlong_path, "", "safe"),
-			]),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+			p_redaction_policy = ObservabilityRedactionPolicy.new(
+				[
+					ObservabilityRedactionRule.replace_text(overlong_path, "", "safe"),
+				],
+			),
+		),
 	)
 	Expect.that(pipeline.configure(overlong_policy)).to_equal(Error.ERR_INVALID_DATA)
 	Expect.that(pipeline.last_diagnostic().sequence()).to_equal(prior.sequence())
 	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_event_sample_rate = 1.0,
-			p_event_limits = ObservabilitySignalLimits.new(1),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_sample_rate = 1.0,
+					p_event_limits = ObservabilitySignalLimits.new(1),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(pipeline.last_diagnostic()).to_be_null()
 	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
 	Expect.that(pipeline.configure(null)).to_equal(Error.ERR_INVALID_PARAMETER)
@@ -7585,14 +7975,24 @@ func test_processing_pipeline_configure_is_atomic_and_success_resets_state() -> 
 func test_processing_pipeline_configures_structural_rules_and_rejects_matching_payloads() -> void:
 	var matching := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(matching.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.remove_field(
-						PackedStringArray(["event", "message"])),
-			]),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.remove_field(
+								PackedStringArray(["event", "message"]),
+							),
+						],
+					),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(matching.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
 	Expect.that(matching.last_diagnostic().reason()).to_equal(
 			ObservabilityProcessingDiagnostic.REDACTION_FAILED)
@@ -7601,34 +8001,59 @@ func test_processing_pipeline_configures_structural_rules_and_rejects_matching_p
 
 	var nonmatching := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(nonmatching.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.remove_field(
-						PackedStringArray(["other", "message"])),
-			]),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.remove_field(
+								PackedStringArray(["other", "message"]),
+							),
+						],
+					),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(nonmatching.process_event(ObservabilityEvent.new())["accepted"]).to_be_true()
 
 
 func test_processing_pipeline_reports_rule_for_required_frame_field_removal() -> void:
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.remove_field(
-						PackedStringArray(["event", "attributes", "unused"])),
-				ObservabilityRedactionRule.remove_field(PackedStringArray([
-					"event", "exception", "frames", "*", "file",
-				])),
-			]),
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.remove_field(
+								PackedStringArray(["event", "attributes", "unused"]),
+							),
+							ObservabilityRedactionRule.remove_field(
+								PackedStringArray(
+									[
+										"event",
+										"exception",
+										"frames",
+										"*",
+										"file",
+									],
+								),
+							),
+						],
+					),
+				),
+			))).to_equal(Error.OK)
 	var result: Dictionary = pipeline.process_event(ObservabilityEvent.new(
 			p_kind = &"exception",
 			p_attributes = {},
@@ -7651,10 +8076,18 @@ func test_processing_pipeline_reports_rule_for_required_frame_field_removal() ->
 func test_processing_pipeline_records_provider_results_and_keeps_admission_consumed() -> void:
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime(10, 1))
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(1),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(1),
+				),
+			))).to_equal(Error.OK)
 	var accepted: Dictionary = pipeline.process_event(ObservabilityEvent.new())
 	Expect.that(accepted["accepted"]).to_be_true()
 	pipeline.record_provider_result(&"event", false, Error.OK, accepted["operation_token"])
@@ -7766,10 +8199,18 @@ func test_processing_pipeline_bounds_pending_results_and_evicts_oldest_token() -
 func test_processing_pipeline_identity_excludes_attributes_but_includes_message() -> void:
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime(10, 1))
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {}, p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(0, 1000),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(0, 1000),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(pipeline.process_event(ObservabilityEvent.new(
 			p_message = "same", p_attributes = {"secret": "one"},
 	))["accepted"]).to_be_true()
@@ -7784,12 +8225,20 @@ func test_processing_pipeline_identity_excludes_attributes_but_includes_message(
 func test_processing_pipeline_rejects_event_to_log_processor_crossing() -> void:
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_processing_event_to_log")],
-			p_log_processors = [], p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_processing_event_to_log") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(pipeline.process_event(ObservabilityEvent.new())["accepted"]).to_be_false()
 	Expect.that(pipeline.last_diagnostic().reason()).to_equal(
 			ObservabilityProcessingDiagnostic.INVALID_PROCESSOR_RESULT)
@@ -7810,12 +8259,18 @@ func test_processing_pipeline_rejects_invalid_metric_processor_replacements() ->
 	for processor: Callable in invalid_replacements:
 		var pipeline := ObservabilityProcessingPipeline.new(_test_runtime())
 		Expect.that(pipeline.configure(ObservabilityConfig.new(
-				p_global_attributes = {}, p_provider_options = {},
-				p_automatic_message_filter_prefixes = PackedStringArray(),
-				p_event_processors = [], p_log_processors = [],
-				p_metric_processors = [processor],
-				p_metric_limits = ObservabilitySignalLimits.new(),
-		))).to_equal(Error.OK)
+					p_global_attributes = {},
+					p_provider_options = {},
+					p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+						p_message_filter_prefixes = PackedStringArray(),
+					),
+					p_processing = ObservabilityProcessingConfig.new(
+						p_event_processors = [],
+						p_log_processors = [],
+						p_metric_processors = [processor],
+						p_metric_limits = ObservabilitySignalLimits.new(),
+					),
+				))).to_equal(Error.OK)
 		Expect.that(pipeline.process_metric(ObservabilityMetric.new(
 				p_name = "metric", p_value = 1.0,
 		))["accepted"]).to_be_false()
@@ -7828,12 +8283,20 @@ func test_processing_pipeline_rejects_invalid_metric_processor_replacements() ->
 func test_processing_pipeline_reports_metric_processor_drop_and_wrong_type() -> void:
 	var dropped := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(dropped.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [],
-			p_metric_processors = [Callable(self, "_processing_metric_drop")],
-			p_metric_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [
+						Callable(self, "_processing_metric_drop") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+					],
+					p_metric_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(dropped.process_metric(ObservabilityMetric.new(
 			p_name = "metric", p_value = 1.0,
 	))["accepted"]).to_be_false()
@@ -7844,12 +8307,20 @@ func test_processing_pipeline_reports_metric_processor_drop_and_wrong_type() -> 
 
 	var wrong_type := ObservabilityProcessingPipeline.new(_test_runtime())
 	Expect.that(wrong_type.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [],
-			p_metric_processors = [Callable(self, "_processing_metric_wrong_type")],
-			p_metric_limits = ObservabilitySignalLimits.new(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [
+						Callable(self, "_processing_metric_wrong_type") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+					],
+					p_metric_limits = ObservabilitySignalLimits.new(),
+				),
+			))).to_equal(Error.OK)
 	Expect.that(wrong_type.process_metric(ObservabilityMetric.new(
 			p_name = "metric", p_value = 1.0,
 	))["accepted"]).to_be_false()
@@ -8033,13 +8504,20 @@ func _processing_metric_nonfinite_attribute(_metric: ObservabilityMetric) -> Obs
 func _processing_repeated_pipeline() -> ObservabilityProcessingPipeline:
 	var pipeline := ObservabilityProcessingPipeline.new(_test_runtime(10, 1))
 	pipeline.configure(ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [], p_log_processors = [], p_metric_processors = [],
-			p_event_limits = ObservabilitySignalLimits.new(0, 1000),
-			p_log_limits = ObservabilitySignalLimits.new(0, 1000),
-			p_metric_limits = ObservabilitySignalLimits.new(0, 1000),
-	))
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+				p_message_filter_prefixes = PackedStringArray(),
+			),
+			p_processing = ObservabilityProcessingConfig.new(
+				p_event_processors = [],
+				p_log_processors = [],
+				p_metric_processors = [],
+				p_event_limits = ObservabilitySignalLimits.new(0, 1000),
+				p_log_limits = ObservabilitySignalLimits.new(0, 1000),
+				p_metric_limits = ObservabilitySignalLimits.new(0, 1000),
+			),
+		))
 	return pipeline
 
 
@@ -8066,10 +8544,17 @@ func _exception_snapshot(event: ObservabilityEvent) -> Dictionary:
 
 func _processing_config(processors: Array[Callable]) -> ObservabilityConfig:
 	return ObservabilityConfig.new(
-			p_global_attributes = {}, p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = processors, p_log_processors = [], p_metric_processors = [],
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_processors = processors,
+			p_log_processors = [],
+			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(),
+		),
 	)
 
 
@@ -8263,18 +8748,22 @@ func _reconfiguring_reservation_service() -> ReconfiguringReservationService:
 
 func _ordinary_generation_config(enabled: bool) -> ObservabilityConfig:
 	return ObservabilityConfig.new(
-			p_enabled = enabled,
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_capture_enabled = false,
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_enabled = enabled,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_event_limits = ObservabilitySignalLimits.new(),
 			p_log_limits = ObservabilitySignalLimits.new(),
 			p_metric_limits = ObservabilitySignalLimits.new(),
-		)
+		),
+	)
 
 
 func _test_runtime(

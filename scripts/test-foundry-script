@@ -221,6 +221,50 @@ event_exception_accessor_contract=$(
 )
 grep -Fq '_exception.duplicate()' <<<"$event_exception_accessor_contract" \
 	|| fail "ObservabilityEvent.exception() must return an isolated exception"
+config_constructor=$(
+	sed -n '/^func _init($/,/^) -> void:$/p' "$addon/ObservabilityConfig.fs"
+)
+expected_config_constructor_signature=$'func _init(\n\t\tp_enabled: bool = true,\n\t\tp_environment: String = "",\n\t\tp_release: String = "",\n\t\tp_dist: String = "",\n\t\tp_global_attributes: Dictionary = {},\n\t\tp_provider_options: Dictionary = {},\n\t\tp_processing: ObservabilityProcessingConfig? = null,\n\t\tp_automatic_capture: ObservabilityAutomaticCaptureConfig? = null,\n\t\tp_attachments: ObservabilityAttachmentConfig? = null,\n\t\tp_stack_traces: ObservabilityStackTraceConfig? = null,\n\t\tp_mobile_diagnostics: ObservabilityMobileDiagnosticsConfig? = null,\n) -> void:'
+grep -Fq "$expected_config_constructor_signature" <<<"$config_constructor" \
+	|| fail "ObservabilityConfig constructor signature has changed"
+for legacy_parameter in \
+	logs_enabled \
+	log_minimum_level \
+	log_rate_limit_per_second \
+	metrics_enabled \
+	event_sample_rate \
+	log_sample_rate \
+	metric_sample_rate \
+	metric_filter \
+	event_processors \
+	log_processors \
+	metric_processors \
+	event_limits \
+	log_limits \
+	metric_limits \
+	redaction_policy \
+	automatic_capture_enabled \
+	automatic_event_mask \
+	automatic_breadcrumb_mask \
+	automatic_log_mask \
+	max_breadcrumbs \
+	automatic_message_filter_prefixes \
+	max_attachment_bytes \
+	attach_game_log \
+	attach_screenshot \
+	attach_scene_tree \
+	stack_trace_source_context_enabled \
+	stack_trace_variables_enabled \
+	application_hang_detection_enabled \
+	application_hang_timeout_msec \
+	android_anr_detection_enabled \
+	android_anr_timeout_msec \
+	android_anr_attach_thread_dump; do
+	legacy_member_pattern="p_${legacy_parameter}:|^(final )?var _?${legacy_parameter}:|^func ${legacy_parameter}\\("
+	if rg -n "$legacy_member_pattern" "$addon/ObservabilityConfig.fs"; then
+		fail "root configuration retains legacy member: ${legacy_parameter}"
+	fi
+done
 for field in _message _level _category _timestamp_msec _attributes _type; do
 	rg -q "^final var ${field}:" "$addon/ObservabilityBreadcrumb.fs" \
 		|| fail "ObservabilityBreadcrumb field must be immutable: ${field}"
@@ -511,8 +555,9 @@ capture_log_contract=$(
 capture_log_scope_suffix=$'\t\tengine_ticks_msec: int = -1,\n\t\tscope: ObservabilityScope? = null,\n) -> String'
 grep -Fq "$capture_log_scope_suffix" <<<"$capture_log_contract" \
 	|| fail "capture_log scope must follow legacy terminal engine_ticks_msec"
-rg -q '^var max_breadcrumbs: int = 100$' "$addon/ObservabilityConfig.fs" \
-	|| fail "ObservabilityConfig is missing the default breadcrumb bound"
+rg -q '^final var _max_breadcrumbs: int$' \
+	"$addon/ObservabilityAutomaticCaptureConfig.fs" \
+	|| fail "automatic capture configuration is missing the breadcrumb bound"
 rg -q 'abstract func clear_breadcrumbs\(\) -> bool' \
 	"$addon/FoundryObservabilityApi.fs" \
 	|| fail "public contract is missing clear_breadcrumbs"

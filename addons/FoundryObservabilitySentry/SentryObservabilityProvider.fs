@@ -57,7 +57,9 @@ func _init(
 			p_enabled = false,
 			p_global_attributes = {},
 			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+			p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+				p_message_filter_prefixes = PackedStringArray(),
+			),
 		))
 	_owner = str(get_instance_id())
 
@@ -81,19 +83,19 @@ func is_available() -> bool:
 func configure(config: ObservabilityConfig) -> int:
 	var options: Dictionary = config.provider_options()
 	var dsn: String = str(options.get("dsn", ""))
-	if config.enabled and dsn.is_empty():
+	if config.enabled() and dsn.is_empty():
 		return Error.FAILED
 	var candidate_redactor: ObservabilityRedactor = ObservabilityRedactor.new(
-			config.redaction_policy(),
+			config.processing().redaction_policy(),
 		)
 	if not candidate_redactor.is_valid():
 		return Error.ERR_INVALID_DATA
 
 	var bridge: Object? = _resolve_bridge()
-	if config.enabled and bridge == null:
+	if config.enabled() and bridge == null:
 		return Error.ERR_UNAVAILABLE
 	if bridge != null and not _has_lifecycle_contract(bridge):
-		if config.enabled or _enabled:
+		if config.enabled() or _enabled:
 			return Error.ERR_UNAVAILABLE
 		_enabled = false
 		_redactor = ObservabilityRedactor.new()
@@ -104,19 +106,19 @@ func configure(config: ObservabilityConfig) -> int:
 		_clear_last_config_payload()
 		_shutdown = false
 		return Error.OK
-	if config.enabled and config.logs_enabled and (bridge == null or not bridge.has_method("captureLog")):
+	if config.enabled() and config.processing().logs_enabled() and (bridge == null or not bridge.has_method("captureLog")):
 		return Error.FAILED
-	if config.enabled \
+	if config.enabled() \
 			and bridge != null \
 			and bridge.has_method("captureBreadcrumb") \
 			and not bridge.has_method("clearBreadcrumbs"):
 		return Error.FAILED
 	var attachment_features_enabled: bool = (
-			config.attach_game_log
-			or config.attach_screenshot
-			or config.attach_scene_tree
+			config.attachments().attach_game_log()
+			or config.attachments().attach_screenshot()
+			or config.attachments().attach_scene_tree()
 		)
-	if config.enabled and attachment_features_enabled and (
+	if config.enabled() and attachment_features_enabled and (
 			bridge == null
 			or not bridge.has_method("replaceAttachments")
 			or not bridge.has_method("captureWithAttachments")
@@ -135,13 +137,13 @@ func configure(config: ObservabilityConfig) -> int:
 		return Error.OK
 
 	var candidate_stable_contexts: Dictionary = {}
-	if config.enabled:
+	if config.enabled():
 		var send_default_pii: bool = false
 		var send_default_pii_value: Variant = options.get("send_default_pii")
 		if send_default_pii_value is bool:
 			send_default_pii = send_default_pii_value
 		candidate_stable_contexts = _context_collector.stable_contexts(
-				config.environment,
+				config.environment(),
 				send_default_pii,
 			)
 		var stable_result: Dictionary = candidate_redactor.redact_contexts(
@@ -171,32 +173,32 @@ func configure(config: ObservabilityConfig) -> int:
 			candidate_contexts["global_attributes"] as Dictionary
 		).duplicate(true)
 	var payload: Dictionary = {
-			"enabled": config.enabled,
+			"enabled": config.enabled(),
 			"dsn": dsn,
-			"environment": config.environment,
-			"release": config.release,
-			"dist": config.dist,
+			"environment": config.environment(),
+			"release": config.release(),
+			"dist": config.dist(),
 			"global_attributes": candidate_global_attributes,
 			"provider_options": options,
-			"logs_enabled": config.logs_enabled,
-			"log_minimum_level": config.log_minimum_level,
-			"log_rate_limit_per_second": config.log_rate_limit_per_second,
-			"metrics_enabled": config.metrics_enabled,
+			"logs_enabled": config.processing().logs_enabled(),
+			"log_minimum_level": config.processing().log_minimum_level(),
+			"log_rate_limit_per_second": config.processing().log_rate_limit_per_second(),
+			"metrics_enabled": config.processing().metrics_enabled(),
 			"application_hang_detection_enabled":
-					config.application_hang_detection_enabled,
+					config.mobile_diagnostics().application_hang_detection_enabled(),
 			"application_hang_timeout_msec":
-					maxi(1000, config.application_hang_timeout_msec),
-			"android_anr_detection_enabled": config.android_anr_detection_enabled,
-			"android_anr_timeout_msec": maxi(1000, config.android_anr_timeout_msec),
-			"android_anr_attach_thread_dump": config.android_anr_attach_thread_dump,
-			"max_breadcrumbs": config.max_breadcrumbs,
-			"max_attachment_bytes": config.max_attachment_bytes,
-			"attach_game_log": config.attach_game_log,
-			"attach_screenshot": config.attach_screenshot,
-			"attach_scene_tree": config.attach_scene_tree,
+					maxi(1000, config.mobile_diagnostics().application_hang_timeout_msec()),
+			"android_anr_detection_enabled": config.mobile_diagnostics().android_anr_detection_enabled(),
+			"android_anr_timeout_msec": maxi(1000, config.mobile_diagnostics().android_anr_timeout_msec()),
+			"android_anr_attach_thread_dump": config.mobile_diagnostics().android_anr_attach_thread_dump(),
+			"max_breadcrumbs": config.automatic_capture().max_breadcrumbs(),
+			"max_attachment_bytes": config.attachments().max_bytes(),
+			"attach_game_log": config.attachments().attach_game_log(),
+			"attach_screenshot": config.attachments().attach_screenshot(),
+			"attach_scene_tree": config.attachments().attach_scene_tree(),
 			"lifecycle_owner": _owner,
 		}
-	if config.enabled:
+	if config.enabled():
 		payload["stable_contexts"] = candidate_stable_contexts
 	var candidate_config_payload: Dictionary = payload.duplicate(true)
 	var retained_scope_payload: Dictionary = _scope_payload(_scope, _user)
@@ -205,7 +207,7 @@ func configure(config: ObservabilityConfig) -> int:
 	var candidate_attachment_config: ObservabilityConfig = _attachment_config_from(config)
 	var candidate_persistent_builtins: Array[Dictionary] = []
 	var candidate_persistent_failures: Array[ObservabilityAttachmentFailure] = []
-	if config.enabled and bridge.has_method("replaceAttachments"):
+	if config.enabled() and bridge.has_method("replaceAttachments"):
 		var built_in_result: Dictionary = _attachment_collector.collect(
 				null,
 				candidate_attachment_config,
@@ -263,7 +265,7 @@ func configure(config: ObservabilityConfig) -> int:
 		):
 			_fail_closed(bridge)
 		return result_code
-	if config.enabled and bridge.has_method("replaceAttachments"):
+	if config.enabled() and bridge.has_method("replaceAttachments"):
 		if not _replace_native_snapshot(bridge, candidate_persistent_builtins):
 			if not can_preserve_prior_session_after_configuration_attempt \
 					or not _rollback_after_session_reset_failure(
@@ -274,7 +276,7 @@ func configure(config: ObservabilityConfig) -> int:
 			):
 				_fail_closed(bridge)
 			return Error.FAILED
-	if config.enabled and _has_scope_contract(bridge):
+	if config.enabled() and _has_scope_contract(bridge):
 		var empty_scope_payload: Dictionary = _scope_payload(
 				ObservabilityScope.new(),
 				null,
@@ -289,7 +291,7 @@ func configure(config: ObservabilityConfig) -> int:
 			):
 				_fail_closed(bridge)
 			return Error.FAILED
-	if config.enabled and bridge.has_method("clearBreadcrumbs"):
+	if config.enabled() and bridge.has_method("clearBreadcrumbs"):
 		var clear_result: Variant = bridge.call("clearBreadcrumbs")
 		if not (clear_result is bool) or clear_result != true:
 			if not _can_preserve_breadcrumb_trail_after_clear_failure(
@@ -304,7 +306,7 @@ func configure(config: ObservabilityConfig) -> int:
 			):
 				_fail_closed(bridge)
 			return Error.FAILED
-	_enabled = config.enabled
+	_enabled = config.enabled()
 	_redactor = candidate_redactor
 	_stable_contexts = candidate_stable_contexts
 	_scope = ObservabilityScope.new()
@@ -696,7 +698,7 @@ func _is_bridge_available(bridge: Object) -> bool:
 
 
 func _native_payloads_for(candidate: Dictionary) -> Array[Dictionary]:
-	if _attachment_config.max_attachment_bytes == 0:
+	if _attachment_config.attachments().max_bytes() == 0:
 		return []
 	var payloads: Array[Dictionary] = _persistent_builtin_attachments.duplicate(true)
 	for handle: String in candidate:
@@ -733,7 +735,7 @@ func _capture_local_attachments(event: ObservabilityEvent) -> Array:
 	var local: Array[Dictionary] = []
 	for handle: String in _attachments:
 		var attachment: ObservabilityAttachment = _attachments[handle]
-		if _attachment_config.max_attachment_bytes == 0:
+		if _attachment_config.attachments().max_bytes() == 0:
 			_append_attachment_failure(
 					handle,
 					attachment.effective_filename(),
@@ -742,7 +744,7 @@ func _capture_local_attachments(event: ObservabilityEvent) -> Array:
 				)
 			continue
 		if attachment.is_bytes():
-			if attachment.bytes().size() > _attachment_config.max_attachment_bytes:
+			if attachment.bytes().size() > _attachment_config.attachments().max_bytes():
 				_append_attachment_failure(
 						handle,
 						attachment.effective_filename(),
@@ -811,7 +813,7 @@ func _preflight_path_attachment(
 			)
 		return {"accepted": false}
 	var length: int = file.get_length()
-	if length > _attachment_config.max_attachment_bytes:
+	if length > _attachment_config.attachments().max_bytes():
 		file.close()
 		_append_attachment_failure(
 				handle,
@@ -901,15 +903,19 @@ func _copy_attachment_failures(
 
 func _attachment_config_from(config: ObservabilityConfig) -> ObservabilityConfig:
 	return ObservabilityConfig.new(
-			p_enabled = config.enabled,
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_max_attachment_bytes = config.max_attachment_bytes,
-			p_attach_game_log = config.attach_game_log,
-			p_attach_screenshot = config.attach_screenshot,
-			p_attach_scene_tree = config.attach_scene_tree,
-		)
+		p_enabled = config.enabled(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_attachments = ObservabilityAttachmentConfig.new(
+			p_max_bytes = config.attachments().max_bytes(),
+			p_attach_game_log = config.attachments().attach_game_log(),
+			p_attach_screenshot = config.attachments().attach_screenshot(),
+			p_attach_scene_tree = config.attachments().attach_scene_tree(),
+		),
+	)
 
 
 func _apply_scope_candidate(
@@ -1021,8 +1027,12 @@ func _clear_attachment_state() -> void:
 			p_enabled = false,
 			p_global_attributes = {},
 			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_max_attachment_bytes = DEFAULT_MAX_ATTACHMENT_BYTES,
+			p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+				p_message_filter_prefixes = PackedStringArray(),
+			),
+			p_attachments = ObservabilityAttachmentConfig.new(
+				p_max_bytes = DEFAULT_MAX_ATTACHMENT_BYTES,
+			),
 		))
 
 

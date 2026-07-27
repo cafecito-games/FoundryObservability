@@ -49,7 +49,7 @@ func is_available() -> bool:
 	return true
 
 
-## Applies the configured test result and enables capture when config.enabled is true.
+## Applies the configured test result and enables capture when configured.
 func configure(config: ObservabilityConfig) -> int:
 	if configure_result != Error.OK:
 		return configure_result
@@ -58,9 +58,9 @@ func configure(config: ObservabilityConfig) -> int:
 	_breadcrumbs.clear()
 	_attachments.clear()
 	_last_attachment_failures.clear()
-	_max_breadcrumbs = maxi(0, config.max_breadcrumbs)
-	_max_attachment_bytes = maxi(0, config.max_attachment_bytes)
-	_enabled = config.enabled
+	_max_breadcrumbs = maxi(0, config.automatic_capture().max_breadcrumbs())
+	_max_attachment_bytes = maxi(0, config.attachments().max_bytes())
+	_enabled = config.enabled()
 	_shutdown = false
 	return Error.OK
 

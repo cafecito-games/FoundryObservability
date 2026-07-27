@@ -23,7 +23,7 @@ func is_available() -> bool:
 
 func configure(config: ObservabilityConfig) -> int:
 	call_order.append(&"configure")
-	_enabled = config.enabled
+	_enabled = config.enabled()
 	return Error.OK
 
 

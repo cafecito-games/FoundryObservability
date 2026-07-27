@@ -276,7 +276,7 @@ func is_enabled() -> bool:
 	var enabled: bool = not _shutdown \
 			and not _shutdown_requested \
 			and not _configuration_in_progress \
-			and _config.enabled
+			and _config.enabled()
 	_pipeline_mutex.unlock()
 	return enabled
 
@@ -444,7 +444,7 @@ func _processing_failure_depth(owner_id: int) -> int:
 ## Adds one persistent diagnostic attachment through an optional provider capability.
 func add_attachment(attachment: ObservabilityAttachment) -> String:
 	var state: Dictionary = _capture_state()
-	if not state.get("valid", false) or not _state_config(state).enabled:
+	if not state.get("valid", false) or not _state_config(state).enabled():
 		return ""
 	if attachment == null or not attachment.is_valid():
 		_last_error = Error.ERR_INVALID_PARAMETER
@@ -488,7 +488,7 @@ func add_attachment(attachment: ObservabilityAttachment) -> String:
 ## Removes one persistent diagnostic attachment through an optional provider capability.
 func remove_attachment(handle: String) -> bool:
 	var state: Dictionary = _capture_state()
-	if not state.get("valid", false) or not _state_config(state).enabled:
+	if not state.get("valid", false) or not _state_config(state).enabled():
 		return false
 	if handle.is_empty() or handle.strip_edges() != handle or _has_control_character(handle):
 		_last_error = Error.ERR_INVALID_PARAMETER
@@ -513,7 +513,7 @@ func remove_attachment(handle: String) -> bool:
 ## Clears all persistent diagnostic attachments through an optional provider capability.
 func clear_attachments() -> bool:
 	var state: Dictionary = _capture_state()
-	if not state.get("valid", false) or not _state_config(state).enabled:
+	if not state.get("valid", false) or not _state_config(state).enabled():
 		return false
 	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
 	if provider == null:
@@ -582,7 +582,7 @@ func capture_event(event: ObservabilityEvent) -> String:
 			state["pipeline"] as ObservabilityProcessingPipeline
 	)
 	var generation: int = state["generation"]
-	if not config.enabled:
+	if not config.enabled():
 		return ""
 	var capture_engine_ticks_msec: int = _runtime.monotonic_time_msec()
 	var capture_unix_msec: int = _runtime.unix_time_msec()
@@ -592,7 +592,7 @@ func capture_event(event: ObservabilityEvent) -> String:
 			capture_engine_ticks_msec,
 		)
 	if normalized.kind() == &"log":
-		if not config.logs_enabled or normalized.level() < config.log_minimum_level:
+		if not config.processing().logs_enabled() or normalized.level() < config.processing().log_minimum_level():
 			return ""
 	var processable: ObservabilityEvent = _normalized_exception_event(normalized, config)
 	_begin_processing_failure_scope()
@@ -745,7 +745,7 @@ func set_context(context_name: String, value: Dictionary) -> bool:
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return false
 	var state: Dictionary = _capture_state()
-	if not state.get("valid", false) or not _state_config(state).enabled:
+	if not state.get("valid", false) or not _state_config(state).enabled():
 		return false
 	@warning_ignore("unsafe_cast")
 	var pipeline: ObservabilityProcessingPipeline = (
@@ -789,7 +789,7 @@ func set_user(user: ObservabilityUser) -> bool:
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return false
 	var state: Dictionary = _capture_state()
-	if not state.get("valid", false) or not _state_config(state).enabled:
+	if not state.get("valid", false) or not _state_config(state).enabled():
 		return false
 	@warning_ignore("unsafe_cast")
 	var pipeline: ObservabilityProcessingPipeline = (
@@ -816,7 +816,7 @@ func remove_user() -> bool:
 
 func _call_scope_operation(method_name: StringName, arguments: Array) -> bool:
 	var state: Dictionary = _capture_state()
-	if not state.get("valid", false) or not _state_config(state).enabled:
+	if not state.get("valid", false) or not _state_config(state).enabled():
 		return false
 	return _call_scope_operation_in_state(state, method_name, arguments)
 
@@ -867,7 +867,7 @@ func capture_breadcrumb(breadcrumb: ObservabilityBreadcrumb) -> bool:
 ## Clears breadcrumbs when the active provider supports the explicit optional operation.
 func clear_breadcrumbs() -> bool:
 	var state: Dictionary = _capture_state()
-	if not state.get("valid", false) or not _state_config(state).enabled:
+	if not state.get("valid", false) or not _state_config(state).enabled():
 		return false
 	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
 	if provider == null:
@@ -892,7 +892,7 @@ func _capture_breadcrumb(
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return false
 	var state: Dictionary = _capture_state()
-	if not state.get("valid", false) or not _state_config(state).enabled:
+	if not state.get("valid", false) or not _state_config(state).enabled():
 		return false
 	@warning_ignore("unsafe_cast")
 	var pipeline: ObservabilityProcessingPipeline = (
@@ -957,7 +957,7 @@ func capture_metric(metric: ObservabilityMetric) -> bool:
 	if normalized == null:
 		_last_error = Error.ERR_INVALID_PARAMETER
 		return false
-	if not config.enabled or not config.metrics_enabled:
+	if not config.enabled() or not config.processing().metrics_enabled():
 		return false
 	if not provider.has_method("capture_metric"):
 		_last_error = Error.ERR_UNAVAILABLE
@@ -1227,7 +1227,7 @@ func _normalized_stack_frame(
 	var context_line: String = ""
 	var pre_context: PackedStringArray = PackedStringArray()
 	var post_context: PackedStringArray = PackedStringArray()
-	if config.stack_trace_source_context_enabled:
+	if config.stack_traces().source_context_enabled():
 		context_line = frame.context_line()
 		if not context_line.is_empty():
 			var source_pre_context: PackedStringArray = frame.pre_context()
@@ -1238,7 +1238,7 @@ func _normalized_stack_frame(
 				post_context.append(source_post_context[index])
 
 	var variables: Dictionary = {}
-	if config.stack_trace_variables_enabled:
+	if config.stack_traces().variables_enabled():
 		variables = frame._bounded_sanitized_variables(
 				ObservabilityStackFrame.MAX_VARIABLE_CONTAINER_DEPTH,
 				ObservabilityStackFrame.MAX_VARIABLE_ITEMS,
@@ -1258,7 +1258,7 @@ func _normalized_stack_frame(
 
 func _capture_feedback(feedback: ObservabilityFeedback) -> String:
 	var state: Dictionary = _capture_state()
-	if not state.get("valid", false) or not _state_config(state).enabled:
+	if not state.get("valid", false) or not _state_config(state).enabled():
 		return ""
 	var provider: ObservabilityProvider? = _begin_state_provider_call(state)
 	if provider == null:
@@ -1399,7 +1399,7 @@ func end_automatic_capture() -> void:
 
 
 func _refresh_automatic_logger() -> void:
-	var should_install: bool = _config.enabled and _config.automatic_capture_enabled
+	var should_install: bool = _config.enabled() and _config.automatic_capture().enabled()
 	if not should_install:
 		_remove_automatic_logger()
 		return

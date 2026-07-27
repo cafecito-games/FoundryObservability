@@ -47,24 +47,30 @@ func _init(runtime: ObservabilityRuntime) -> void:
 func configure(config: ObservabilityConfig? = null) -> int:
 	if config == null:
 		return Error.ERR_INVALID_PARAMETER
-	if not _valid_sample_rate(config.event_sample_rate) \
-			or not _valid_sample_rate(config.log_sample_rate) \
-			or not _valid_sample_rate(config.metric_sample_rate):
+	if not _valid_sample_rate(config.processing().event_sample_rate()) \
+			or not _valid_sample_rate(config.processing().log_sample_rate()) \
+			or not _valid_sample_rate(config.processing().metric_sample_rate()):
 		return Error.ERR_INVALID_PARAMETER
 
-	var event_processors: Array[Callable] = config.event_processors()
-	var log_processors: Array[Callable] = config.log_processors()
-	var metric_processors: Array[Callable] = config.metric_processors()
+	var event_processors: Array[Callable] = config.processing().event_processors()
+	var log_processors: Array[Callable] = config.processing().log_processors()
+	var metric_processors: Array[Callable] = config.processing().metric_processors()
 	if not _valid_processors(event_processors) or not _valid_processors(log_processors) \
 			or not _valid_processors(metric_processors):
 		return Error.ERR_INVALID_DATA
-	if config.metric_filter.is_valid() == false and config.metric_filter != Callable():
-		return Error.ERR_INVALID_DATA
-
-	var policy: ObservabilityRedactionPolicy = config.redaction_policy()
-	var event_limits: ObservabilitySignalLimits = config.event_limits()
-	var log_limits: ObservabilitySignalLimits = config.log_limits()
-	var metric_limits: ObservabilitySignalLimits = config.metric_limits()
+	var metric_filter: Variant = config.processing().metric_filter()
+	var candidate_metric_filter: Callable = Callable()
+	if metric_filter != null:
+		if not (metric_filter is Callable):
+			return Error.ERR_INVALID_DATA
+		@warning_ignore("unsafe_cast")
+		candidate_metric_filter = metric_filter as Callable
+		if not candidate_metric_filter.is_valid():
+			return Error.ERR_INVALID_DATA
+	var policy: ObservabilityRedactionPolicy = config.processing().redaction_policy()
+	var event_limits: ObservabilitySignalLimits = config.processing().event_limits()
+	var log_limits: ObservabilitySignalLimits = config.processing().log_limits()
+	var metric_limits: ObservabilitySignalLimits = config.processing().metric_limits()
 	if policy == null or not policy.is_valid() or not _valid_limits(event_limits) \
 			or not _valid_limits(log_limits) or not _valid_limits(metric_limits):
 		return Error.ERR_INVALID_DATA
@@ -73,11 +79,11 @@ func configure(config: ObservabilityConfig? = null) -> int:
 	if not candidate_redactor.is_valid():
 		return Error.ERR_INVALID_DATA
 	var candidate_event_limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new(
-			config.event_sample_rate, event_limits)
+			config.processing().event_sample_rate(), event_limits)
 	var candidate_log_limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new(
-			config.log_sample_rate, log_limits, config.log_rate_limit_per_second)
+			config.processing().log_sample_rate(), log_limits, config.processing().log_rate_limit_per_second())
 	var candidate_metric_limiter: ObservabilitySignalLimiter = ObservabilitySignalLimiter.new(
-			config.metric_sample_rate, metric_limits)
+			config.processing().metric_sample_rate(), metric_limits)
 	var candidate_event_limiter_mutex: Mutex = Mutex.new()
 	var candidate_log_limiter_mutex: Mutex = Mutex.new()
 	var candidate_metric_limiter_mutex: Mutex = Mutex.new()
@@ -88,7 +94,7 @@ func configure(config: ObservabilityConfig? = null) -> int:
 	_event_processors = _copy_processors(event_processors)
 	_log_processors = _copy_processors(log_processors)
 	_metric_processors = _copy_processors(metric_processors)
-	_metric_filter = config.metric_filter
+	_metric_filter = candidate_metric_filter
 	_event_limiter = candidate_event_limiter
 	_log_limiter = candidate_log_limiter
 	_metric_limiter = candidate_metric_limiter

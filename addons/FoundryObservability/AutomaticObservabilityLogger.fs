@@ -67,9 +67,9 @@ func _capture_error(
 	var type_name: String = _error_type_name(error_type)
 	var message: String = rationale if not rationale.is_empty() else code
 	var engine_ticks_msec: int = _runtime.monotonic_time_msec()
-	var as_event: bool = (_config.automatic_event_mask & category_mask) != 0
-	var as_breadcrumb: bool = (_config.automatic_breadcrumb_mask & category_mask) != 0
-	var as_log: bool = (_config.automatic_log_mask & category_mask) != 0
+	var as_event: bool = (_config.automatic_capture().event_mask() & category_mask) != 0
+	var as_breadcrumb: bool = (_config.automatic_capture().breadcrumb_mask() & category_mask) != 0
+	var as_log: bool = (_config.automatic_capture().log_mask() & category_mask) != 0
 	if not as_event and not as_breadcrumb and not as_log:
 		return
 
@@ -131,8 +131,8 @@ func _log_message(message: String, error: bool) -> void:
 
 
 func _capture_message(message: String, error: bool) -> void:
-	if (_config.automatic_breadcrumb_mask & ObservabilityCaptureMask.MESSAGE) == 0 \
-			and (_config.automatic_log_mask & ObservabilityCaptureMask.MESSAGE) == 0:
+	if (_config.automatic_capture().breadcrumb_mask() & ObservabilityCaptureMask.MESSAGE) == 0 \
+			and (_config.automatic_capture().log_mask() & ObservabilityCaptureMask.MESSAGE) == 0:
 		return
 
 	var processed_message: String = _strip_invisible(message)
@@ -145,7 +145,7 @@ func _capture_message(message: String, error: bool) -> void:
 		"log.error_stream": error,
 		"observability.origin": _ORIGIN,
 	}
-	if (_config.automatic_breadcrumb_mask & ObservabilityCaptureMask.MESSAGE) != 0:
+	if (_config.automatic_capture().breadcrumb_mask() & ObservabilityCaptureMask.MESSAGE) != 0:
 		_service._capture_automatic_breadcrumb(ObservabilityBreadcrumb.new(
 				p_message = processed_message,
 				p_level = level,
@@ -153,7 +153,7 @@ func _capture_message(message: String, error: bool) -> void:
 				p_timestamp_msec = engine_ticks_msec,
 				p_attributes = attributes,
 			))
-	if (_config.automatic_log_mask & ObservabilityCaptureMask.MESSAGE) != 0:
+	if (_config.automatic_capture().log_mask() & ObservabilityCaptureMask.MESSAGE) != 0:
 		_service.capture_log(
 				processed_message,
 				level,
@@ -235,7 +235,7 @@ func _serialize_backtraces(script_backtraces: Array[ScriptBacktrace]) -> Diction
 
 
 func _has_filtered_prefix(message: String) -> bool:
-	for prefix: String in _config.automatic_message_filter_prefixes():
+	for prefix: String in _config.automatic_capture().message_filter_prefixes():
 		if message.begins_with(prefix):
 			return true
 	return false

@@ -80,10 +80,15 @@ func test_sink_uses_service_log_filtering() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_log_minimum_level = ObservabilityLevel.ERROR,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_log_minimum_level = ObservabilityLevel.ERROR,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 	var sink := FoundryLibObservabilitySink.new(
 			p_service = service,
 			p_minimum_level = ObservabilityLevel.TRACE,

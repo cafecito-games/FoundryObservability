@@ -231,13 +231,18 @@ func debug_enabled() -> bool:
 
 func observability_config() -> ObservabilityConfig:
 	return ObservabilityConfig.new(
-			p_enabled = _enabled,
-			p_environment = _environment,
-			p_release = _release,
-			p_dist = _dist,
-			p_global_attributes = {},
-			p_provider_options = _provider_options,
-		)
+		p_enabled = _enabled,
+		p_environment = _environment,
+		p_release = _release,
+		p_dist = _dist,
+		p_global_attributes = {},
+		p_provider_options = _provider_options,
+		p_processing = ObservabilityProcessingConfig.new(),
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(),
+		p_attachments = ObservabilityAttachmentConfig.new(),
+		p_stack_traces = ObservabilityStackTraceConfig.new(),
+		p_mobile_diagnostics = ObservabilityMobileDiagnosticsConfig.new(),
+	)
 
 
 static func _first_nonempty(primary: String, fallback: String) -> String:

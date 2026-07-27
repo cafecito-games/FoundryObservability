@@ -355,10 +355,10 @@ func test_provider_forwards_stable_and_capture_time_runtime_context() -> void:
 			p_runtime_context_probe = probe,
 		)
 	var config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_environment = "production",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(
@@ -400,15 +400,19 @@ func test_provider_redacts_stable_and_volatile_runtime_contexts_across_sessions(
 			),
 	])
 	var original_config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_environment = "production",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_redaction_policy = original_policy,
-		)
+		),
+	)
 	Expect.that(provider.configure(original_config)).to_equal(Error.OK)
 	Expect.that(
 			bridge.configured_payload["stable_contexts"]["foundry_app"]["name"],
@@ -425,27 +429,34 @@ func test_provider_redacts_stable_and_volatile_runtime_contexts_across_sessions(
 	probe.volatile_orientation = "landscape"
 	bridge.configure_result = Error.FAILED
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(["contexts", "foundry_app", "name"]),
-						"Oakhaven",
-						"safe-app",
+				p_environment = "production",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(["contexts", "foundry_app", "name"]),
+								"Oakhaven",
+								"safe-app",
+							),
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(
+									["contexts", "display", "primary_orientation"],
+								),
+								"secret",
+								"candidate",
+							),
+						],
 					),
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(
-								["contexts", "display", "primary_orientation"]),
-						"secret",
-						"candidate",
-					),
-			]),
-	))).to_equal(Error.FAILED)
+				),
+			))).to_equal(Error.FAILED)
 	probe.volatile_orientation = "secret-old"
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "restored session",
@@ -458,22 +469,29 @@ func test_provider_redacts_stable_and_volatile_runtime_contexts_across_sessions(
 	probe.app_name = "Replacement"
 	bridge.configure_result = Error.OK
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "staging",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/2"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(
-								["contexts", "display", "primary_orientation"]),
-						"secret",
-						"replacement",
+				p_environment = "staging",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/2"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(
+									["contexts", "display", "primary_orientation"],
+								),
+								"secret",
+								"replacement",
+							),
+						],
 					),
-			]),
-	))).to_equal(Error.OK)
+				),
+			))).to_equal(Error.OK)
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "replacement session",
 		))).to_equal("sentry:3")
@@ -483,9 +501,9 @@ func test_provider_redacts_stable_and_volatile_runtime_contexts_across_sessions(
 
 	provider.shutdown()
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/3"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/3"},
+			))).to_equal(Error.OK)
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "fresh unredacted session",
 		))).to_equal("sentry:4")
@@ -505,26 +523,33 @@ func test_provider_redacts_stable_and_volatile_runtime_contexts_once_each() -> v
 			p_runtime_context_probe = probe,
 		)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(["contexts", "foundry_app", "name"]),
-						"a",
-						"aa",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(["contexts", "foundry_app", "name"]),
+								"a",
+								"aa",
+							),
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(
+									["contexts", "display", "primary_orientation"],
+								),
+								"a",
+								"aa",
+							),
+						],
 					),
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(
-								["contexts", "display", "primary_orientation"]),
-						"a",
-						"aa",
-					),
-			]),
-	))).to_equal(Error.OK)
+				),
+			))).to_equal(Error.OK)
 	Expect.that(
 			bridge.configured_payload["stable_contexts"]["foundry_app"]["name"],
 		).to_equal("aa")
@@ -554,21 +579,31 @@ func test_provider_redacts_global_attributes_before_native_config_and_capture_pa
 		"remove_me": "private",
 	}
 	var config := ObservabilityConfig.new(
-			p_global_attributes = raw_global_attributes,
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = raw_global_attributes,
+		p_provider_options = {"dsn": "https://public@example/1"},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.sensitive_key("password"),
-				ObservabilityRedactionRule.remove_field(PackedStringArray([
-					"contexts",
-					"global_attributes",
-					"remove_me",
-				])),
-			]),
-		)
+			p_redaction_policy = ObservabilityRedactionPolicy.new(
+				[
+					ObservabilityRedactionRule.sensitive_key("password"),
+					ObservabilityRedactionRule.remove_field(
+						PackedStringArray(
+							[
+								"contexts",
+								"global_attributes",
+								"remove_me",
+							],
+						),
+					),
+				],
+			),
+		),
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	var expected_global_attributes: Dictionary = {
@@ -618,35 +653,49 @@ func test_invalid_global_attribute_redaction_preserves_committed_session_and_pol
 			),
 	])
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {"password": "old-secret"},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = initial_policy,
-	))).to_equal(Error.OK)
+				p_global_attributes = {"password": "old-secret"},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = initial_policy,
+				),
+			))).to_equal(Error.OK)
 	var configure_count: int = bridge.configured_payloads.size()
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {"password": "new-secret"},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.remove_field(PackedStringArray([
-					"contexts",
-					"global_attributes",
-				])),
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(["contexts", "foundry_app", "name"]),
-						"",
-						"candidate-app",
+				p_global_attributes = {"password": "new-secret"},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.remove_field(
+								PackedStringArray(
+									[
+										"contexts",
+										"global_attributes",
+									],
+								),
+							),
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(["contexts", "foundry_app", "name"]),
+								"",
+								"candidate-app",
+							),
+						],
 					),
-			]),
-	))).to_equal(Error.ERR_INVALID_DATA)
+				),
+			))).to_equal(Error.ERR_INVALID_DATA)
 	Expect.that(bridge.configured_payloads.size()).to_equal(configure_count)
 	Expect.that(
 			bridge.active_configuration()["global_attributes"],
@@ -668,14 +717,18 @@ func test_failed_session_reset_never_retains_raw_or_candidate_global_attributes(
 		ObservabilityRedactionRule.sensitive_key("password"),
 	])
 	var initial_config := ObservabilityConfig.new(
-			p_global_attributes = {"build": 42, "password": "old-secret"},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {"build": 42, "password": "old-secret"},
+		p_provider_options = {"dsn": "https://public@example/1"},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
 			p_redaction_policy = policy,
-		)
+		),
+	)
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
 	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
@@ -687,14 +740,18 @@ func test_failed_session_reset_never_retains_raw_or_candidate_global_attributes(
 	bridge.apply_scope_results = [false, true]
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {"build": 42, "password": "new-secret"},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = policy,
-	))).to_equal(Error.FAILED)
+				p_global_attributes = {"build": 42, "password": "new-secret"},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = policy,
+				),
+			))).to_equal(Error.FAILED)
 	for payload: Dictionary in bridge.configured_payloads:
 		Expect.that(payload["global_attributes"]).to_equal({
 			"build": 42,
@@ -716,19 +773,19 @@ func test_provider_failed_reconfigure_preserves_last_stable_runtime_context() ->
 			p_runtime_context_probe = probe,
 		)
 	var initial_config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_environment = "production",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	probe.app_name = "Replacement"
 	bridge.configure_result = Error.FAILED
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "staging",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/2"},
-		))).to_equal(Error.FAILED)
+				p_environment = "staging",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/2"},
+			))).to_equal(Error.FAILED)
 
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "restored context",
@@ -746,14 +803,12 @@ func test_provider_disabled_configuration_and_shutdown_do_not_capture_stale_cont
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var enabled_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(enabled_config)).to_equal(Error.OK)
-	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_enabled = false,
-		))).to_equal(Error.OK)
+	Expect.that(provider.configure(ObservabilityConfig.new(p_enabled = false))).to_equal(Error.OK)
 	Expect.that(bridge.configured_payload.has("stable_contexts")).to_be_false()
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "disabled",
@@ -776,17 +831,17 @@ func test_provider_name_is_sentry() -> void:
 func test_enabled_configuration_requires_compatible_native_bridge_and_dsn() -> void:
 	var missing_dsn := SentryObservabilityProvider.new(p_bridge = FakeSentryBridge.new())
 	Expect.that(missing_dsn.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-		))).to_equal(Error.FAILED)
+				p_global_attributes = {},
+				p_provider_options = {},
+			))).to_equal(Error.FAILED)
 
 	var incompatible_bridge := SentryObservabilityProvider.new(
 			p_bridge = IncompatibleSentryBridge.new(),
 		)
 	Expect.that(incompatible_bridge.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.ERR_UNAVAILABLE)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.ERR_UNAVAILABLE)
 
 
 func test_enabled_configuration_reports_native_bridge_availability() -> void:
@@ -810,9 +865,9 @@ func test_non_boolean_native_availability_is_rejected() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	bridge.availability_result = 1
 
 	Expect.that(provider.is_available()).to_be_false()
@@ -835,9 +890,9 @@ func test_resolves_registered_engine_singleton() -> void:
 	Engine.register_singleton("SentryObservabilityBridge", bridge)
 	var provider := SentryObservabilityProvider.new()
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.is_available()).to_be_true()
@@ -851,9 +906,9 @@ func test_forwards_stable_lifecycle_owner_to_bridge_calls() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	var owner: String = bridge.configured_payload["lifecycle_owner"]
 
 	Expect.that(owner.is_empty()).to_be_false()
@@ -870,9 +925,9 @@ func test_replaced_sentry_provider_ignores_stale_shutdown() -> void:
 	var first := SentryObservabilityProvider.new(p_bridge = bridge)
 	var second := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(first.configure(config)).to_equal(Error.OK)
 	var first_owner: String = bridge.active_owner
@@ -890,20 +945,20 @@ func test_failed_reconfigure_preserves_restored_native_session() -> void:
 	var bridge := ScopeOnlySentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var initial_config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_environment = "production",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.is_available()).to_be_true()
 	bridge.configure_result = Error.FAILED
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "staging",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/2"},
-		))).to_equal(Error.FAILED)
+				p_environment = "staging",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/2"},
+			))).to_equal(Error.FAILED)
 
 	Expect.that(provider.is_available()).to_be_true()
 	Expect.that(provider.capture(ObservabilityEvent.new(
@@ -916,14 +971,16 @@ func test_forwards_config_event_and_flush_to_native_bridge() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_release = "1.2.3",
-			p_dist = "ios",
-			p_global_attributes = {"build": 42},
-			p_provider_options = {"dsn": "https://public@example/1", "debug": true},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_environment = "production",
+		p_release = "1.2.3",
+		p_dist = "ios",
+		p_global_attributes = {"build": 42},
+		p_provider_options = {"dsn": "https://public@example/1", "debug": true},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
 			p_max_breadcrumbs = 37,
-		)
+		),
+	)
 	var exception := ObservabilityException.new(
 			p_type_name = "InvalidState",
 			p_message = "boom",
@@ -964,9 +1021,9 @@ func test_scope_mutations_forward_complete_candidate_payloads_and_nested_copies(
 		}
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	bridge.applied_scope_payloads.clear()
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
 	Expect.that(provider.set_context("match", context)).to_be_true()
@@ -1007,9 +1064,9 @@ func test_scope_remove_and_clear_operations_forward_complete_candidates() -> voi
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	bridge.applied_scope_payloads.clear()
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
 	Expect.that(provider.set_tag("mode", "ranked")).to_be_true()
@@ -1049,9 +1106,9 @@ func test_scope_user_replacement_and_removal_use_exact_native_mapping() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	bridge.applied_scope_payloads.clear()
 	Expect.that(provider.set_user(ObservabilityUser.new(
 			p_application_user_id = "player-1",
@@ -1097,9 +1154,9 @@ func test_rejected_scope_candidate_rolls_back_provider_state() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	bridge.applied_scope_payloads.clear()
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
 	bridge.apply_scope_result = false
@@ -1125,9 +1182,9 @@ func test_reconfigure_scope_reset_is_atomic_across_success_and_failure() -> void
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -1163,9 +1220,9 @@ func test_same_configuration_success_clears_native_and_local_scope_immediately()
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -1192,9 +1249,9 @@ func test_breadcrumbless_failed_replacement_reapplies_retained_scope() -> void:
 	var bridge := ScopeOnlySentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var initial_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 	var retained_scope: Dictionary = {
 			"tags": {"region": "iad"},
 			"contexts": {"match": {"round": 3}},
@@ -1215,10 +1272,10 @@ func test_breadcrumbless_failed_replacement_reapplies_retained_scope() -> void:
 
 	bridge.configure_result = Error.FAILED
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "replacement",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/2"},
-	))).to_equal(Error.FAILED)
+				p_environment = "replacement",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/2"},
+			))).to_equal(Error.FAILED)
 	Expect.that(bridge.current_scope_payload).to_equal(retained_scope)
 
 	bridge.configure_result = Error.OK
@@ -1234,13 +1291,13 @@ func test_changed_config_scope_reset_failure_fails_closed() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var initial_config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {"build": 1},
-			p_provider_options = {
-				"dsn": "https://public@example/1",
-				"debug": false,
-			},
-		)
+		p_environment = "production",
+		p_global_attributes = {"build": 1},
+		p_provider_options = {
+			"dsn": "https://public@example/1",
+			"debug": false,
+		},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -1250,13 +1307,13 @@ func test_changed_config_scope_reset_failure_fails_closed() -> void:
 	bridge.apply_scope_results = [false]
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "staging",
-			p_global_attributes = {"build": 2},
-			p_provider_options = {
-				"dsn": "https://public@example/2",
-				"debug": true,
-			},
-	))).to_equal(Error.FAILED)
+				p_environment = "staging",
+				p_global_attributes = {"build": 2},
+				p_provider_options = {
+					"dsn": "https://public@example/2",
+					"debug": true,
+				},
+			))).to_equal(Error.FAILED)
 	Expect.that(bridge.configured_payloads.back()["environment"]).to_equal("staging")
 	Expect.that(bridge.active_configuration()).to_equal({})
 	Expect.that(bridge.current_scope_payload).to_equal({
@@ -1275,12 +1332,12 @@ func test_equivalent_config_scope_reset_failure_restores_scope_and_breadcrumbs()
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {"build": {"number": 42}},
-			p_provider_options = {
-				"dsn": "https://public@example/1",
-				"transport": {"tunnel": "primary"},
-			},
-		)
+		p_global_attributes = {"build": {"number": 42}},
+		p_provider_options = {
+			"dsn": "https://public@example/1",
+			"transport": {"tunnel": "primary"},
+		},
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -1304,10 +1361,10 @@ func test_initial_scope_reset_failure_shuts_down_orphan_native_session() -> void
 	bridge.apply_scope_results = [false]
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.FAILED)
+				p_environment = "production",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.FAILED)
 
 	Expect.that(provider.is_available()).to_be_false()
 	Expect.that(bridge.active_owner).to_equal("")
@@ -1326,10 +1383,10 @@ func test_scope_reset_rollback_configure_failure_fails_closed_and_can_recover() 
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_environment = "production",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -1387,10 +1444,10 @@ func test_scope_reset_retained_scope_reapply_failure_fails_closed() -> void:
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_environment = "production",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -1441,10 +1498,10 @@ func test_failed_configure_scope_resync_failure_fails_closed_with_original_error
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_environment = "production",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -1476,14 +1533,12 @@ func test_scope_reset_failure_rolls_back_to_committed_disabled_configuration() -
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var enabled_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(enabled_config)).to_equal(Error.OK)
-	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_enabled = false,
-	))).to_equal(Error.OK)
+	Expect.that(provider.configure(ObservabilityConfig.new(p_enabled = false))).to_equal(Error.OK)
 	bridge.apply_scope_results = [false]
 
 	Expect.that(provider.configure(enabled_config)).to_equal(Error.FAILED)
@@ -1499,9 +1554,7 @@ func test_scope_reset_failure_rolls_back_to_committed_disabled_configuration() -
 func test_scope_operations_require_enabled_available_native_capability() -> void:
 	var disabled_bridge := FakeSentryBridge.new()
 	var disabled := SentryObservabilityProvider.new(p_bridge = disabled_bridge)
-	Expect.that(disabled.configure(ObservabilityConfig.new(
-			p_enabled = false,
-	))).to_equal(Error.OK)
+	Expect.that(disabled.configure(ObservabilityConfig.new(p_enabled = false))).to_equal(Error.OK)
 	Expect.that(disabled.set_tag("region", "iad")).to_be_false()
 	Expect.that(disabled.set_context("match", {"round": 3})).to_be_false()
 	Expect.that(disabled.set_user(ObservabilityUser.new(
@@ -1518,9 +1571,9 @@ func test_scope_operations_require_enabled_available_native_capability() -> void
 			p_bridge = BreadcrumblessSentryBridge.new(),
 		)
 	Expect.that(unsupported.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(unsupported.set_tag("region", "iad")).to_be_false()
 	Expect.that(unsupported.capture(ObservabilityEvent.new(
 			p_message = "events remain available",
@@ -1530,9 +1583,9 @@ func test_scope_operations_require_enabled_available_native_capability() -> void
 	var shutdown_bridge := FakeSentryBridge.new()
 	var shutdown_provider := SentryObservabilityProvider.new(p_bridge = shutdown_bridge)
 	Expect.that(shutdown_provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	shutdown_bridge.applied_scope_payloads.clear()
 	Expect.that(shutdown_provider.set_tag("before", "shutdown")).to_be_true()
 	shutdown_provider.shutdown()
@@ -1552,9 +1605,9 @@ func test_event_local_scope_is_forwarded_once_without_mutating_global_scope() ->
 		})).to_be_true()
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	bridge.applied_scope_payloads.clear()
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "scoped",
@@ -1586,9 +1639,9 @@ func test_event_local_scope_requires_native_scope_capability_before_capture() ->
 	Expect.that(local_scope.set_tag("region", "iad")).to_be_true()
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "unsupported scoped event",
 			p_attributes = {},
@@ -1607,15 +1660,19 @@ func test_forwards_mobile_diagnostic_config_to_native_bridge() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_mobile_diagnostics = ObservabilityMobileDiagnosticsConfig.new(
 			p_application_hang_detection_enabled = false,
 			p_application_hang_timeout_msec = 3200,
 			p_android_anr_detection_enabled = false,
 			p_android_anr_timeout_msec = 6400,
 			p_android_anr_attach_thread_dump = true,
-		)
+		),
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(bridge.configured_payload["application_hang_detection_enabled"]).to_be_false()
@@ -1626,15 +1683,17 @@ func test_forwards_mobile_diagnostic_config_to_native_bridge() -> void:
 	provider.shutdown()
 
 
-func test_normalizes_mutated_mobile_diagnostic_timeouts_at_provider_boundary() -> void:
+func test_mobile_diagnostic_timeouts_are_normalized_before_provider_configuration() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
-	config.application_hang_timeout_msec = 0
-	config.android_anr_timeout_msec = -25
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+		p_mobile_diagnostics = ObservabilityMobileDiagnosticsConfig.new(
+			p_application_hang_timeout_msec = 0,
+			p_android_anr_timeout_msec = -25,
+		),
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(bridge.configured_payload["application_hang_timeout_msec"]).to_equal(1000)
@@ -1659,10 +1718,12 @@ func test_service_forwards_normalized_structured_exception_frames_to_native_brid
 		)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_stack_trace_variables_enabled = true,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+					p_variables_enabled = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1699,9 +1760,9 @@ func test_service_preserves_legacy_exception_bridge_payload_without_frames() -> 
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1721,11 +1782,19 @@ func test_service_delivers_processor_replacement_event_to_sentry_bridge() -> voi
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_event_processors = [Callable(self, "_replace_service_sentry_event")],
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(self, "_replace_service_sentry_event") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_message("original event")).to_equal("sentry:1")
 	Expect.that(bridge.captured_payloads).to_have_size(1)
 	Expect.that(bridge.captured_payloads[0]["message"]).to_equal("processed sentry event")
@@ -1747,9 +1816,9 @@ func test_direct_provider_skips_null_exception_frames() -> void:
 		)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_kind = &"exception",
 			p_message = "attack failed",
@@ -1776,9 +1845,9 @@ func test_service_omits_empty_structured_frame_context_from_native_bridge() -> v
 		)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(service.capture_exception(ObservabilityException.new(
 			p_type_name = "CombatError",
 			p_message = "attack failed",
@@ -1802,11 +1871,16 @@ func test_routes_log_events_to_native_structured_log_method() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {"build": 42},
-			p_provider_options = {"dsn": "https://public@example/1"},
+		p_global_attributes = {"build": 42},
+		p_provider_options = {"dsn": "https://public@example/1"},
+		p_processing = ObservabilityProcessingConfig.new(
 			p_logs_enabled = true,
 			p_log_minimum_level = ObservabilityLevel.TRACE,
-		)
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 	var event := ObservabilityEvent.new(
 			p_kind = &"log",
 			p_level = ObservabilityLevel.WARN,
@@ -1831,9 +1905,9 @@ func test_forwards_normalized_breadcrumbs_to_native_bridge() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
@@ -1863,9 +1937,9 @@ func test_enabled_configure_starts_with_an_explicitly_cleared_breadcrumb_trail()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 
 	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
 	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
@@ -1879,9 +1953,9 @@ func test_identical_successful_configure_clears_only_the_live_breadcrumb_trail()
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
@@ -1901,19 +1975,19 @@ func test_changed_successful_configure_starts_a_fresh_breadcrumb_trail() -> void
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_environment = "production",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
 			p_message = "old session",
 	))).to_be_true()
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "staging",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/2"},
-	))).to_equal(Error.OK)
+				p_environment = "staging",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/2"},
+			))).to_equal(Error.OK)
 	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
 	Expect.that(bridge.current_breadcrumb_payloads).to_equal([])
 	Expect.that(bridge.captured_breadcrumb_payloads).to_have_size(1)
@@ -1924,15 +1998,15 @@ func test_changed_failed_configure_fails_closed_and_can_recover() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var initial_config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_environment = "production",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 	var replacement_config := ObservabilityConfig.new(
-			p_environment = "staging",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/2"},
-		)
+		p_environment = "staging",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/2"},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
@@ -1964,13 +2038,13 @@ func test_equivalent_failed_configure_preserves_breadcrumb_trail_and_scope() -> 
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {"build": {"number": 42}},
-			p_provider_options = {
-				"dsn": "https://public@example/1",
-				"transport": {"tunnel": "primary"},
-			},
-		)
+		p_environment = "production",
+		p_global_attributes = {"build": {"number": 42}},
+		p_provider_options = {
+			"dsn": "https://public@example/1",
+			"transport": {"tunnel": "primary"},
+		},
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -2001,10 +2075,10 @@ func test_initial_mutating_malformed_configure_result_fails_closed() -> void:
 	bridge.malformed_configure_mutates_session = true
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.FAILED)
+				p_environment = "production",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.FAILED)
 	Expect.that(bridge.configured_payloads.size()).to_equal(1)
 	Expect.that(bridge.shutdown_count).to_equal(1)
 	Expect.that(bridge.active_owner).to_equal("")
@@ -2031,15 +2105,15 @@ func test_changed_mutating_malformed_configure_result_fails_closed_and_can_recov
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_environment = "production",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 	var replacement_config := ObservabilityConfig.new(
-			p_environment = "staging",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/2"},
-		)
+		p_environment = "staging",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/2"},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -2082,25 +2156,25 @@ func test_equivalent_reconfigure_clear_rejection_restores_scope_and_trail() -> v
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
-			p_global_attributes = {
-				"build": {"number": 42},
-				"channels": ["stable"],
-			},
-			p_provider_options = {
-				"dsn": "https://public@example/1",
-				"transport": {"tunnel": "primary"},
-			},
-		)
+		p_global_attributes = {
+			"build": {"number": 42},
+			"channels": ["stable"],
+		},
+		p_provider_options = {
+			"dsn": "https://public@example/1",
+			"transport": {"tunnel": "primary"},
+		},
+	)
 	var equivalent_config := ObservabilityConfig.new(
-			p_global_attributes = {
-				"build": {"number": 42},
-				"channels": ["stable"],
-			},
-			p_provider_options = {
-				"dsn": "https://public@example/1",
-				"transport": {"tunnel": "primary"},
-			},
-		)
+		p_global_attributes = {
+			"build": {"number": 42},
+			"channels": ["stable"],
+		},
+		p_provider_options = {
+			"dsn": "https://public@example/1",
+			"transport": {"tunnel": "primary"},
+		},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -2131,15 +2205,15 @@ func test_changed_config_false_clear_result_fails_closed_and_can_recover() -> vo
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_environment = "production",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 	var replacement_config := ObservabilityConfig.new(
-			p_environment = "staging",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/2"},
-		)
+		p_environment = "staging",
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/2"},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -2175,13 +2249,13 @@ func test_equivalent_config_malformed_clear_result_fails_closed_and_can_recover(
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var config := ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {"build": {"number": 42}},
-			p_provider_options = {
-				"dsn": "https://public@example/1",
-				"transport": {"tunnel": "primary"},
-			},
-		)
+		p_environment = "production",
+		p_global_attributes = {"build": {"number": 42}},
+		p_provider_options = {
+			"dsn": "https://public@example/1",
+			"transport": {"tunnel": "primary"},
+		},
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
@@ -2216,19 +2290,19 @@ func test_nested_config_change_is_not_equivalent_for_clear_recovery() -> void:
 			p_runtime_context_probe = FakeRuntimeContextProbe.new(),
 		)
 	var initial_config := ObservabilityConfig.new(
-			p_global_attributes = {"build": {"number": 42}},
-			p_provider_options = {
-				"dsn": "https://public@example/1",
-				"transport": {"tunnel": "primary"},
-			},
-		)
+		p_global_attributes = {"build": {"number": 42}},
+		p_provider_options = {
+			"dsn": "https://public@example/1",
+			"transport": {"tunnel": "primary"},
+		},
+	)
 	var nested_change_config := ObservabilityConfig.new(
-			p_global_attributes = {"build": {"number": 42}},
-			p_provider_options = {
-				"dsn": "https://public@example/1",
-				"transport": {"tunnel": "replacement"},
-			},
-		)
+		p_global_attributes = {"build": {"number": 42}},
+		p_provider_options = {
+			"dsn": "https://public@example/1",
+			"transport": {"tunnel": "replacement"},
+		},
+	)
 
 	Expect.that(provider.configure(initial_config)).to_equal(Error.OK)
 	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
@@ -2249,9 +2323,9 @@ func test_initial_malformed_clear_result_fails_closed() -> void:
 	bridge.clear_breadcrumbs_result = "true"
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.FAILED)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.FAILED)
 	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
 	Expect.that(bridge.active_owner).to_equal("")
 	Expect.that(bridge.active_configuration()).to_equal({})
@@ -2269,9 +2343,9 @@ func test_clear_breadcrumbs_returns_explicit_native_result_and_respects_lifecycl
 	Expect.that(provider.clear_breadcrumbs()).to_be_false()
 	Expect.that(bridge.clear_breadcrumbs_count).to_equal(0)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
 	Expect.that(provider.clear_breadcrumbs()).to_be_true()
 	Expect.that(bridge.clear_breadcrumbs_count).to_equal(2)
@@ -2288,9 +2362,9 @@ func test_non_boolean_native_scope_and_clear_results_are_rejected() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(bridge.clear_breadcrumbs_count).to_equal(1)
 	bridge.applied_scope_payloads.clear()
 
@@ -2316,9 +2390,9 @@ func test_missing_native_breadcrumb_capability_preserves_event_capture() -> void
 	var provider := SentryObservabilityProvider.new(
 			p_bridge = BreadcrumblessSentryBridge.new())
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 
 	Expect.that(provider.capture_breadcrumb(ObservabilityBreadcrumb.new(
 			p_message = "unsupported breadcrumb",
@@ -2334,9 +2408,9 @@ func test_capture_only_breadcrumb_bridge_cannot_start_a_fresh_session() -> void:
 			p_bridge = CaptureOnlyBreadcrumbSentryBridge.new())
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.FAILED)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.FAILED)
 	Expect.that(provider.is_available()).to_be_false()
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "unavailable",
@@ -2350,12 +2424,12 @@ func test_captures_feedback_with_only_explicit_optional_fields() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {
-				"dsn": "https://public@example/1",
-				"send_default_pii": true,
-			},
-		)
+		p_global_attributes = {},
+		p_provider_options = {
+			"dsn": "https://public@example/1",
+			"send_default_pii": true,
+		},
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.capture_feedback(ObservabilityFeedback.new(
@@ -2388,10 +2462,15 @@ func test_forwards_normalized_custom_metrics_to_native_bridge() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+		p_processing = ObservabilityProcessingConfig.new(
 			p_metrics_enabled = true,
-		)
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
 
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.capture_metric(ObservabilityMetric.new(
@@ -2415,10 +2494,15 @@ func test_forwards_normalized_custom_metrics_to_native_bridge() -> void:
 func test_missing_native_metric_capability_preserves_event_capture() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = MetriclessSentryBridge.new())
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_metrics_enabled = true,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_metrics_enabled = true,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(provider.capture_metric(ObservabilityMetric.new(
 			p_type = ObservabilityMetricType.COUNTER,
@@ -2435,9 +2519,9 @@ func test_rejects_bridge_without_feedback_method() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = FeedbacklessSentryBridge.new())
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "ordinary event remains supported",
 		))).to_equal("sentry:1")
@@ -2450,10 +2534,15 @@ func test_rejects_bridge_without_feedback_method() -> void:
 func test_rejects_bridge_without_structured_log_method() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = EventOnlySentryBridge.new())
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_logs_enabled = true,
-		))).to_equal(Error.FAILED)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_logs_enabled = true,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			))).to_equal(Error.FAILED)
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_kind = &"log",
 			p_message = "unsupported",
@@ -2466,9 +2555,9 @@ func test_service_reports_structured_log_bridge_mismatch() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = EventOnlySentryBridge.new())
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		))).to_equal(Error.FAILED)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.FAILED)
 	Expect.that(service.provider_name()).to_equal(&"null")
 	Expect.that(service.last_error()).to_equal(Error.FAILED)
 	Expect.that(service.capture_log("unsupported")).to_equal("")
@@ -2481,9 +2570,9 @@ func test_shutdown_is_idempotent() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(provider.set_tag("region", "iad")).to_be_true()
 	Expect.that(bridge.active_configuration().is_empty()).to_be_false()
 	Expect.that(bridge.current_scope_payload["tags"]).to_equal({"region": "iad"})
@@ -2504,18 +2593,18 @@ func test_shutdown_discards_committed_configuration_rollback_state() -> void:
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "production",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_environment = "production",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	provider.shutdown()
 	bridge.apply_scope_results = [false]
 
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_environment = "staging",
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/2"},
-	))).to_equal(Error.FAILED)
+				p_environment = "staging",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/2"},
+			))).to_equal(Error.FAILED)
 	Expect.that(bridge.configured_payloads.size()).to_equal(2)
 	Expect.that(bridge.shutdown_count).to_equal(2)
 	Expect.that(bridge.active_owner).to_equal("")
@@ -2526,9 +2615,9 @@ func test_attachment_candidates_replace_native_snapshot_atomically() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(bridge.replaced_attachment_payloads).to_equal([[]])
 
 	var bytes_attachment := ObservabilityAttachment.from_bytes(
@@ -2587,37 +2676,45 @@ func test_provider_redacts_persistent_and_capture_local_builtin_attachment_metad
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_attach_game_log = true,
-			p_attach_screenshot = true,
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(["attachments", "filename"]),
-						"secret-game",
-						"safe-game",
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_attach_game_log = true,
+					p_attach_screenshot = true,
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(["attachments", "filename"]),
+								"secret-game",
+								"safe-game",
+							),
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(["attachments", "filename"]),
+								"screenshot",
+								"safe-screen",
+							),
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(["attachments", "content_type"]),
+								"text/plain",
+								"text/safe",
+							),
+							ObservabilityRedactionRule.replace_text(
+								PackedStringArray(["attachments", "content_type"]),
+								"image/png",
+								"image/safe",
+							),
+						],
 					),
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(["attachments", "filename"]),
-						"screenshot",
-						"safe-screen",
-					),
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(["attachments", "content_type"]),
-						"text/plain",
-						"text/safe",
-					),
-				ObservabilityRedactionRule.replace_text(
-						PackedStringArray(["attachments", "content_type"]),
-						"image/png",
-						"image/safe",
-					),
-			]),
-	))).to_equal(Error.OK)
+				),
+			))).to_equal(Error.OK)
 	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
 	Expect.that(bridge.current_attachment_payloads[0]["filename"]).to_equal(
 			"safe-game.log",
@@ -2649,20 +2746,28 @@ func test_invalid_redacted_builtin_attachment_is_omitted_without_dropping_event(
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_attach_screenshot = true,
-			p_event_processors = [],
-			p_log_processors = [],
-			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_value(
-						PackedStringArray(["attachments", "filename"]),
-						7,
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_attach_screenshot = true,
+				),
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.replace_value(
+								PackedStringArray(["attachments", "filename"]),
+								7,
+							),
+						],
 					),
-			]),
-	))).to_equal(Error.OK)
+				),
+			))).to_equal(Error.OK)
 
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "partial redaction failure",
@@ -2695,27 +2800,35 @@ func test_invalid_persistent_builtin_redaction_survives_configure_and_combines()
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_attachments = ObservabilityAttachmentConfig.new(
 			p_attach_game_log = true,
 			p_attach_screenshot = true,
+		),
+		p_processing = ObservabilityProcessingConfig.new(
 			p_event_processors = [],
 			p_log_processors = [],
 			p_metric_processors = [],
-			p_redaction_policy = ObservabilityRedactionPolicy.new([
-				ObservabilityRedactionRule.replace_text(
+			p_redaction_policy = ObservabilityRedactionPolicy.new(
+				[
+					ObservabilityRedactionRule.replace_text(
 						PackedStringArray(["attachments", "filename"]),
 						"persistent-secret.log",
 						"",
 					),
-				ObservabilityRedactionRule.replace_text(
+					ObservabilityRedactionRule.replace_text(
 						PackedStringArray(["attachments", "filename"]),
 						"screenshot.png",
 						"",
 					),
-			]),
-		)
+				],
+			),
+		),
+	)
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
 	var configured_failures: Array = provider.last_attachment_failures()
@@ -2750,9 +2863,9 @@ func test_invalid_persistent_builtin_redaction_survives_configure_and_combines()
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.last_attachment_failures()).to_have_size(1)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(provider.last_attachment_failures()).to_have_size(0)
 	root.free()
 	provider.shutdown()
@@ -2762,9 +2875,9 @@ func test_attachment_bridge_methods_are_optional_until_feature_or_api_is_used() 
 	var bridge := CountingBreadcrumblessSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
 			PackedByteArray([1]),
 			"unsupported.bin",
@@ -2777,20 +2890,24 @@ func test_attachment_bridge_methods_are_optional_until_feature_or_api_is_used() 
 			p_bridge = ReplaceOnlySentryBridge.new(),
 		)
 	Expect.that(feature_provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_attach_screenshot = true,
-	))).to_equal(Error.FAILED)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_attach_screenshot = true,
+				),
+			))).to_equal(Error.FAILED)
 
 
 func test_capture_materializes_only_res_paths_into_event_local_attachments() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+			))).to_equal(Error.OK)
 	var resource := ObservabilityAttachment.from_path(
 			"res://tests/support/fake_sentry_bridge.notest.fs",
 			"bridge.fs",
@@ -2818,11 +2935,15 @@ func test_attachment_preflight_failures_do_not_block_events_and_clear_on_success
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_max_attachment_bytes = 2,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_max_bytes = 2,
+				),
+			))).to_equal(Error.OK)
 	var missing_handle: String = provider.add_attachment(
 			ObservabilityAttachment.from_path(
 				"user://definitely-missing-sentry-file.log",
@@ -2856,10 +2977,12 @@ func test_attachment_management_preserves_latest_event_failure_history() -> void
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+			))).to_equal(Error.OK)
 	var missing_path: String = (
 			"user://sentry-management-missing-%s.log" % bridge.get_instance_id()
 		)
@@ -2926,12 +3049,21 @@ func test_oversized_global_path_failure_survives_logs_until_applicable_capture()
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_logs_enabled = true,
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_max_attachment_bytes = 2,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_logs_enabled = true,
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_max_bytes = 2,
+				),
+			))).to_equal(Error.OK)
 	var handle: String = provider.add_attachment(ObservabilityAttachment.from_path(
 			"user://sentry-oversized-global.log",
 			"oversized.log",
@@ -2968,9 +3100,9 @@ func test_attachment_reconfigure_invalidates_handles_and_restores_equivalent_fai
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	var attachment := ObservabilityAttachment.from_bytes(
 			PackedByteArray([9]),
@@ -2997,9 +3129,9 @@ func test_attachment_restore_rejection_fails_closed() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(p_bridge = bridge)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-		)
+		p_global_attributes = {},
+		p_provider_options = {"dsn": "https://public@example/1"},
+	)
 	Expect.that(provider.configure(config)).to_equal(Error.OK)
 	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
 			PackedByteArray([1]),
@@ -3023,13 +3155,17 @@ func test_built_in_attachment_collection_is_independent_cached_and_bounded() -> 
 	probe.tree = FakeAttachmentSceneTree.new(root)
 	var collector := SentryBuiltInAttachmentCollector.new(probe)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_attachments = ObservabilityAttachmentConfig.new(
 			p_attach_screenshot = true,
 			p_attach_scene_tree = true,
-			p_max_attachment_bytes = 1024 * 1024,
-		)
+			p_max_bytes = 1024 * 1024,
+		),
+	)
 
 	var first: Dictionary = collector.collect(ObservabilityEvent.new(), config)
 	var second: Dictionary = collector.collect(ObservabilityEvent.new(), config)
@@ -3064,11 +3200,15 @@ func test_built_in_attachment_toggles_and_size_limits_are_independent() -> void:
 	probe.tree = FakeAttachmentSceneTree.new(root)
 	var collector := SentryBuiltInAttachmentCollector.new(probe)
 	var screenshot_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_attachments = ObservabilityAttachmentConfig.new(
 			p_attach_screenshot = true,
-		)
+		),
+	)
 	var screenshot_only: Dictionary = collector.collect(
 			ObservabilityEvent.new(),
 			screenshot_config,
@@ -3079,11 +3219,15 @@ func test_built_in_attachment_toggles_and_size_limits_are_independent() -> void:
 		)
 
 	var scene_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_attachments = ObservabilityAttachmentConfig.new(
 			p_attach_scene_tree = true,
-		)
+		),
+	)
 	var scene_only: Dictionary = collector.collect(
 			ObservabilityEvent.new(),
 			scene_config,
@@ -3094,12 +3238,16 @@ func test_built_in_attachment_toggles_and_size_limits_are_independent() -> void:
 		)
 
 	var oversized_config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_max_attachment_bytes = 2,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_attachments = ObservabilityAttachmentConfig.new(
+			p_max_bytes = 2,
 			p_attach_screenshot = true,
-		)
+		),
+	)
 	var oversized: Dictionary = collector.collect(
 			ObservabilityEvent.new(),
 			oversized_config,
@@ -3124,12 +3272,16 @@ func test_scene_hierarchy_respects_maximum_depth() -> void:
 	probe.tree = FakeAttachmentSceneTree.new(root)
 	var collector := SentryBuiltInAttachmentCollector.new(probe)
 	var config := ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_max_attachment_bytes = 1024 * 1024,
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_attachments = ObservabilityAttachmentConfig.new(
+			p_max_bytes = 1024 * 1024,
 			p_attach_scene_tree = true,
-		)
+		),
+	)
 
 	var result: Dictionary = collector.collect(ObservabilityEvent.new(), config)
 	var hierarchy_payload: Dictionary = result["attachments"][0]
@@ -3166,14 +3318,18 @@ func test_zero_attachment_limit_disables_every_sentry_delivery_path() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_max_attachment_bytes = 0,
-			p_attach_game_log = true,
-			p_attach_screenshot = true,
-			p_attach_scene_tree = true,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_max_bytes = 0,
+					p_attach_game_log = true,
+					p_attach_screenshot = true,
+					p_attach_scene_tree = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
 	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
 			PackedByteArray(),
@@ -3214,11 +3370,15 @@ func test_game_log_path_is_registered_lazily_before_the_file_exists() -> void:
 	probe.game_log = path
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_attach_game_log = true,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_attach_game_log = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
 	Expect.that(bridge.current_attachment_payloads[0]["path"]).to_equal(absolute_path)
 
@@ -3239,11 +3399,15 @@ func test_empty_or_disabled_game_log_path_reports_missing_file() -> void:
 	var bridge := FakeSentryBridge.new()
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_attach_game_log = true,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_attach_game_log = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(bridge.current_attachment_payloads).to_have_size(0)
 	Expect.that(provider.capture(ObservabilityEvent.new(
 			p_message = "missing game log",
@@ -3267,11 +3431,15 @@ func test_missing_configured_game_log_is_preflighted_at_event_time() -> void:
 	probe.game_log = path
 	var provider := SentryObservabilityProvider.new(bridge, null, probe)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_attach_game_log = true,
-		))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_attach_game_log = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
 
 	Expect.that(provider.capture(ObservabilityEvent.new(
@@ -3300,11 +3468,15 @@ func test_user_clear_preserves_configured_game_log_attachment() -> void:
 			probe,
 		)
 	Expect.that(provider.configure(ObservabilityConfig.new(
-			p_global_attributes = {},
-			p_provider_options = {"dsn": "https://public@example/1"},
-			p_automatic_message_filter_prefixes = PackedStringArray(),
-			p_attach_game_log = true,
-	))).to_equal(Error.OK)
+				p_global_attributes = {},
+				p_provider_options = {"dsn": "https://public@example/1"},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+				p_attachments = ObservabilityAttachmentConfig.new(
+					p_attach_game_log = true,
+				),
+			))).to_equal(Error.OK)
 	Expect.that(bridge.current_attachment_payloads).to_have_size(1)
 	Expect.that(provider.add_attachment(ObservabilityAttachment.from_bytes(
 			PackedByteArray([4]),
