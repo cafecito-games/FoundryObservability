@@ -447,8 +447,14 @@ require_fs_signature "$provider_session_source" snapshot \
 	'func snapshot() -> ObservabilityProviderSnapshot:'
 require_fs_signature "$provider_session_source" replace \
 	'func replace(provider: ObservabilityProvider, config: ObservabilityConfig, pipeline: ObservabilityProcessingPipeline) -> int:'
+require_fs_signature "$provider_session_source" replace_if_generation \
+	'func replace_if_generation(provider: ObservabilityProvider, config: ObservabilityConfig, pipeline: ObservabilityProcessingPipeline, expected_generation: int) -> int:'
 require_fs_signature "$provider_session_source" begin_call \
 	'func begin_call() -> ObservabilityProviderCall:'
+require_fs_signature "$provider_session_source" begin_status_call \
+	'func begin_status_call() -> ObservabilityProviderCall:'
+require_fs_signature "$provider_session_source" _begin_call \
+	'func _begin_call(require_enabled: bool) -> ObservabilityProviderCall:'
 require_fs_signature "$provider_session_source" end_call \
 	'func end_call(call: ObservabilityProviderCall) -> void:'
 require_fs_signature "$provider_session_source" finish_call \
@@ -463,20 +469,57 @@ require_fs_signature "$provider_session_source" in_flight_call_count \
 	'func in_flight_call_count() -> int:'
 rg -Fxq 'final var _mutex: Mutex = Mutex.new()' "$provider_session_source" \
 	|| fail "provider session must own one final mutex"
-rg -Fxq 'final var _active_calls: Dictionary[ObservabilityProviderCall, bool] = {}' \
+rg -Fxq 'final var _active_calls: Dictionary[ObservabilityProviderCall, CallContext] = {}' \
 	"$provider_session_source" \
-	|| fail "provider session must track balanced calls with exact typed call identity"
+	|| fail "provider session must track balanced calls with typed operation contexts"
+rg -Fxq 'final var _current_calls: Dictionary[int, CallContext] = {}' \
+	"$provider_session_source" \
+	|| fail "provider session must track the current typed call for each runtime owner"
+rg -Fxq 'class CallContext extends RefCounted:' "$provider_session_source" \
+	|| fail "provider session must model nested operation state with a typed context"
+require_fs_signature "$provider_session_source" nested_error \
+	'func nested_error(call: ObservabilityProviderCall) -> int:'
+require_fs_signature "$provider_session_source" record_current_call_error \
+	'func record_current_call_error(error: int) -> void:'
+for status_admission_contract in \
+	'return _begin_call(true)' \
+	'return _begin_call(false)' \
+	'if require_enabled and not _snapshot.enabled():'; do
+	rg -Fq "$status_admission_contract" "$provider_session_source" \
+		|| fail "provider session must share typed admission while status calls allow disabled providers"
+done
 rg -Fxq \
 	'final var _claim_token: ObservabilityPipelineClaimToken = ObservabilityPipelineClaimToken.new()' \
 	"$provider_session_source" \
 	|| fail "provider session must own one private opaque pipeline claim token"
-if rg -n 'get_instance_id|_owner_id|claim\([^,]+,[[:space:]]*[[:digit:]]' \
+if rg -n 'get_instance_id|^(final )?var _owner_id:|claim\([^,]+,[[:space:]]*[[:digit:]]' \
 	"$provider_session_source"; then
 	fail "provider session pipeline authority must not use forgeable integer identity"
 fi
 rg -Fq 'provider/config/pipeline identity triple is an idempotent replacement.' \
 	"$provider_session_source" \
 	|| fail "provider session must document exact-triple replacement idempotence"
+replace_contract=$(
+	sed -n '/^func replace(/,/^func replace_if_generation(/p' \
+		"$provider_session_source"
+)
+require_content_text \
+	"$replace_contract" \
+	'replace_if_generation(' \
+	"provider session replace must delegate through generation-conditional admission"
+conditional_replace_contract=$(
+	sed -n '/^func replace_if_generation(/,/^func begin_call(/p' \
+		"$provider_session_source"
+)
+for conditional_replace_requirement in \
+	'expected_generation' \
+	'_snapshot.generation() != expected_generation' \
+	'return Error.ERR_BUSY'; do
+	require_content_text \
+		"$conditional_replace_contract" \
+		"$conditional_replace_requirement" \
+		"conditional replacement must reject stale configure intent before callbacks"
+done
 session_claim_line=$(rg -n '^[[:space:]]*var claim_result: int = pipeline\.claim\(config, _claim_token\)$' \
 	"$provider_session_source" | cut -d: -f1)
 session_configure_line=$(rg -n '^[[:space:]]*var result: int = provider\.configure\(config\)$' \
@@ -526,12 +569,277 @@ else
 	fail "provider callbacks must execute outside the provider-session mutex"
 fi
 if rg -n -- '-> Dictionary|\{[[:space:]]*"valid"' \
-	"$normalization_result_source" \
-	"$normalizer_source" \
-	"$provider_snapshot_source" \
-	"$provider_call_source" \
-	"$provider_session_source"; then
+		"$normalization_result_source" \
+		"$normalizer_source" \
+		"$provider_snapshot_source" \
+		"$provider_call_source" \
+		"$provider_session_source"; then
 	fail "typed normalization/session collaborators must not expose dictionary result protocols"
+fi
+facade_source="$addon/FoundryObservability.fs"
+facade_lines=$(wc -l <"$facade_source" | tr -d ' ')
+(( facade_lines <= 900 )) \
+	|| fail "FoundryObservability remains oversized after collaborator extraction"
+require_fs_signature \
+	"$facade_source" \
+	_set_error \
+	'func _set_error(error: int, propagate_to_current: bool = true) -> void:'
+last_error_assignment_count=$(
+	rg -c '^[[:space:]]*_last_error[[:space:]]*=' "$facade_source"
+)
+(( last_error_assignment_count == 1 )) \
+	|| fail "facade public error writes must be centralized in _set_error"
+set_error_contract=$(
+	sed -n '/^func _set_error(/,/^func /p' "$facade_source"
+)
+for set_error_requirement in \
+	'_last_error = error' \
+	'if propagate_to_current and error != Error.OK:' \
+	'_session.record_current_call_error(error)'; do
+	require_content_text \
+		"$set_error_contract" \
+		"$set_error_requirement" \
+		"facade error helper must preserve public state and scoped propagation"
+done
+require_fs_signature \
+	"$facade_source" \
+	_prepare_candidate_pipeline \
+	'func _prepare_candidate_pipeline(config: ObservabilityConfig, pipeline: ObservabilityProcessingPipeline) -> int:'
+facade_configure_contract=$(
+	sed -n '/^func configure(/,/^func is_enabled(/p' "$facade_source"
+)
+for configure_intent_requirement in \
+	'var intent: ObservabilityProviderSnapshot = _session.snapshot()' \
+	'_prepare_candidate_pipeline(' \
+	'_session.replace_if_generation(' \
+	'intent.generation()'; do
+	require_content_text \
+		"$facade_configure_contract" \
+		"$configure_intent_requirement" \
+		"facade configure must retain generation intent across pipeline preparation"
+done
+for facade_field in \
+	'var _runtime: ObservabilityRuntime' \
+	'var _normalizer: ObservabilityNormalizer' \
+	'var _session: ObservabilityProviderSession' \
+	'var _automatic_logger: AutomaticObservabilityLogger?'; do
+	rg -Fxq "$facade_field" "$facade_source" \
+		|| fail "facade is missing exact typed collaborator field: $facade_field"
+done
+for moved_facade_field in \
+	_provider \
+	_config \
+	_pipeline \
+	_configuration_generation \
+	_provider_call_count \
+	_configuration_in_progress \
+	_shutdown \
+	_shutdown_requested \
+	_pipeline_mutex; do
+	if rg -n "^(final )?var ${moved_facade_field}:" "$facade_source"; then
+		fail "facade retains provider-session state: ${moved_facade_field}"
+	fi
+done
+automatic_logger_source="$addon/AutomaticObservabilityLogger.fs"
+rg -Fxq 'var _detached: bool = false' "$automatic_logger_source" \
+	|| fail "automatic logger must track permanent detachment"
+require_fs_signature \
+	"$automatic_logger_source" \
+	uninstall_for_testing \
+	'func uninstall_for_testing() -> void:'
+automatic_logger_remove=$(
+	sed -n '/^func remove()/,/^func uninstall_for_testing()/p' \
+		"$automatic_logger_source"
+)
+for detach_contract in \
+	'_detached = true' \
+	'OS.remove_logger(self)'; do
+	require_content_text \
+		"$automatic_logger_remove" \
+		"$detach_contract" \
+		"automatic logger remove must unregister and permanently detach"
+done
+automatic_capture_admission=$(
+	sed -n '/^func _try_begin_capture()/,/^func _end_capture()/p' \
+		"$automatic_logger_source"
+)
+for automatic_guard_contract in \
+	'_detached' \
+	'ObservabilityProviderCall' \
+	'_service._begin_automatic_capture()'; do
+	require_content_text \
+		"$automatic_capture_admission" \
+		"$automatic_guard_contract" \
+		"automatic logger admission must pin a typed call and reject detachment"
+done
+rg -Fxq 'var _provider_call: ObservabilityProviderCall?' "$automatic_logger_source" \
+	|| fail "automatic logger must retain the typed call guard for its callback"
+automatic_capture_end=$(
+	sed -n '/^func _end_capture()/,$p' "$automatic_logger_source"
+)
+for automatic_balance_contract in \
+	'_provider_call = null' \
+	'_service._end_automatic_capture(provider_call)'; do
+	require_content_text \
+		"$automatic_capture_end" \
+		"$automatic_balance_contract" \
+		"automatic logger must clear and balance its typed call guard"
+done
+if rg -n '_service\.last_error\(\)' "$automatic_logger_source"; then
+	fail "automatic logger must aggregate errors through its typed parent call"
+fi
+require_fs_signature \
+	"$facade_source" \
+	_begin_automatic_capture \
+	'func _begin_automatic_capture() -> ObservabilityProviderCall:'
+require_fs_signature \
+	"$facade_source" \
+	_end_automatic_capture \
+	'func _end_automatic_capture(provider_call: ObservabilityProviderCall) -> void:'
+automatic_facade_end=$(
+	sed -n '/^func _end_automatic_capture(/,/^func /p' "$facade_source"
+)
+for automatic_completion_contract in \
+	'_session.nested_error(provider_call)' \
+	'_record_automatic_capture_error(error)' \
+	'_session.finish_call(provider_call, error)'; do
+	require_content_text \
+		"$automatic_facade_end" \
+		"$automatic_completion_contract" \
+		"automatic callback completion must use its typed parent-call error"
+done
+if rg -Fq '_session.end_call(provider_call)' <<<"$automatic_facade_end"; then
+	fail "automatic callback completion must finish with its scoped error"
+fi
+for automatic_capture_body in _capture_error _capture_message; do
+	automatic_capture_body_source=$(
+		sed -n \
+			"/^func ${automatic_capture_body}(/,/^func /p" \
+			"$automatic_logger_source"
+	)
+	require_content_text \
+		"$automatic_capture_body_source" \
+		'if not _capture_is_current():' \
+		"automatic capture bodies must recheck detachment before service dispatch"
+done
+if rg -n 'uninstall_for_testing' "$facade_source"; then
+	fail "production facade must never use the test-only logger uninstall seam"
+fi
+for moved_facade_helper in \
+	_capture_state \
+	_state_config \
+	_try_begin_pinned_provider_call \
+	_end_provider_call \
+	_complete_requested_shutdown \
+	_resolved_event_timestamp \
+	_normalized_metric \
+	_normalized_exception \
+	_is_valid_metric_name \
+	_is_valid_feedback; do
+	if rg -n "^func ${moved_facade_helper}\\(|^static func ${moved_facade_helper}\\(" \
+			"$facade_source"; then
+		fail "facade retains moved responsibility helper: ${moved_facade_helper}"
+	fi
+done
+for typed_orchestration in \
+	'ObservabilityProviderCall' \
+	'ObservabilityNormalizationResult[ObservabilityEvent]' \
+	'ObservabilityProcessingResult[ObservabilityEvent]' \
+	'ObservabilityNormalizationResult[ObservabilityMetric]' \
+	'ObservabilityProcessingResult[ObservabilityMetric]' \
+	'_session.replace_if_generation(' \
+	'_session.finish_call('; do
+	rg -Fq "$typed_orchestration" "$facade_source" \
+		|| fail "facade is missing typed orchestration: $typed_orchestration"
+done
+require_fs_signature \
+	"$facade_source" \
+	_begin_provider_call \
+	'func _begin_provider_call(expected: ObservabilityProviderSnapshot) -> ObservabilityProviderCall:'
+provider_call_helper=$(
+	sed -n '/^func _begin_provider_call(/,/^func _finish_call(/p' "$facade_source"
+)
+for pinned_identity_check in \
+	'provider_call.generation() != expected.generation()' \
+	'is_same(provider_call.provider(), expected.provider())' \
+	'is_same(provider_call.config(), expected.config())' \
+	'is_same(provider_call.pipeline(), expected.pipeline())' \
+	'_session.end_call(provider_call)' \
+	'ObservabilityProviderCall.rejected(Error.ERR_UNCONFIGURED)'; do
+	require_content_text \
+		"$provider_call_helper" \
+		"$pinned_identity_check" \
+		"expected-snapshot admission must validate and balance exact identity"
+done
+event_capture_contract=$(
+	sed -n '/^func capture_event(/,/^func capture_message(/p' "$facade_source"
+)
+require_content_text \
+	"$event_capture_contract" \
+	'var snapshot: ObservabilityProviderSnapshot = _session.snapshot()' \
+	"event capture must retain the snapshot used for normalization"
+require_content_text \
+	"$event_capture_contract" \
+	'_begin_provider_call(snapshot)' \
+	"event capture must reserve the exact snapshot used for normalization"
+metric_capture_contract=$(
+	sed -n '/^func capture_metric(/,/^func _finish_processing_rejection/p' "$facade_source"
+)
+for metric_snapshot_requirement in \
+	'var snapshot: ObservabilityProviderSnapshot = _session.snapshot()' \
+	'_capture_normalized_metric(normalization, snapshot)' \
+	'_begin_provider_call(expected)'; do
+	require_content_text \
+		"$metric_capture_contract" \
+		"$metric_snapshot_requirement" \
+		"metric capture must reserve the exact snapshot used for normalization"
+done
+metric_process_line=$(
+	grep -nF 'pipeline.process_metric(normalized)' <<<"$metric_capture_contract" \
+		| head -1 \
+		| cut -d: -f1
+)
+metric_capability_line=$(
+	grep -nF 'provider_value is ObservabilityMetricsProvider' <<<"$metric_capture_contract" \
+		| head -1 \
+		| cut -d: -f1
+)
+[[ -n "$metric_process_line" && -n "$metric_capability_line" ]] \
+	|| fail "metric capture must process and check the typed metrics capability"
+(( metric_process_line < metric_capability_line )) \
+	|| fail "metric pipeline processing must precede the optional provider capability check"
+if rg -n 'var nested_error: int = _last_error' "$facade_source"; then
+	fail "facade nested operation errors must never be sampled from public last_error"
+fi
+for scoped_nested_error_contract in \
+	'_session.nested_error(provider_call)' \
+	'_set_error(normalization.error())'; do
+	rg -Fq "$scoped_nested_error_contract" "$facade_source" \
+		|| fail "facade must use provider-session operation-scoped nested errors"
+done
+for metadata_method in is_available provider_name; do
+	metadata_contract=$(
+		sed -n "/^func ${metadata_method}(/,/^func /p" "$facade_source"
+	)
+	require_content_text \
+		"$metadata_contract" \
+		'_session.begin_status_call()' \
+		"${metadata_method} must pin a typed status call even when capture is disabled"
+	require_content_text \
+		"$metadata_contract" \
+		'_session.end_call(' \
+		"${metadata_method} must balance its typed provider call"
+done
+if rg -n '_session\.snapshot\(\)\.provider\(\)\.(is_available|provider_name)\(' \
+		"$facade_source"; then
+	fail "provider metadata callbacks must not run from an unpinned session snapshot"
+fi
+if rg -n '\b(Time|OS)\.' "$facade_source"; then
+	fail "facade must use injected runtime/session collaborators instead of Time or OS"
+fi
+if rg -n '\[[[:space:]]*"(valid|provider|config|pipeline|generation|accepted|value|error|signal|operation_token)"[[:space:]]*\]' \
+		"$facade_source"; then
+	fail "facade must not index magic-key result or session dictionaries"
 fi
 for sentry_attachment_resource in \
 	SentryAttachmentRuntimeProbe \

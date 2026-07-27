@@ -6,12 +6,34 @@ import foundry.observability.runtime
 ## Owns provider replacement, generation pinning, in-flight calls, flush, and shutdown.
 final class_name ObservabilityProviderSession extends RefCounted
 
+
+class CallContext extends RefCounted:
+	final var provider_call: ObservabilityProviderCall
+	final var runtime_owner_id: int
+	final var parent_context: CallContext?
+	var first_nested_error: int = Error.OK
+
+	func _init(
+			p_call: ObservabilityProviderCall,
+			p_owner_id: int,
+			p_parent: CallContext?,
+	) -> void:
+		provider_call = p_call
+		runtime_owner_id = p_owner_id
+		parent_context = p_parent
+
+	func record_error(error: int) -> void:
+		if first_nested_error == Error.OK and error != Error.OK:
+			first_nested_error = error
+
+
 final var _runtime: ObservabilityRuntime
 final var _mutex: Mutex = Mutex.new()
 final var _claim_token: ObservabilityPipelineClaimToken = ObservabilityPipelineClaimToken.new()
 var _snapshot: ObservabilityProviderSnapshot
 var _in_flight_calls: int = 0
-final var _active_calls: Dictionary[ObservabilityProviderCall, bool] = {}
+final var _active_calls: Dictionary[ObservabilityProviderCall, CallContext] = {}
+final var _current_calls: Dictionary[int, CallContext] = {}
 var _configuration_in_progress: bool = false
 var _shutdown_requested_state: bool = false
 var _shutdown_complete: bool = false
@@ -37,14 +59,35 @@ func replace(
 		config: ObservabilityConfig,
 		pipeline: ObservabilityProcessingPipeline,
 ) -> int:
+	_mutex.lock()
+	var expected_generation: int = _snapshot.generation()
+	_mutex.unlock()
+	return replace_if_generation(
+			provider,
+			config,
+			pipeline,
+			expected_generation,
+		)
+
+
+## Replaces only when the caller's pre-preparation generation is still current.
+func replace_if_generation(
+		provider: ObservabilityProvider,
+		config: ObservabilityConfig,
+		pipeline: ObservabilityProcessingPipeline,
+		expected_generation: int,
+) -> int:
 	if provider == null:
 		return Error.FAILED
-	if config == null or pipeline == null:
+	if config == null or pipeline == null or expected_generation < 0:
 		return Error.ERR_INVALID_PARAMETER
 	_mutex.lock()
 	if not _owns_current_pipeline_locked():
 		_mutex.unlock()
 		return Error.ERR_ALREADY_IN_USE
+	if _snapshot.generation() != expected_generation:
+		_mutex.unlock()
+		return Error.ERR_BUSY
 	if _shutdown_requested_state or _configuration_in_progress or _in_flight_calls > 0:
 		_mutex.unlock()
 		return Error.ERR_BUSY
@@ -108,6 +151,17 @@ func replace(
 
 @warning_ignore("shadowed_variable_base_class")
 func begin_call() -> ObservabilityProviderCall:
+	return _begin_call(true)
+
+
+## Pins provider status metadata independently of capture enablement.
+## Configuration transitions and shutdown reject status calls like capture calls.
+func begin_status_call() -> ObservabilityProviderCall:
+	return _begin_call(false)
+
+
+func _begin_call(require_enabled: bool) -> ObservabilityProviderCall:
+	var owner_id: int = _runtime.caller_id()
 	_mutex.lock()
 	if not _owns_current_pipeline_locked():
 		_mutex.unlock()
@@ -115,24 +169,38 @@ func begin_call() -> ObservabilityProviderCall:
 	if _shutdown_requested_state or _configuration_in_progress or _shutdown_complete:
 		_mutex.unlock()
 		return ObservabilityProviderCall.rejected(Error.ERR_BUSY)
-	if not _snapshot.enabled():
+	if require_enabled and not _snapshot.enabled():
 		_mutex.unlock()
 		return ObservabilityProviderCall.rejected(Error.ERR_UNCONFIGURED)
-	var provider_call: ObservabilityProviderCall = ObservabilityProviderCall.begin(_snapshot)
-	_active_calls[provider_call] = true
-	_in_flight_calls += 1
+	var provider_call: ObservabilityProviderCall = _register_call_locked(
+			_snapshot,
+			owner_id,
+		)
 	_mutex.unlock()
 	return provider_call
 
 
 @warning_ignore("shadowed_variable_base_class")
 func end_call(call: ObservabilityProviderCall) -> void:
+	finish_call(call, Error.OK)
+
+
+@warning_ignore("shadowed_variable_base_class")
+func finish_call(call: ObservabilityProviderCall, error: int) -> void:
 	if call == null or not call.accepted():
 		return
 	_mutex.lock()
 	if not _owns_current_pipeline_locked() or not _active_calls.has(call):
 		_mutex.unlock()
 		return
+	var context: CallContext = _active_calls[call]
+	var parent: CallContext? = context.parent_context
+	if error != Error.OK and parent != null \
+			and _active_calls.has(parent.provider_call):
+		parent.record_error(error)
+	if _current_calls.has(context.runtime_owner_id) \
+			and is_same(_current_calls[context.runtime_owner_id], context):
+		_restore_current_call_locked(context)
 	_active_calls.erase(call)
 	_in_flight_calls = maxi(0, _in_flight_calls - 1)
 	var should_shutdown: bool = _shutdown_requested_state \
@@ -144,32 +212,55 @@ func end_call(call: ObservabilityProviderCall) -> void:
 		_complete_requested_shutdown()
 
 
-@warning_ignore("unused_parameter")
+## Returns the first non-OK nested error recorded while an accepted call is active.
 @warning_ignore("shadowed_variable_base_class")
-func finish_call(call: ObservabilityProviderCall, error: int) -> void:
-	## The facade maps the provider error into public last_error; the session owns release.
-	end_call(call)
+func nested_error(call: ObservabilityProviderCall) -> int:
+	if call == null or not call.accepted():
+		return Error.OK
+	_mutex.lock()
+	var error: int = Error.OK
+	if _active_calls.has(call):
+		error = _active_calls[call].first_nested_error
+	_mutex.unlock()
+	return error
+
+
+## Records a pre-admission nested failure only for this runtime owner's active call.
+func record_current_call_error(error: int) -> void:
+	if error == Error.OK:
+		return
+	var owner_id: int = _runtime.caller_id()
+	_mutex.lock()
+	if _current_calls.has(owner_id):
+		var context: CallContext = _current_calls[owner_id]
+		if _active_calls.has(context.provider_call):
+			context.record_error(error)
+	_mutex.unlock()
 
 
 @warning_ignore("shadowed_variable_base_class")
 func flush(timeout_msec: int = 2000) -> int:
+	var owner_id: int = _runtime.caller_id()
 	_mutex.lock()
 	if not _owns_current_pipeline_locked():
 		_mutex.unlock()
+		record_current_call_error(Error.ERR_ALREADY_IN_USE)
 		return Error.ERR_ALREADY_IN_USE
 	if _shutdown_complete:
 		_mutex.unlock()
 		return Error.OK
 	if _shutdown_requested_state or _configuration_in_progress:
 		_mutex.unlock()
+		record_current_call_error(Error.ERR_BUSY)
 		return Error.ERR_BUSY
-	var provider_call: ObservabilityProviderCall = ObservabilityProviderCall.begin(_snapshot)
-	_active_calls[provider_call] = true
-	_in_flight_calls += 1
+	var provider_call: ObservabilityProviderCall = _register_call_locked(
+			_snapshot,
+			owner_id,
+		)
 	_mutex.unlock()
 
 	var result: int = provider_call.provider().flush(timeout_msec)
-	end_call(provider_call)
+	finish_call(provider_call, result)
 	return result
 
 
@@ -234,6 +325,7 @@ func _complete_requested_shutdown() -> void:
 	_shutdown_complete = true
 	_shutdown_requested_state = false
 	_active_calls.clear()
+	_current_calls.clear()
 	_in_flight_calls = 0
 	_mutex.unlock()
 
@@ -263,6 +355,31 @@ func _release_unpublished_pipeline(pipeline: ObservabilityProcessingPipeline) ->
 	var result: int = pipeline.release(_claim_token)
 	if result != Error.OK:
 		push_error("ObservabilityProviderSession could not release an unpublished candidate.")
+
+
+func _register_call_locked(
+		p_snapshot: ObservabilityProviderSnapshot,
+		owner_id: int,
+) -> ObservabilityProviderCall:
+	var provider_call: ObservabilityProviderCall = ObservabilityProviderCall.begin(p_snapshot)
+	var parent: CallContext? = null
+	if _current_calls.has(owner_id):
+		parent = _current_calls[owner_id]
+	var context: CallContext = CallContext.new(provider_call, owner_id, parent)
+	_active_calls[provider_call] = context
+	_current_calls[owner_id] = context
+	_in_flight_calls += 1
+	return provider_call
+
+
+func _restore_current_call_locked(context: CallContext) -> void:
+	var candidate: CallContext? = context.parent_context
+	while candidate != null and not _active_calls.has(candidate.provider_call):
+		candidate = candidate.parent_context
+	if candidate == null:
+		_current_calls.erase(context.runtime_owner_id)
+	else:
+		_current_calls[context.runtime_owner_id] = candidate
 
 
 func _owns_current_pipeline_locked() -> bool:

@@ -42,6 +42,7 @@ var _overlap_recursive_result: ObservabilityProcessingResult[ObservabilityEvent]
 	)
 var _overlap_stage: int = 0
 var _service_event_processor_calls: int = 0
+var _service_metric_processor_calls: int = 0
 var _service_processing_runtime: FakeObservabilityRuntime
 var _service_lifecycle_service: FoundryObservability
 var _service_lifecycle_provider: ObservabilityProvider
@@ -265,6 +266,81 @@ class BoundedTestSemaphore extends RefCounted:
 		return semaphore.try_wait()
 
 
+class PausingAutomaticObservabilityLogger extends \
+			"res://addons/FoundryObservability/AutomaticObservabilityLogger.fs":
+	final var capture_entered: Semaphore = Semaphore.new()
+	final var capture_release: Semaphore = Semaphore.new()
+	var barrier_timed_out: bool = false
+
+	func _capture_message(message: String, error: bool) -> void:
+		capture_entered.post()
+		if not BoundedTestSemaphore.wait_until_posted(capture_release):
+			barrier_timed_out = true
+			return
+		super._capture_message(message, error)
+
+
+class PausingAutomaticChildService extends \
+			"res://addons/FoundryObservability/FoundryObservability.fs":
+	final var child_completed: Semaphore = Semaphore.new()
+	final var child_release: Semaphore = Semaphore.new()
+	var barrier_timed_out: bool = false
+	var completion_error: int = Error.OK
+	var completion_count: int = 0
+
+	func _capture_automatic_breadcrumb(
+			breadcrumb: ObservabilityBreadcrumb,
+	) -> bool:
+		var accepted: bool = super._capture_automatic_breadcrumb(breadcrumb)
+		child_completed.post()
+		if not BoundedTestSemaphore.wait_until_posted(child_release):
+			barrier_timed_out = true
+		return accepted
+
+	func _end_automatic_capture(provider_call: ObservabilityProviderCall) -> void:
+		completion_error = _session.nested_error(provider_call)
+		completion_count += 1
+		super._end_automatic_capture(provider_call)
+
+
+class AutomaticLoggerThreadProbe extends RefCounted:
+	var logger: AutomaticObservabilityLogger
+
+	func capture_message() -> void:
+		logger._log_message("paused admitted callback", false)
+
+
+class PausingPipelinePreparationService extends \
+			"res://addons/FoundryObservability/FoundryObservability.fs":
+	final var preparation_entered: Semaphore = Semaphore.new()
+	final var preparation_release: Semaphore = Semaphore.new()
+	var barrier_timed_out: bool = false
+	var pause_next_preparation: bool = true
+
+	func _prepare_candidate_pipeline(
+			config: ObservabilityConfig,
+			pipeline: ObservabilityProcessingPipeline,
+	) -> int:
+		if not pause_next_preparation:
+			return pipeline.configure(config)
+		pause_next_preparation = false
+		preparation_entered.post()
+		if not BoundedTestSemaphore.wait_until_posted(preparation_release):
+			barrier_timed_out = true
+			return Error.ERR_TIMEOUT
+		return pipeline.configure(config)
+
+
+class ConfigureServiceThreadProbe extends RefCounted:
+	var service: FoundryObservability
+	var provider: ObservabilityProvider
+	var config: ObservabilityConfig
+	var result: int = Error.FAILED
+
+	func configure_service() -> void:
+		result = service.configure(provider, config)
+
+
 class BarrierMemoryProvider extends \
 				"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
 	final var configure_entered: Semaphore = Semaphore.new()
@@ -303,6 +379,46 @@ class BlockingEventProcessor extends RefCounted:
 			barrier_timed_out = true
 			return event
 		return event
+
+
+class NestedFailureEventProcessor extends RefCounted:
+	var service: FoundryObservability
+	var nested_result: bool = true
+	var nested_error: int = Error.OK
+
+	func process(event: ObservabilityEvent) -> ObservabilityEvent:
+		nested_result = service.capture_counter("")
+		nested_error = service.last_error()
+		return event
+
+
+class PreAdmissionFailureEventProcessor extends RefCounted:
+	var service: FoundryObservability
+	var provider: ObservabilityProvider
+	var rejected_config: ObservabilityConfig
+	var configure_result: int = Error.OK
+	var configure_error: int = Error.OK
+	var accepted_child_result: bool = true
+	var accepted_child_error: int = Error.OK
+	var tag_result: bool = true
+	var tag_error: int = Error.OK
+
+	func process(event: ObservabilityEvent) -> ObservabilityEvent:
+		configure_result = service.configure(provider, rejected_config)
+		configure_error = service.last_error()
+		accepted_child_result = service.remove_attachment("memory-attachment:missing")
+		accepted_child_error = service.last_error()
+		tag_result = service.set_tag("", "invalid")
+		tag_error = service.last_error()
+		return event
+
+
+class ServiceCaptureThreadProbe extends RefCounted:
+	var service: FoundryObservability
+	var event_id: String = ""
+
+	func capture_message() -> void:
+		event_id = service.capture_message("owner A outer")
 
 
 class CountingEventProcessor extends RefCounted:
@@ -355,37 +471,80 @@ class PipelineThreadProbe extends RefCounted:
 
 class ReconfiguringReservationService extends \
 			"res://addons/FoundryObservability/FoundryObservability.fs":
+	var replacement_provider: ObservabilityProvider
 	var replacement_config: ObservabilityConfig
 	var reconfigure_result: int = Error.OK
 	var armed: bool = false
+	var begin_attempts: int = 0
+	var accepted_begins: int = 0
+	var finishes: int = 0
 
-	func _try_begin_pinned_provider_call(
-			provider: ObservabilityProvider,
-			pipeline: ObservabilityProcessingPipeline,
-			generation: int,
-	) -> bool:
-		_reconfigure_before_reservation(provider)
-		return super._try_begin_pinned_provider_call(provider, pipeline, generation)
+	func _begin_provider_call(
+			expected: ObservabilityProviderSnapshot,
+	) -> ObservabilityProviderCall:
+		begin_attempts += 1
+		_reconfigure_before_reservation()
+		var provider_call: ObservabilityProviderCall = (
+				super._begin_provider_call(expected)
+			)
+		if provider_call.accepted():
+			accepted_begins += 1
+		return provider_call
 
-	func _reconfigure_before_reservation(provider: ObservabilityProvider) -> void:
+	func _finish_call(provider_call: ObservabilityProviderCall, error: int) -> void:
+		finishes += 1
+		super._finish_call(provider_call, error)
+
+	func _reconfigure_before_reservation() -> void:
 		if not armed:
 			return
 		armed = false
-		reconfigure_result = configure(provider, replacement_config)
+		reconfigure_result = configure(replacement_provider, replacement_config)
 
 
-class ShutdownDuringCandidatePreparationService extends \
-		"res://addons/FoundryObservability/FoundryObservability.fs":
-	var shutdown_during_preparation: bool = false
+class MetadataReentrantMemoryProvider extends \
+			"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	var service: FoundryObservability
+	var replacement_provider: ObservabilityProvider
+	var replacement_config: ObservabilityConfig
+	var replace_from_availability: bool = false
+	var shutdown_from_name: bool = false
+	var reconfigure_result: int = Error.OK
+	var availability_calls: int = 0
+	var name_calls: int = 0
+	var availability_in_flight_count: int = -1
+	var name_in_flight_count: int = -1
+	var shutdown_count_during_availability: int = -1
+	var shutdown_count_during_name: int = -1
 
-	func _configure_candidate_pipeline(
-			pipeline: ObservabilityProcessingPipeline,
-			config: ObservabilityConfig,
-	) -> int:
-		if shutdown_during_preparation:
-			shutdown_during_preparation = false
-			shutdown()
-		return pipeline.configure(config)
+	func provider_name() -> StringName:
+		name_calls += 1
+		if service != null:
+			name_in_flight_count = service._session.in_flight_call_count()
+			if shutdown_from_name:
+				shutdown_from_name = false
+				service.shutdown()
+			shutdown_count_during_name = shutdown_count
+		return &"metadata-reentrant"
+
+	func is_available() -> bool:
+		availability_calls += 1
+		if service != null:
+			availability_in_flight_count = service._session.in_flight_call_count()
+			if replace_from_availability:
+				replace_from_availability = false
+				reconfigure_result = service.configure(
+						replacement_provider,
+						replacement_config,
+					)
+			shutdown_count_during_availability = shutdown_count
+		return super.is_available()
+
+
+class EmptyNameMemoryProvider extends \
+			"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
+	func provider_name() -> StringName:
+		return &""
 
 
 class RecordingScopeProvider extends RefCounted:
@@ -697,6 +856,23 @@ func test_normalizer_preserves_explicit_time_and_defensive_event_data() -> void:
 	Expect.that(normalized.value().attributes()).to_equal({"nested": {"value": 7}})
 	Expect.that(runtime.monotonic_call_count).to_equal(1)
 	Expect.that(runtime.unix_call_count).to_equal(1)
+
+
+func test_facade_uses_typed_session_pipeline_and_normalizer() -> void:
+	var runtime := FakeObservabilityRuntime.new(100, 200, 3, 4, 4)
+	var service: FoundryObservability = _service_with_runtime(runtime)
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new()
+
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	Expect.that(service.capture_message("delegated")).to_equal("memory:1")
+	Expect.that(provider.events()[0].timestamp_msec()).to_equal(200)
+	Expect.that(provider.events()[0].engine_ticks_msec()).to_equal(100)
+	Expect.that(service.last_processing_diagnostic().processing_signal()).to_equal(
+			ObservabilitySignal.EVENT,
+		)
+	service.shutdown()
+	service.free()
 
 
 func test_normalizer_applies_stack_trace_feature_toggles_and_bounds_context() -> void:
@@ -1087,6 +1263,43 @@ func test_provider_session_defers_shutdown_until_pinned_call_finishes() -> void:
 	Expect.that(session.in_flight_call_count()).to_equal(0)
 	Expect.that(session.snapshot().provider().provider_name()).to_equal(&"null")
 	Expect.that(session.snapshot().generation()).to_equal(2)
+
+
+func test_provider_session_tracks_nested_errors_by_typed_call_context() -> void:
+	var runtime := FakeObservabilityRuntime.new(0, 0, 1, 7, 7)
+	var session := ObservabilityProviderSession.new(runtime)
+	var provider := MemoryObservabilityProvider.new()
+	var config := ObservabilityConfig.new()
+	var pipeline := ObservabilityProcessingPipeline.new(runtime)
+	Expect.that(pipeline.configure(config)).to_equal(Error.OK)
+	Expect.that(session.replace(provider, config, pipeline)).to_equal(Error.OK)
+	var parent: ObservabilityProviderCall = session.begin_call()
+	var child: ObservabilityProviderCall = session.begin_call()
+
+	session.finish_call(child, Error.ERR_INVALID_PARAMETER)
+	Expect.that(session.nested_error(parent)).to_equal(Error.ERR_INVALID_PARAMETER)
+	session.finish_call(child, Error.FAILED)
+	var foreign: ObservabilityProviderCall = ObservabilityProviderCall.begin(
+			session.snapshot(),
+		)
+	session.finish_call(foreign, Error.ERR_TIMEOUT)
+	Expect.that(session.nested_error(parent)).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(session.in_flight_call_count()).to_equal(1)
+	session.finish_call(parent, session.nested_error(parent))
+	Expect.that(session.in_flight_call_count()).to_equal(0)
+
+	var out_of_order_parent: ObservabilityProviderCall = session.begin_call()
+	var out_of_order_child: ObservabilityProviderCall = session.begin_call()
+	session.finish_call(out_of_order_parent, Error.FAILED)
+	session.record_current_call_error(Error.ERR_TIMEOUT)
+	Expect.that(session.nested_error(out_of_order_child)).to_equal(Error.ERR_TIMEOUT)
+	session.finish_call(out_of_order_child, Error.OK)
+	Expect.that(session.in_flight_call_count()).to_equal(0)
+	var clean: ObservabilityProviderCall = session.begin_call()
+	Expect.that(session.nested_error(clean)).to_equal(Error.OK)
+	session.end_call(clean)
+	Expect.that(session.in_flight_call_count()).to_equal(0)
+	session.shutdown()
 
 
 func test_provider_session_failed_replacement_honors_reentrant_shutdown_once() -> void:
@@ -1916,7 +2129,7 @@ func test_global_scope_provider_false_and_non_boolean_results_fail() -> void:
 				),
 			))).to_equal(Error.OK)
 	Expect.that(non_boolean_service.set_tag("region", "iad")).to_be_false()
-	Expect.that(non_boolean_service.last_error()).to_equal(Error.FAILED)
+	Expect.that(non_boolean_service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
 	non_boolean_service.shutdown()
 
 
@@ -2087,7 +2300,7 @@ func test_clear_breadcrumbs_reports_capability_results() -> void:
 			),
 		)).to_equal(Error.OK)
 	Expect.that(non_boolean_service.clear_breadcrumbs()).to_be_false()
-	Expect.that(non_boolean_service.last_error()).to_equal(Error.FAILED)
+	Expect.that(non_boolean_service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
 	non_boolean_service.shutdown()
 
 
@@ -2890,10 +3103,10 @@ func test_event_separates_wall_clock_timestamp_and_engine_ticks() -> void:
 
 
 func test_converts_engine_ticks_to_unix_epoch_milliseconds() -> void:
-	Expect.that(FoundryObservability._unix_msec_from_engine_ticks(
+	Expect.that(ObservabilityNormalizer._unix_msec_from_engine_ticks(
 			4000, 5000, 1721865600000,
 		)).to_equal(1721865599000)
-	Expect.that(FoundryObservability._unix_msec_from_engine_ticks(
+	Expect.that(ObservabilityNormalizer._unix_msec_from_engine_ticks(
 			6000, 5000, 1721865600000,
 		)).to_equal(1721865601000)
 
@@ -5098,13 +5311,14 @@ func test_metrics_reject_invalid_names_values_units_and_attributes() -> void:
 	Expect.that(service.capture_counter(
 			"match.started", 1, {"nested": {"unsupported": true}},
 		)).to_be_false()
-	Expect.that(service.configure(provider, ObservabilityConfig.new(
+	var invalid_globals_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(invalid_globals_provider, ObservabilityConfig.new(
 				p_global_attributes = {42: "unsupported key"},
 				p_provider_options = {},
 			))).to_equal(Error.OK)
 	Expect.that(service.capture_counter("match.started")).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
-	Expect.that(provider.metrics()).to_have_size(0)
+	Expect.that(invalid_globals_provider.metrics()).to_have_size(0)
 	Expect.that(service.capture_message("events still work")).to_equal("memory:1")
 	service.shutdown()
 
@@ -5112,7 +5326,8 @@ func test_metrics_reject_invalid_names_values_units_and_attributes() -> void:
 func test_metrics_honor_disabled_configuration_and_filter() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
-	Expect.that(service.configure(provider, ObservabilityConfig.new(
+	var filtered_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(filtered_provider, ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {},
 				p_processing = ObservabilityProcessingConfig.new(
@@ -5124,7 +5339,7 @@ func test_metrics_honor_disabled_configuration_and_filter() -> void:
 			))).to_equal(Error.OK)
 	Expect.that(service.capture_counter("combat.hit")).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.OK)
-	Expect.that(provider.metrics()).to_have_size(0)
+	Expect.that(filtered_provider.metrics()).to_have_size(0)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -5168,7 +5383,8 @@ func test_metrics_apply_deterministic_sampling_after_filtering() -> void:
 func test_metrics_support_sampling_boundaries_and_memory_clearing() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MemoryObservabilityProvider.new()
-	Expect.that(service.configure(provider, ObservabilityConfig.new(
+	var accepting_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(accepting_provider, ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {},
 				p_processing = ObservabilityProcessingConfig.new(
@@ -5179,7 +5395,7 @@ func test_metrics_support_sampling_boundaries_and_memory_clearing() -> void:
 				),
 			))).to_equal(Error.OK)
 	Expect.that(service.capture_counter("sampled.metric")).to_be_false()
-	Expect.that(provider.metrics()).to_have_size(0)
+	Expect.that(accepting_provider.metrics()).to_have_size(0)
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new(
 				p_global_attributes = {},
@@ -5218,10 +5434,37 @@ func test_metrics_isolate_provider_rejection_and_shutdown() -> void:
 func test_metricless_provider_keeps_event_capture_operational() -> void:
 	var service: FoundryObservability = _service()
 	var provider := MetriclessObservabilityProvider.new()
-	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	_service_metric_processor_calls = 0
+	Expect.that(service.configure(provider, ObservabilityConfig.new(
+			p_global_attributes = {},
+			p_provider_options = {},
+			p_processing = ObservabilityProcessingConfig.new(
+				p_event_processors = [],
+				p_log_processors = [],
+				p_metric_processors = [
+					Callable(self, "_count_service_metric") as Callable[[ObservabilityMetric], ObservabilityMetric?],
+				],
+			),
+		))).to_equal(Error.OK)
 
 	Expect.that(service.capture_counter("unsupported.metric")).to_be_false()
+	Expect.that(_service_metric_processor_calls).to_equal(1)
 	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
+	var diagnostic: ObservabilityProcessingDiagnostic? = (
+			service.last_processing_diagnostic()
+		)
+	Expect.that(diagnostic).to_not_be_null()
+	if diagnostic != null:
+		Expect.that(diagnostic.processing_signal()).to_equal(
+				ObservabilitySignal.METRIC,
+			)
+		Expect.that(diagnostic.reason()).to_equal(
+				ObservabilityProcessingReason.PROVIDER_REJECTED,
+			)
+		Expect.that(diagnostic.error()).to_equal(Error.ERR_UNAVAILABLE)
+	Expect.that(
+			service._session.snapshot().pipeline()._pending_provider_results,
+		).to_have_size(0)
 	Expect.that(service.capture_message("ordinary event")).to_equal("metricless:1")
 	service.shutdown()
 
@@ -5286,9 +5529,94 @@ func test_default_null_provider_is_safe() -> void:
 	Expect.that(service.provider_name()).to_equal(&"null")
 	Expect.that(service.is_enabled()).to_be_false()
 	Expect.that(service.is_available()).to_be_false()
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
 	Expect.that(service.capture_message("ignored")).to_equal("")
 	Expect.that(service.flush()).to_equal(Error.OK)
 	service.shutdown()
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_available()).to_be_false()
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+
+
+func test_disabled_provider_status_callbacks_delegate_without_changing_last_error() -> void:
+	var service := _service_with_runtime(_test_runtime())
+	var provider := MetadataReentrantMemoryProvider.new()
+	var disabled_config := _ordinary_generation_config(false)
+	provider.service = service
+	Expect.that(service.configure(provider, disabled_config)).to_equal(Error.OK)
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(false),
+		)).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(service.last_error()).to_equal(Error.ERR_ALREADY_IN_USE)
+
+	Expect.that(service.provider_name()).to_equal(&"metadata-reentrant")
+	Expect.that(provider.name_calls).to_equal(1)
+	Expect.that(provider.name_in_flight_count).to_equal(1)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+	Expect.that(service.last_error()).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(service.is_available()).to_be_true()
+	Expect.that(provider.availability_calls).to_equal(1)
+	Expect.that(provider.availability_in_flight_count).to_equal(1)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+	Expect.that(service.last_error()).to_equal(Error.ERR_ALREADY_IN_USE)
+	_shutdown_processing_service(service)
+
+
+func test_is_available_pins_provider_against_reentrant_replacement() -> void:
+	var service := _service_with_runtime(_test_runtime())
+	var provider := MetadataReentrantMemoryProvider.new()
+	var replacement := ConfigureCountingMemoryProvider.new()
+	var config := _ordinary_generation_config(false)
+	provider.service = service
+	provider.replacement_provider = replacement
+	provider.replacement_config = config
+	provider.replace_from_availability = true
+	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+
+	Expect.that(service.is_available()).to_be_true()
+	Expect.that(provider.availability_calls).to_equal(1)
+	Expect.that(provider.availability_in_flight_count).to_equal(1)
+	Expect.that(provider.reconfigure_result).to_equal(Error.ERR_BUSY)
+	Expect.that(provider.shutdown_count_during_availability).to_equal(0)
+	Expect.that(provider.shutdown_count).to_equal(0)
+	Expect.that(replacement.configure_calls).to_equal(0)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+	Expect.that(service.provider_name()).to_equal(&"metadata-reentrant")
+	_shutdown_processing_service(service)
+
+
+func test_provider_name_pins_provider_until_reentrant_shutdown_returns() -> void:
+	var service := _service_with_runtime(_test_runtime())
+	var provider := MetadataReentrantMemoryProvider.new()
+	provider.service = service
+	provider.shutdown_from_name = true
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(false),
+		)).to_equal(Error.OK)
+
+	Expect.that(service.provider_name()).to_equal(&"metadata-reentrant")
+	Expect.that(provider.name_calls).to_equal(1)
+	Expect.that(provider.name_in_flight_count).to_equal(1)
+	Expect.that(provider.shutdown_count_during_name).to_equal(0)
+	Expect.that(provider.shutdown_count).to_equal(1)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	service.free()
+
+
+func test_provider_name_uses_null_fallback_for_empty_identifiers() -> void:
+	var service := _service_with_runtime(_test_runtime())
+	var provider := EmptyNameMemoryProvider.new()
+	Expect.that(service.configure(
+			provider,
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+	_shutdown_processing_service(service)
 
 
 func test_memory_provider_captures_messages_and_exceptions() -> void:
@@ -5706,7 +6034,9 @@ func test_memory_global_scope_reaches_automatic_godot_events() -> void:
 	Expect.that(service.set_tag("capture", "automatic")).to_be_true()
 	Expect.that(service.set_context("engine", {"frame": 7})).to_be_true()
 	Expect.that(service.set_user(ObservabilityUser.new("player-7"))).to_be_true()
-	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), runtime,
+		)
 
 	logger._log_error(
 			"tick",
@@ -5755,7 +6085,7 @@ func test_memory_successful_reconfigure_resets_session_scope_and_updates_bound()
 	Expect.that(service.capture_message("retained history")).to_equal("memory:1")
 
 	Expect.that(service.configure(provider, initial)).to_equal(Error.OK)
-	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	Expect.that(provider.breadcrumbs()).to_have_size(1)
 	Expect.that(provider.captured_scopes()[0]).to_equal({
 		"tags": {"region": "iad"},
 		"contexts": {"game": {"round": 1}},
@@ -5767,14 +6097,19 @@ func test_memory_successful_reconfigure_resets_session_scope_and_updates_bound()
 	})
 	Expect.that(service.capture_message("equivalent reset")).to_equal("memory:2")
 	Expect.that(provider.captured_scopes()[1]).to_equal({
-		"tags": {},
-		"contexts": {},
-		"user": null,
+		"tags": {"region": "iad"},
+		"contexts": {"game": {"round": 1}},
+		"user": {
+			"id": "player-7",
+			"display_name": "",
+			"contact_email": "",
+		},
 	})
 	Expect.that(service.capture_breadcrumb(
 			ObservabilityBreadcrumb.new(p_message = "before reduction"))).to_be_true()
 
-	Expect.that(service.configure(provider, ObservabilityConfig.new(
+	var reduced_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(reduced_provider, ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {},
 				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
@@ -5785,13 +6120,13 @@ func test_memory_successful_reconfigure_resets_session_scope_and_updates_bound()
 					p_max_breadcrumbs = 1,
 				),
 			))).to_equal(Error.OK)
-	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	Expect.that(reduced_provider.breadcrumbs()).to_have_size(0)
 	Expect.that(service.capture_breadcrumb(
 			ObservabilityBreadcrumb.new(p_message = "one"))).to_be_true()
 	Expect.that(service.capture_breadcrumb(
 			ObservabilityBreadcrumb.new(p_message = "two"))).to_be_true()
-	Expect.that(provider.breadcrumbs()).to_have_size(1)
-	Expect.that(provider.breadcrumbs()[0].message()).to_equal("two")
+	Expect.that(reduced_provider.breadcrumbs()).to_have_size(1)
+	Expect.that(reduced_provider.breadcrumbs()[0].message()).to_equal("two")
 	Expect.that(provider.events()).to_have_size(2)
 	Expect.that(provider.captured_scopes()).to_have_size(2)
 	Expect.that(provider.captured_scopes()[0]).to_equal({
@@ -5838,7 +6173,7 @@ func test_memory_failed_same_provider_reconfigure_preserves_active_session() -> 
 					),
 					p_max_breadcrumbs = 0,
 				),
-			))).to_equal(Error.FAILED)
+	))).to_equal(Error.ERR_ALREADY_IN_USE)
 	Expect.that(service.is_enabled()).to_be_true()
 	Expect.that(service.capture_breadcrumb(
 			ObservabilityBreadcrumb.new(p_message = "two"))).to_be_true()
@@ -5948,7 +6283,8 @@ func test_memory_breadcrumb_bound_zero_and_service_clear_results() -> void:
 	Expect.that(service.last_error()).to_equal(Error.OK)
 	Expect.that(provider.breadcrumbs()).to_have_size(0)
 
-	Expect.that(service.configure(provider, ObservabilityConfig.new(
+	var zero_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(zero_provider, ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {},
 				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
@@ -5960,9 +6296,10 @@ func test_memory_breadcrumb_bound_zero_and_service_clear_results() -> void:
 				),
 			))).to_equal(Error.OK)
 	Expect.that(service.capture_breadcrumb(one)).to_be_false()
-	Expect.that(provider.breadcrumbs()).to_have_size(0)
+	Expect.that(zero_provider.breadcrumbs()).to_have_size(0)
 
-	Expect.that(service.configure(provider, ObservabilityConfig.new(
+	var disabled_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(disabled_provider, ObservabilityConfig.new(
 				p_enabled = false,
 				p_global_attributes = {},
 				p_provider_options = {},
@@ -6018,7 +6355,9 @@ func test_automatic_logger_routes_error_metadata_by_independent_masks() -> void:
 		),
 	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), runtime,
+		)
 	var backtraces: Array[ScriptBacktrace] = Engine.capture_script_backtraces(false)
 
 	logger._log_error(
@@ -6068,7 +6407,9 @@ func test_automatic_logger_maps_error_categories_and_levels() -> void:
 		),
 	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), runtime,
+		)
 
 	logger._log_error("run", "res://case.fs", 1, "warning", "", false,
 			Logger.ERROR_TYPE_WARNING, [])
@@ -6104,7 +6445,9 @@ func test_automatic_logger_filters_and_routes_messages_without_events() -> void:
 		),
 	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), runtime,
+		)
 
 	logger._log_message("\u001b[31mhello\u001b[0m\n", false)
 	logger._log_message("Internal: ignored", true)
@@ -6144,10 +6487,12 @@ func test_automatic_errors_share_event_limits_without_suppressing_other_destinat
 	runtime.monotonic_msec = 1000
 	runtime.frame = 1
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), runtime,
+		)
 
 	for _index: int in range(3):
-		logger._capture_error(
+		logger._log_error(
 				"tick", "res://loop.fs", 9, "boom", "", false,
 				Logger.ERROR_TYPE_ERROR, [],
 			)
@@ -6167,7 +6512,7 @@ func test_automatic_errors_share_event_limits_without_suppressing_other_destinat
 
 	runtime.frame = 2
 	runtime.monotonic_msec = 1500
-	logger._capture_error(
+	logger._log_error(
 			"tick", "res://loop.fs", 9, "boom", "", false,
 			Logger.ERROR_TYPE_ERROR, [],
 		)
@@ -6179,7 +6524,7 @@ func test_automatic_errors_share_event_limits_without_suppressing_other_destinat
 
 	runtime.frame = 3
 	runtime.monotonic_msec = 2000
-	logger._capture_error(
+	logger._log_error(
 			"tick", "res://loop.fs", 9, "boom", "", false,
 			Logger.ERROR_TYPE_ERROR, [],
 		)
@@ -6191,7 +6536,7 @@ func test_automatic_errors_share_event_limits_without_suppressing_other_destinat
 
 	runtime.frame = 4
 	runtime.monotonic_msec = 2001
-	logger._capture_error(
+	logger._log_error(
 			"tick", "res://loop.fs", 10, "different", "", false,
 			Logger.ERROR_TYPE_ERROR, [],
 		)
@@ -6204,7 +6549,7 @@ func test_automatic_errors_share_event_limits_without_suppressing_other_destinat
 	runtime.frame = 5
 	runtime.monotonic_msec = 12001
 	Expect.that(service.capture_message("manual capacity")).not_().to_equal("")
-	logger._capture_error(
+	logger._log_error(
 			"tick", "res://loop.fs", 11, "automatic after manual", "", false,
 			Logger.ERROR_TYPE_ERROR, [],
 		)
@@ -6245,7 +6590,9 @@ func test_automatic_logger_does_not_suppress_after_all_destinations_reject() -> 
 	runtime.monotonic_msec = 1000
 	runtime.frame = 1
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), runtime,
+		)
 
 	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
@@ -6311,7 +6658,9 @@ func test_rejected_automatic_breadcrumb_reports_failure_after_accepted_event() -
 		),
 	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), runtime,
+		)
 
 	logger._log_error("tick", "res://loop.fs", 9, "boom", "", false,
 			Logger.ERROR_TYPE_ERROR, [])
@@ -6347,10 +6696,12 @@ func test_automatic_event_limits_do_not_suppress_breadcrumbs_or_logs() -> void:
 	runtime.monotonic_msec = 1000
 	runtime.frame = 1
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), runtime,
+		)
 
 	for index: int in range(3):
-		logger._capture_error(
+		logger._log_error(
 				"tick", "res://loop.fs", 9 + index, str(index), "", false,
 				Logger.ERROR_TYPE_ERROR, [],
 			)
@@ -6397,9 +6748,11 @@ func test_automatic_processor_recursion_drops_nested_message_without_payload_del
 	runtime.monotonic_msec = 1000
 	runtime.frame = 1
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	var logger := AutomaticObservabilityLogger.new(service, config, runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), runtime,
+		)
 
-	logger._capture_error(
+	logger._log_error(
 			"tick", "res://loop.fs", 9, "outer", "", false,
 			Logger.ERROR_TYPE_ERROR, [],
 		)
@@ -6416,12 +6769,23 @@ func test_automatic_processor_recursion_drops_nested_message_without_payload_del
 
 func test_automatic_capture_reservation_is_atomic() -> void:
 	var service := _processing_service()
+	Expect.that(service.configure(
+			MemoryObservabilityProvider.new(),
+			_ordinary_generation_config(true),
+		)).to_equal(Error.OK)
+	var logger := AutomaticObservabilityLogger.new(
+			service,
+			ObservabilityAutomaticCaptureConfig.new(p_enabled = false),
+			_service_processing_runtime,
+		)
+	logger.install()
+	logger.uninstall_for_testing()
 
-	Expect.that(service.try_begin_automatic_capture()).to_be_true()
-	Expect.that(service.try_begin_automatic_capture()).to_be_false()
-	service.end_automatic_capture()
-	Expect.that(service.try_begin_automatic_capture()).to_be_true()
-	service.end_automatic_capture()
+	Expect.that(logger._try_begin_capture()).to_be_true()
+	Expect.that(logger._try_begin_capture()).to_be_false()
+	logger._end_capture()
+	Expect.that(logger._try_begin_capture()).to_be_true()
+	logger._end_capture()
 	_shutdown_processing_service(service)
 
 
@@ -6460,16 +6824,22 @@ func test_automatic_capture_installs_only_after_successful_enabled_configuration
 	push_error("failed candidate")
 	Expect.that(provider.events()).to_have_size(0)
 
-	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	var enabled_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(
+			enabled_provider,
+			ObservabilityConfig.new(),
+		)).to_equal(Error.OK)
 	push_error("automatic enabled")
-	Expect.that(provider.events()).to_have_size(1)
-	Expect.that(provider.events()[0].message()).to_equal("automatic enabled")
+	Expect.that(enabled_provider.events()).to_have_size(1)
+	Expect.that(enabled_provider.events()[0].message()).to_equal("automatic enabled")
 
 	failing.configure_result = Error.FAILED
 	Expect.that(service.configure(failing, ObservabilityConfig.new())).to_equal(Error.FAILED)
 	push_error("failed active replacement")
-	Expect.that(provider.events()).to_have_size(2)
-	Expect.that(provider.events()[1].message()).to_equal("failed active replacement")
+	Expect.that(enabled_provider.events()).to_have_size(2)
+	Expect.that(enabled_provider.events()[1].message()).to_equal(
+			"failed active replacement",
+		)
 	service.shutdown()
 
 
@@ -6482,11 +6852,13 @@ func test_automatic_capture_reconfigures_without_duplicate_logger_registration()
 	_push_test_error("same diagnostic")
 	Expect.that(provider.events()).to_have_size(1)
 
-	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	var replacement := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(replacement, ObservabilityConfig.new())).to_equal(Error.OK)
 	_push_test_error("same diagnostic")
-	Expect.that(provider.events()).to_have_size(2)
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(replacement.events()).to_have_size(1)
 	_push_test_error("new diagnostic")
-	Expect.that(provider.events()).to_have_size(3)
+	Expect.that(replacement.events()).to_have_size(2)
 	service.shutdown()
 
 
@@ -6508,6 +6880,167 @@ func test_automatic_capture_moves_to_replacement_provider_and_is_removed_on_shut
 	service.shutdown()
 	push_error("after shutdown")
 	Expect.that(second.events()).to_have_size(1)
+
+
+func test_detached_automatic_logger_cannot_capture_into_later_providers() -> void:
+	TestContext.current().stop_diagnostics()
+	var service: FoundryObservability = _service_with_runtime(
+			FakeObservabilityRuntime.new(),
+		)
+	var first := MemoryObservabilityProvider.new()
+	var disabled_provider := MemoryObservabilityProvider.new()
+	var enabled_provider := MemoryObservabilityProvider.new()
+
+	Expect.that(service.configure(
+			first,
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_event_mask = ObservabilityCaptureMask.ERROR,
+					p_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+					p_log_mask = ObservabilityCaptureMask.MESSAGE,
+					p_message_filter_prefixes = PackedStringArray(),
+				),
+			),
+		)).to_equal(Error.OK)
+	Expect.that(service.get("_automatic_logger") != null).to_be_true()
+	var retained: AutomaticObservabilityLogger = (
+			service.get("_automatic_logger") as AutomaticObservabilityLogger
+		)
+	Expect.that(service.configure(
+			disabled_provider,
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			),
+		)).to_equal(Error.OK)
+	Expect.that(first.shutdown_count).to_equal(1)
+	retained._log_message("retained message while disabled", false)
+	retained._log_error(
+			"retained",
+			"res://retained.fs",
+			7,
+			"retained error while disabled",
+			"",
+			false,
+			Logger.ERROR_TYPE_ERROR,
+			[],
+		)
+	push_error("engine diagnostic while disabled")
+	Expect.that(disabled_provider.events()).to_have_size(0)
+
+	Expect.that(service.configure(
+			enabled_provider,
+			ObservabilityConfig.new(),
+		)).to_equal(Error.OK)
+	Expect.that(disabled_provider.shutdown_count).to_equal(1)
+	push_error("fresh logger only")
+	Expect.that(enabled_provider.events()).to_have_size(1)
+	retained._log_message("retained message after re-enable", false)
+	retained._log_error(
+			"retained",
+			"res://retained.fs",
+			8,
+			"retained error after re-enable",
+			"",
+			false,
+			Logger.ERROR_TYPE_ERROR,
+			[],
+		)
+	Expect.that(enabled_provider.events()).to_have_size(1)
+
+	retained.remove()
+	retained.remove()
+	service.shutdown()
+	service.shutdown()
+	Expect.that(enabled_provider.shutdown_count).to_equal(1)
+	service.free()
+
+
+func test_admitted_automatic_callback_rechecks_detachment_before_dispatch() -> void:
+	var runtime := FakeObservabilityRuntime.new()
+	var service: FoundryObservability = _service_with_runtime(runtime)
+	var provider := MemoryObservabilityProvider.new()
+	var automatic := ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_event_mask = ObservabilityCaptureMask.ERROR,
+			p_breadcrumb_mask = ObservabilityCaptureMask.NONE,
+			p_log_mask = ObservabilityCaptureMask.MESSAGE,
+			p_message_filter_prefixes = PackedStringArray(),
+		)
+	Expect.that(service.configure(
+			provider,
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = automatic,
+			),
+		)).to_equal(Error.OK)
+	var logger := PausingAutomaticObservabilityLogger.new(
+			service,
+			automatic,
+			runtime,
+		)
+	logger.install()
+	logger.uninstall_for_testing()
+	var probe := AutomaticLoggerThreadProbe.new()
+	probe.logger = logger
+	var capture_callable: Callable[[], void] = func() -> void:
+		probe.capture_message()
+	var thread := Thread.new()
+	Expect.that(thread.start(capture_callable)).to_equal(Error.OK)
+	var capture_entered: bool = BoundedTestSemaphore.wait_until_posted(
+			logger.capture_entered,
+		)
+	var admitted_call_count: int = service._session.in_flight_call_count()
+	logger.remove()
+	logger.capture_release.post()
+	var capture_result: Variant = thread.wait_to_finish()
+
+	Expect.that(capture_entered).to_be_true()
+	Expect.that(admitted_call_count).to_equal(1)
+	Expect.that(capture_result).to_be_null()
+	Expect.that(logger.barrier_timed_out).to_be_false()
+	Expect.that(provider.events()).to_have_size(0)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+
+	var disabled_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(
+			disabled_provider,
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+					p_enabled = false,
+				),
+			),
+		)).to_equal(Error.OK)
+	var enabled_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(
+			enabled_provider,
+			ObservabilityConfig.new(),
+		)).to_equal(Error.OK)
+	logger._log_message("retained after re-enable", false)
+	logger._log_error(
+			"retained",
+			"res://retained.fs",
+			9,
+			"retained after re-enable",
+			"",
+			false,
+			Logger.ERROR_TYPE_ERROR,
+			[],
+		)
+	Expect.that(enabled_provider.events()).to_have_size(0)
+	service.shutdown()
+	Expect.that(provider.shutdown_count).to_equal(1)
+	Expect.that(disabled_provider.shutdown_count).to_equal(1)
+	Expect.that(enabled_provider.shutdown_count).to_equal(1)
+	service.free()
 
 
 func test_automatic_capture_blocks_provider_generated_diagnostic_recursion() -> void:
@@ -6654,10 +7187,11 @@ func test_structured_logs_honor_disabled_and_minimum_level_configuration() -> vo
 		p_global_attributes = {},
 		p_provider_options = {},
 	)
-	Expect.that(service.configure(provider, enabled_config)).to_equal(Error.OK)
+	var enabled_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(enabled_provider, enabled_config)).to_equal(Error.OK)
 	Expect.that(service.capture_log("filtered", ObservabilityLevel.WARN)).to_equal("")
 	Expect.that(service.capture_log("kept", ObservabilityLevel.ERROR)).to_equal("memory:1")
-	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(enabled_provider.events()).to_have_size(1)
 	service.shutdown()
 
 
@@ -6839,7 +7373,8 @@ func test_service_failed_reconfiguration_preserves_processing_diagnostic_and_adm
 
 	active.configure_result = Error.FAILED
 	prior = service.last_processing_diagnostic()
-	Expect.that(service.configure(active, active_config)).to_equal(Error.FAILED)
+	Expect.that(service.configure(active, active_config)).to_equal(Error.OK)
+	Expect.that(active.configure_calls).to_equal(1)
 	_expect_service_diagnostic_unchanged(service, prior)
 	Expect.that(service.capture_message("still limited after same provider failure")).to_equal("")
 	_shutdown_processing_service(service)
@@ -6872,6 +7407,287 @@ func test_service_constructor_preserves_positional_arguments_and_uses_injected_r
 	_service_processing_runtime.frame = 2
 	Expect.that(service.capture_message("next frame")).to_equal("memory:2")
 	Expect.that(_service_processing_runtime.monotonic_msec).to_equal(0)
+	_shutdown_processing_service(service)
+
+
+func test_same_owner_nested_validation_error_is_scoped_to_outer_call() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var processor := NestedFailureEventProcessor.new()
+	processor.service = service
+	Expect.that(service.configure(
+			provider,
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(processor, "process") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			),
+		)).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("outer")).to_equal("memory:1")
+	Expect.that(processor.nested_result).to_be_false()
+	Expect.that(processor.nested_error).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+	service.shutdown()
+
+
+func test_pre_admission_public_errors_feed_the_current_outer_call_once() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var processor := PreAdmissionFailureEventProcessor.new()
+	processor.service = service
+	processor.provider = provider
+	processor.rejected_config = _ordinary_generation_config(true)
+	var active_config := ObservabilityConfig.new(
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_processors = [
+				Callable(processor, "process") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+			],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+	)
+	Expect.that(service.configure(provider, active_config)).to_equal(Error.OK)
+
+	Expect.that(service.capture_message("outer pre-admission failures")).to_equal(
+			"memory:1",
+		)
+	Expect.that(processor.configure_result).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(processor.configure_error).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(processor.accepted_child_result).to_be_false()
+	Expect.that(processor.accepted_child_error).to_equal(Error.ERR_DOES_NOT_EXIST)
+	Expect.that(processor.tag_result).to_be_false()
+	Expect.that(processor.tag_error).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(service.last_error()).to_equal(Error.ERR_ALREADY_IN_USE)
+	Expect.that(provider.events()).to_have_size(1)
+	var diagnostic: ObservabilityProcessingDiagnostic = (
+			service.last_processing_diagnostic()
+		)
+	Expect.that(diagnostic.outcome()).to_equal(
+			ObservabilityProcessingOutcome.ACCEPTED,
+		)
+	Expect.that(diagnostic.error()).to_equal(Error.OK)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+
+	Expect.that(service.set_tag("", "top-level invalid")).to_be_false()
+	Expect.that(service.last_error()).to_equal(Error.ERR_INVALID_PARAMETER)
+	service.shutdown()
+
+
+func test_other_owner_last_error_cannot_contaminate_outer_capture_completion() -> void:
+	var service: FoundryObservability = _service()
+	var provider := MemoryObservabilityProvider.new()
+	var blocker := BlockingEventProcessor.new()
+	Expect.that(service.configure(
+			provider,
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [
+						Callable(blocker, "process") as Callable[[ObservabilityEvent], ObservabilityEvent?],
+					],
+					p_log_processors = [],
+					p_metric_processors = [],
+				),
+			),
+		)).to_equal(Error.OK)
+	var probe := ServiceCaptureThreadProbe.new()
+	probe.service = service
+	var capture_callable: Callable[[], void] = func() -> void:
+		probe.capture_message()
+	var thread := Thread.new()
+	Expect.that(thread.start(capture_callable)).to_equal(Error.OK)
+	var processor_entered: bool = BoundedTestSemaphore.wait_until_posted(
+			blocker.entered,
+		)
+	var other_owner_result: bool = true
+	var other_owner_error: int = Error.OK
+	if processor_entered:
+		other_owner_result = service.capture_counter("")
+		other_owner_error = service.last_error()
+	blocker.release.post()
+	var capture_result: Variant = thread.wait_to_finish()
+
+	Expect.that(processor_entered).to_be_true()
+	Expect.that(capture_result).to_be_null()
+	Expect.that(blocker.barrier_timed_out).to_be_false()
+	Expect.that(other_owner_result).to_be_false()
+	Expect.that(other_owner_error).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(probe.event_id).to_equal("memory:1")
+	Expect.that(provider.events()).to_have_size(1)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	var diagnostic: ObservabilityProcessingDiagnostic = (
+			service.last_processing_diagnostic()
+		)
+	Expect.that(diagnostic.outcome()).to_equal(
+			ObservabilityProcessingOutcome.ACCEPTED,
+		)
+	Expect.that(diagnostic.error()).to_equal(Error.OK)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+	service.shutdown()
+
+
+func test_configure_intent_cannot_restart_a_session_shutdown_during_preparation() -> void:
+	var runtime := _test_runtime()
+	var service := PausingPipelinePreparationService.new(
+			ObservabilityStartupSettings.new(),
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs",
+			runtime,
+		)
+	var stale_candidate := ConfigureCountingMemoryProvider.new()
+	var config := _ordinary_generation_config(true)
+	var probe := ConfigureServiceThreadProbe.new()
+	probe.service = service
+	probe.provider = stale_candidate
+	probe.config = config
+	var configure_callable: Callable[[], void] = func() -> void:
+		probe.configure_service()
+	var thread := Thread.new()
+	Expect.that(thread.start(configure_callable)).to_equal(Error.OK)
+	var preparation_entered: bool = BoundedTestSemaphore.wait_until_posted(
+			service.preparation_entered,
+		)
+	if preparation_entered:
+		service.shutdown()
+	service.preparation_release.post()
+	var configure_result: Variant = thread.wait_to_finish()
+
+	Expect.that(preparation_entered).to_be_true()
+	Expect.that(configure_result).to_be_null()
+	Expect.that(service.barrier_timed_out).to_be_false()
+	Expect.that(probe.result).to_equal(Error.ERR_BUSY)
+	Expect.that(stale_candidate.configure_calls).to_equal(0)
+	Expect.that(stale_candidate.shutdown_count).to_equal(0)
+	Expect.that(service.provider_name()).to_equal(&"null")
+	Expect.that(service.is_enabled()).to_be_false()
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+
+	var restart := ConfigureCountingMemoryProvider.new()
+	Expect.that(service.configure(restart, config)).to_equal(Error.OK)
+	Expect.that(restart.configure_calls).to_equal(1)
+	Expect.that(service.capture_message("sequential restart")).to_equal("memory:1")
+	_shutdown_processing_service(service)
+
+
+func test_event_normalization_does_not_cross_pre_reservation_replacement() -> void:
+	var service := _reconfiguring_reservation_service()
+	var original := MemoryObservabilityProvider.new()
+	var replacement := MemoryObservabilityProvider.new()
+	var original_config := ObservabilityConfig.new(
+		p_global_attributes = {},
+		p_provider_options = {},
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_message_filter_prefixes = PackedStringArray(),
+		),
+		p_processing = ObservabilityProcessingConfig.new(
+			p_event_processors = [],
+			p_log_processors = [],
+			p_metric_processors = [],
+		),
+		p_stack_traces = ObservabilityStackTraceConfig.new(
+			p_source_context_enabled = true,
+			p_variables_enabled = true,
+		),
+	)
+	Expect.that(service.configure(original, original_config)).to_equal(Error.OK)
+	service.replacement_provider = replacement
+	service.replacement_config = _ordinary_generation_config(true)
+	service.armed = true
+	var event := ObservabilityEvent.new(
+		p_kind = &"exception",
+		p_message = "normalized under old stack policy",
+		p_attributes = {},
+		p_exception = ObservabilityException.new(
+			p_type_name = "OldGeneration",
+			p_message = "normalized under old stack policy",
+			p_stack_trace = "",
+			p_attributes = {},
+			p_frames = [ObservabilityStackFrame.new(
+				p_file = "res://old-generation.fs",
+				p_function = "run",
+				p_line = 1,
+				p_language = "foundry_script",
+				p_in_app = true,
+				p_context_line = "old source context",
+				p_pre_context = PackedStringArray(),
+				p_post_context = PackedStringArray(),
+				p_variables = {"old_secret": "must not cross"},
+			)],
+		),
+	)
+
+	Expect.that(service.capture_event(event)).to_equal("")
+	Expect.that(service.reconfigure_result).to_equal(Error.OK)
+	Expect.that(original.events()).to_have_size(0)
+	Expect.that(replacement.events()).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+	Expect.that(service.begin_attempts).to_equal(1)
+	Expect.that(service.accepted_begins).to_equal(0)
+	Expect.that(service.finishes).to_equal(0)
+
+	Expect.that(service.capture_message("stable replacement")).to_equal("memory:1")
+	Expect.that(service.begin_attempts).to_equal(2)
+	Expect.that(service.accepted_begins).to_equal(1)
+	Expect.that(service.finishes).to_equal(1)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+	_shutdown_processing_service(service)
+
+
+func test_metric_normalization_does_not_cross_pre_reservation_replacement() -> void:
+	var service := _reconfiguring_reservation_service()
+	var original := MemoryObservabilityProvider.new()
+	var replacement := MemoryObservabilityProvider.new()
+	var original_config := _ordinary_generation_config(true)
+	original_config = ObservabilityConfig.new(
+		p_global_attributes = {"generation": "old"},
+		p_provider_options = {},
+		p_automatic_capture = original_config.automatic_capture(),
+		p_processing = original_config.processing(),
+	)
+	var replacement_config := _ordinary_generation_config(true)
+	replacement_config = ObservabilityConfig.new(
+		p_global_attributes = {"generation": "new"},
+		p_provider_options = {},
+		p_automatic_capture = replacement_config.automatic_capture(),
+		p_processing = replacement_config.processing(),
+	)
+	Expect.that(service.configure(original, original_config)).to_equal(Error.OK)
+	service.replacement_provider = replacement
+	service.replacement_config = replacement_config
+	service.armed = true
+
+	Expect.that(service.capture_counter("generation.metric")).to_be_false()
+	Expect.that(service.reconfigure_result).to_equal(Error.OK)
+	Expect.that(original.metrics()).to_have_size(0)
+	Expect.that(replacement.metrics()).to_have_size(0)
+	Expect.that(service.last_error()).to_equal(Error.OK)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
+	Expect.that(service.begin_attempts).to_equal(1)
+	Expect.that(service.accepted_begins).to_equal(0)
+	Expect.that(service.finishes).to_equal(0)
+
+	Expect.that(service.capture_counter("stable.metric")).to_be_true()
+	Expect.that(replacement.metrics()).to_have_size(1)
+	Expect.that(replacement.metrics()[0].attributes()).to_equal(
+			{"generation": "new"},
+		)
+	Expect.that(service.begin_attempts).to_equal(2)
+	Expect.that(service.accepted_begins).to_equal(1)
+	Expect.that(service.finishes).to_equal(1)
+	Expect.that(service._session.in_flight_call_count()).to_equal(0)
 	_shutdown_processing_service(service)
 
 
@@ -6914,12 +7730,16 @@ func test_service_event_capture_does_not_cross_reconfigured_generation() -> void
 				),
 			))).to_equal(Error.OK)
 
-	Expect.that(service.capture_message("old generation")).to_equal("")
-	Expect.that(_service_lifecycle_configure_result).to_equal(Error.OK)
-	Expect.that(original.events()).to_have_size(0)
+	Expect.that(service.capture_message("old generation")).to_equal("memory:1")
+	Expect.that(_service_lifecycle_configure_result).to_equal(Error.ERR_BUSY)
+	Expect.that(original.events()).to_have_size(1)
+	Expect.that(original.events()[0].message()).to_equal("stale replacement")
 	Expect.that(replacement.events()).to_have_size(0)
-	Expect.that(service.last_processing_diagnostic()).to_be_null()
+	Expect.that(service.last_processing_diagnostic().outcome()).to_equal(
+			ObservabilityProcessingOutcome.ACCEPTED,
+		)
 
+	Expect.that(service.configure(replacement, replacement_config)).to_equal(Error.OK)
 	Expect.that(service.capture_message("new generation")).to_equal("memory:1")
 	Expect.that(replacement.events()).to_have_size(1)
 	Expect.that(replacement.events()[0].message()).to_equal("new generation")
@@ -6965,12 +7785,16 @@ func test_service_metric_capture_does_not_cross_reconfigured_generation() -> voi
 				),
 			))).to_equal(Error.OK)
 
-	Expect.that(service.capture_counter("old.metric")).to_be_false()
-	Expect.that(_service_lifecycle_configure_result).to_equal(Error.OK)
-	Expect.that(original.metrics()).to_have_size(0)
+	Expect.that(service.capture_counter("old.metric")).to_be_true()
+	Expect.that(_service_lifecycle_configure_result).to_equal(Error.ERR_BUSY)
+	Expect.that(original.metrics()).to_have_size(1)
+	Expect.that(original.metrics()[0].name()).to_equal("stale.metric")
 	Expect.that(replacement.metrics()).to_have_size(0)
-	Expect.that(service.last_processing_diagnostic()).to_be_null()
+	Expect.that(service.last_processing_diagnostic().outcome()).to_equal(
+			ObservabilityProcessingOutcome.ACCEPTED,
+		)
 
+	Expect.that(service.configure(replacement, replacement_config)).to_equal(Error.OK)
 	Expect.that(service.capture_counter("new.metric")).to_be_true()
 	Expect.that(replacement.metrics()).to_have_size(1)
 	Expect.that(replacement.metrics()[0].name()).to_equal("new.metric")
@@ -7043,10 +7867,12 @@ func test_service_blocks_other_provider_calls_during_reconfiguration() -> void:
 func test_scope_operation_does_not_cross_same_provider_generation() -> void:
 	var service := _reconfiguring_reservation_service()
 	var provider := RecordingScopeProvider.new()
+	var replacement := RecordingScopeProvider.new()
 	Expect.that(service.configure(
 			provider,
 			_ordinary_generation_config(true),
 		)).to_equal(Error.OK)
+	service.replacement_provider = replacement
 	service.replacement_config = _ordinary_generation_config(false)
 	service.armed = true
 
@@ -7061,10 +7887,12 @@ func test_scope_operation_does_not_cross_same_provider_generation() -> void:
 func test_attachment_does_not_repopulate_same_provider_after_session_reset() -> void:
 	var service := _reconfiguring_reservation_service()
 	var provider := MemoryObservabilityProvider.new()
+	var replacement := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(
 			provider,
 			_ordinary_generation_config(true),
 		)).to_equal(Error.OK)
+	service.replacement_provider = replacement
 	service.replacement_config = _ordinary_generation_config(true)
 	service.armed = true
 	var attachment := ObservabilityAttachment.from_bytes(
@@ -7075,7 +7903,7 @@ func test_attachment_does_not_repopulate_same_provider_after_session_reset() -> 
 	Expect.that(service.add_attachment(attachment)).to_equal("")
 	Expect.that(service.reconfigure_result).to_equal(Error.OK)
 	Expect.that(service.capture_message("new session")).to_equal("memory:1")
-	Expect.that(provider.captured_attachments()[0]).to_have_size(0)
+	Expect.that(replacement.captured_attachments()[0]).to_have_size(0)
 	Expect.that(service.last_error()).to_equal(Error.OK)
 	_shutdown_processing_service(service)
 
@@ -7083,10 +7911,12 @@ func test_attachment_does_not_repopulate_same_provider_after_session_reset() -> 
 func test_breadcrumb_does_not_cross_same_provider_generation() -> void:
 	var service := _reconfiguring_reservation_service()
 	var provider := MemoryObservabilityProvider.new()
+	var replacement := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(
 			provider,
 			_ordinary_generation_config(true),
 		)).to_equal(Error.OK)
+	service.replacement_provider = replacement
 	service.replacement_config = _ordinary_generation_config(true)
 	service.armed = true
 
@@ -7102,10 +7932,12 @@ func test_breadcrumb_does_not_cross_same_provider_generation() -> void:
 func test_feedback_does_not_cross_same_provider_generation() -> void:
 	var service := _reconfiguring_reservation_service()
 	var provider := MemoryObservabilityProvider.new()
+	var replacement := MemoryObservabilityProvider.new()
 	Expect.that(service.configure(
 			provider,
 			_ordinary_generation_config(true),
 		)).to_equal(Error.OK)
+	service.replacement_provider = replacement
 	service.replacement_config = _ordinary_generation_config(true)
 	service.armed = true
 
@@ -7168,34 +8000,30 @@ func test_shutdown_requested_during_configure_cleans_committed_candidate() -> vo
 	service.free()
 
 
-func test_shutdown_during_candidate_preparation_cannot_resurrect_configuration() -> void:
-	var service := ShutdownDuringCandidatePreparationService.new(
-			ObservabilityStartupSettings.new(),
-			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs",
-			FakeObservabilityRuntime.new(),
-		)
+func test_completed_shutdown_can_start_an_explicit_fresh_provider_session() -> void:
+	var service := _processing_service()
 	var active := MemoryObservabilityProvider.new()
 	var replacement := ConfigureCountingMemoryProvider.new()
 	Expect.that(service.configure(
-			active,
-			_ordinary_generation_config(true),
+		active,
+		_ordinary_generation_config(true),
 		)).to_equal(Error.OK)
-	service.shutdown_during_preparation = true
+	service.shutdown()
 
 	Expect.that(service.configure(
 			replacement,
 			_ordinary_generation_config(true),
-		)).to_equal(Error.ERR_BUSY)
-	Expect.that(service.shutdown_during_preparation).to_be_false()
-	Expect.that(replacement.configure_calls).to_equal(0)
+		)).to_equal(Error.OK)
+	Expect.that(replacement.configure_calls).to_equal(1)
 	Expect.that(replacement.shutdown_count).to_equal(0)
 	Expect.that(active.flush_count).to_equal(1)
 	Expect.that(active.shutdown_count).to_equal(1)
-	Expect.that(service.provider_name()).to_equal(&"null")
-	Expect.that(service.is_enabled()).to_be_false()
+	Expect.that(service.provider_name()).to_equal(&"memory")
+	Expect.that(service.is_enabled()).to_be_true()
 
 	service.shutdown()
 	Expect.that(active.shutdown_count).to_equal(1)
+	Expect.that(replacement.shutdown_count).to_equal(1)
 	service.free()
 
 
@@ -7230,12 +8058,15 @@ func test_failed_replacement_requesting_shutdown_cleans_both_providers_once() ->
 
 func test_automatic_capture_rejects_completed_shutdown() -> void:
 	var service: FoundryObservability = _service()
+	var logger := AutomaticObservabilityLogger.new(
+			service,
+			ObservabilityAutomaticCaptureConfig.new(p_enabled = false),
+			FakeObservabilityRuntime.new(),
+		)
 	service.shutdown()
 
-	var reserved: bool = service.try_begin_automatic_capture()
-	Expect.that(reserved).to_be_false()
-	if reserved:
-		service.end_automatic_capture()
+	logger._log_message("after shutdown", false)
+	Expect.that(service.is_enabled()).to_be_false()
 
 
 func test_service_normalizes_final_processor_replacement_before_delivery() -> void:
@@ -7301,7 +8132,9 @@ func test_automatic_logger_preserves_event_failure_after_successful_log() -> voi
 		),
 	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	var logger := AutomaticObservabilityLogger.new(service, config, _service_processing_runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), _service_processing_runtime,
+		)
 
 	logger._log_error(
 			"run",
@@ -7350,7 +8183,9 @@ func test_automatic_logger_preserves_breadcrumb_redaction_failure_after_log() ->
 		),
 	)
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	var logger := AutomaticObservabilityLogger.new(service, config, _service_processing_runtime)
+	var logger := AutomaticObservabilityLogger.new(
+			service, config.automatic_capture(), _service_processing_runtime,
+		)
 
 	logger._log_error(
 			"run",
@@ -7370,6 +8205,134 @@ func test_automatic_logger_preserves_breadcrumb_redaction_failure_after_log() ->
 	_shutdown_processing_service(service)
 
 
+func test_automatic_callback_completion_isolated_from_other_owner_last_error() -> void:
+	var runtime: ObservabilityRuntime = SystemObservabilityRuntime.new()
+	var failure_service := PausingAutomaticChildService.new(
+			ObservabilityStartupSettings.new(),
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs",
+			runtime,
+		)
+	var failure_provider := MemoryObservabilityProvider.new()
+	var failure_automatic := ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_breadcrumb_mask = ObservabilityCaptureMask.MESSAGE,
+			p_log_mask = ObservabilityCaptureMask.MESSAGE,
+			p_message_filter_prefixes = PackedStringArray(),
+		)
+	Expect.that(failure_service.configure(
+			failure_provider,
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = failure_automatic,
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+					p_log_limits = ObservabilitySignalLimits.new(),
+					p_redaction_policy = ObservabilityRedactionPolicy.new(
+						[
+							ObservabilityRedactionRule.replace_value(
+								PackedStringArray(["breadcrumbs", "level"]),
+								"invalid",
+							),
+						],
+					),
+				),
+			),
+		)).to_equal(Error.OK)
+	var failure_logger := AutomaticObservabilityLogger.new(
+			failure_service,
+			failure_automatic,
+			runtime,
+		)
+	var failure_probe := AutomaticLoggerThreadProbe.new()
+	failure_probe.logger = failure_logger
+	var failure_callable: Callable[[], void] = func() -> void:
+		failure_probe.capture_message()
+	var failure_thread := Thread.new()
+	Expect.that(failure_thread.start(failure_callable)).to_equal(Error.OK)
+	var failure_child_completed: bool = BoundedTestSemaphore.wait_until_posted(
+			failure_service.child_completed,
+		)
+	var manual_success: String = ""
+	if failure_child_completed:
+		manual_success = failure_service.capture_message("owner B succeeds")
+	failure_service.child_release.post()
+	var failure_thread_result: Variant = failure_thread.wait_to_finish()
+
+	Expect.that(failure_child_completed).to_be_true()
+	Expect.that(failure_thread_result).to_be_null()
+	Expect.that(failure_service.barrier_timed_out).to_be_false()
+	Expect.that(manual_success).to_equal("memory:1")
+	Expect.that(failure_service.completion_error).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(failure_service.completion_count).to_equal(1)
+	Expect.that(failure_service.last_error()).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(failure_service._session.in_flight_call_count()).to_equal(0)
+	_shutdown_processing_service(failure_service)
+
+	var success_service := PausingAutomaticChildService.new(
+			ObservabilityStartupSettings.new(),
+			"res://addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs",
+			runtime,
+		)
+	var success_provider := MemoryObservabilityProvider.new()
+	var success_automatic := ObservabilityAutomaticCaptureConfig.new(
+			p_enabled = false,
+			p_breadcrumb_mask = ObservabilityCaptureMask.MESSAGE,
+			p_log_mask = ObservabilityCaptureMask.MESSAGE,
+			p_message_filter_prefixes = PackedStringArray(),
+		)
+	Expect.that(success_service.configure(
+			success_provider,
+			ObservabilityConfig.new(
+				p_global_attributes = {},
+				p_provider_options = {},
+				p_automatic_capture = success_automatic,
+				p_processing = ObservabilityProcessingConfig.new(
+					p_event_processors = [],
+					p_log_processors = [],
+					p_metric_processors = [],
+					p_event_limits = ObservabilitySignalLimits.new(),
+					p_log_limits = ObservabilitySignalLimits.new(),
+				),
+			),
+		)).to_equal(Error.OK)
+	var success_logger := AutomaticObservabilityLogger.new(
+			success_service,
+			success_automatic,
+			runtime,
+		)
+	var success_probe := AutomaticLoggerThreadProbe.new()
+	success_probe.logger = success_logger
+	var success_callable: Callable[[], void] = func() -> void:
+		success_probe.capture_message()
+	var success_thread := Thread.new()
+	Expect.that(success_thread.start(success_callable)).to_equal(Error.OK)
+	var success_child_completed: bool = BoundedTestSemaphore.wait_until_posted(
+			success_service.child_completed,
+		)
+	var manual_failure: bool = true
+	var manual_failure_error: int = Error.OK
+	if success_child_completed:
+		manual_failure = success_service.capture_counter("")
+		manual_failure_error = success_service.last_error()
+	success_service.child_release.post()
+	var success_thread_result: Variant = success_thread.wait_to_finish()
+
+	Expect.that(success_child_completed).to_be_true()
+	Expect.that(success_thread_result).to_be_null()
+	Expect.that(success_service.barrier_timed_out).to_be_false()
+	Expect.that(manual_failure).to_be_false()
+	Expect.that(manual_failure_error).to_equal(Error.ERR_INVALID_PARAMETER)
+	Expect.that(success_service.completion_error).to_equal(Error.OK)
+	Expect.that(success_service.completion_count).to_equal(1)
+	Expect.that(success_service.last_error()).to_equal(Error.OK)
+	Expect.that(success_service._session.in_flight_call_count()).to_equal(0)
+	_shutdown_processing_service(success_service)
+
+
 func test_disabled_structured_logs_do_not_consume_rate_limit() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
@@ -7386,7 +8349,8 @@ func test_disabled_structured_logs_do_not_consume_rate_limit() -> void:
 	)
 
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	Expect.that(service.configure(provider, ObservabilityConfig.new(
+	var disabled_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(disabled_provider, ObservabilityConfig.new(
 				p_enabled = false,
 				p_processing = ObservabilityProcessingConfig.new(
 					p_log_rate_limit_per_second = 1,
@@ -7400,7 +8364,8 @@ func test_disabled_structured_logs_do_not_consume_rate_limit() -> void:
 	Expect.that(service.capture_log(
 			"suppressed", ObservabilityLevel.INFO, &"game", -1, {}, 1000,
 		)).to_equal("")
-	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var restored_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(restored_provider, config)).to_equal(Error.OK)
 	Expect.that(service.capture_log(
 			"accepted", ObservabilityLevel.INFO, &"game", -1, {}, 1000,
 		)).to_equal("memory:1")
@@ -7433,7 +8398,8 @@ func test_direct_structured_log_events_apply_enabled_gate_before_rate_limit() ->
 		)
 
 	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
-	Expect.that(service.configure(provider, ObservabilityConfig.new(
+	var disabled_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(disabled_provider, ObservabilityConfig.new(
 				p_enabled = false,
 				p_processing = ObservabilityProcessingConfig.new(
 					p_log_rate_limit_per_second = 1,
@@ -7445,7 +8411,8 @@ func test_direct_structured_log_events_apply_enabled_gate_before_rate_limit() ->
 				p_provider_options = {},
 			))).to_equal(Error.OK)
 	Expect.that(service.capture_event(event)).to_equal("")
-	Expect.that(service.configure(provider, config)).to_equal(Error.OK)
+	var restored_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(restored_provider, config)).to_equal(Error.OK)
 	Expect.that(service.capture_event(event)).to_equal("memory:1")
 	service.shutdown()
 
@@ -7496,18 +8463,21 @@ func test_failed_replacement_keeps_working_provider() -> void:
 	service.shutdown()
 
 
-func test_active_provider_reconfiguration_does_not_shutdown_it() -> void:
+func test_active_provider_reconfiguration_requires_a_fresh_provider() -> void:
 	var service: FoundryObservability = _service()
 	var provider: MemoryObservabilityProvider = MemoryObservabilityProvider.new()
 
 	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
 	var disabled: ObservabilityConfig = ObservabilityConfig.new(p_enabled = false)
-	Expect.that(service.configure(provider, disabled)).to_equal(Error.OK)
-	Expect.that(service.is_enabled()).to_be_false()
-	Expect.that(provider.shutdown_count).to_equal(0)
-	Expect.that(service.configure(provider, ObservabilityConfig.new())).to_equal(Error.OK)
+	Expect.that(service.configure(provider, disabled)).to_equal(
+			Error.ERR_ALREADY_IN_USE,
+		)
 	Expect.that(service.is_enabled()).to_be_true()
 	Expect.that(provider.shutdown_count).to_equal(0)
+	var disabled_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(disabled_provider, disabled)).to_equal(Error.OK)
+	Expect.that(service.is_enabled()).to_be_false()
+	Expect.that(provider.shutdown_count).to_equal(1)
 	service.shutdown()
 
 
@@ -8272,7 +9242,7 @@ func test_startup_maps_provider_unavailable_configuration_result() -> void:
 	Engine.unregister_singleton("SentryObservabilityBridge")
 
 
-func test_startup_reuses_provider_for_reconfiguration_and_restart() -> void:
+func test_startup_uses_fresh_provider_for_each_explicit_initialization() -> void:
 	var bridge := FakeSentryBridge.new()
 	Engine.register_singleton("SentryObservabilityBridge", bridge)
 	var first_settings := ObservabilityStartupSettings.from_sources({
@@ -8283,7 +9253,8 @@ func test_startup_reuses_provider_for_reconfiguration_and_restart() -> void:
 	var first_owner: String = bridge.active_owner
 
 	Expect.that(service._initialize_startup(first_settings)).to_equal(Error.OK)
-	Expect.that(bridge.active_owner).to_equal(first_owner)
+	var repeated_owner: String = bridge.active_owner
+	Expect.that(repeated_owner).not_().to_equal(first_owner)
 	Expect.that(bridge.configured_payloads).to_have_size(2)
 
 	var changed_settings := ObservabilityStartupSettings.from_sources({
@@ -8291,13 +9262,14 @@ func test_startup_reuses_provider_for_reconfiguration_and_restart() -> void:
 		ObservabilityStartupSettings.ENVIRONMENT: "staging",
 	})
 	Expect.that(service._initialize_startup(changed_settings)).to_equal(Error.OK)
-	Expect.that(bridge.active_owner).to_equal(first_owner)
+	var changed_owner: String = bridge.active_owner
+	Expect.that(changed_owner).not_().to_equal(repeated_owner)
 	if not bridge.configured_payload.is_empty():
 		Expect.that(bridge.configured_payload["environment"]).to_equal("staging")
 
 	service.shutdown()
 	Expect.that(service._initialize_startup(changed_settings)).to_equal(Error.OK)
-	Expect.that(bridge.active_owner).to_equal(first_owner)
+	Expect.that(bridge.active_owner).to_equal(changed_owner)
 	Expect.that(service.provider_name()).to_equal(&"sentry")
 	Expect.that(service.is_available()).to_be_true()
 
@@ -8535,11 +9507,11 @@ func test_attachment_capability_is_optional_and_malformed_results_fail_safely() 
 				),
 			))).to_equal(Error.OK)
 	Expect.that(service.add_attachment(attachment)).to_equal("")
-	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
 	Expect.that(service.remove_attachment("valid-handle")).to_be_false()
-	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
 	Expect.that(service.clear_attachments()).to_be_false()
-	Expect.that(service.last_error()).to_equal(Error.FAILED)
+	Expect.that(service.last_error()).to_equal(Error.ERR_UNAVAILABLE)
 	var prior_error: int = service.last_error()
 	Expect.that(service.last_attachment_failures()).to_have_size(0)
 	Expect.that(service.last_error()).to_equal(prior_error)
@@ -8751,8 +9723,9 @@ func test_memory_attachment_session_boundaries_are_atomic() -> void:
 		return
 	var original_handle: String = service.add_attachment(attachment)
 
-	first.configure_result = Error.FAILED
-	Expect.that(service.configure(first, ObservabilityConfig.new(
+	var failing_candidate := MemoryObservabilityProvider.new()
+	failing_candidate.configure_result = Error.FAILED
+	Expect.that(service.configure(failing_candidate, ObservabilityConfig.new(
 				p_global_attributes = {},
 				p_provider_options = {},
 				p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(
@@ -8770,8 +9743,8 @@ func test_memory_attachment_session_boundaries_are_atomic() -> void:
 	Expect.that(service.remove_attachment(original_handle)).to_be_true()
 	var replacement_handle: String = service.add_attachment(attachment)
 
-	first.configure_result = Error.OK
-	Expect.that(service.configure(first, config)).to_equal(Error.OK)
+	var reset_provider := MemoryObservabilityProvider.new()
+	Expect.that(service.configure(reset_provider, config)).to_equal(Error.OK)
 	Expect.that(service.remove_attachment(replacement_handle)).to_be_false()
 	Expect.that(service.last_error()).to_equal(Error.ERR_DOES_NOT_EXIST)
 	Expect.that(service.configure(second, config)).to_equal(Error.OK)
@@ -10243,6 +11216,11 @@ func _service_replace_event(event: ObservabilityEvent) -> ObservabilityEvent:
 
 func _service_drop_event(_event: ObservabilityEvent) -> ObservabilityEvent?:
 	return null
+
+
+func _count_service_metric(metric: ObservabilityMetric) -> ObservabilityMetric:
+	_service_metric_processor_calls += 1
+	return metric
 
 
 func _automatic_capture_nested_message(

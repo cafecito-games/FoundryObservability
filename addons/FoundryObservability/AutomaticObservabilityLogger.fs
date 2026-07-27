@@ -1,5 +1,6 @@
 namespace foundry.observability
 
+import foundry.observability.processing
 import foundry.observability.runtime
 
 ## Converts engine logger callbacks into provider-neutral observability records.
@@ -9,14 +10,19 @@ extends Logger
 const _ORIGIN: String = "auto.log.foundry"
 
 var _service: FoundryObservability
-var _config: ObservabilityConfig
+var _config: ObservabilityAutomaticCaptureConfig
 var _runtime: ObservabilityRuntime
+var _capture_mutex: Mutex = Mutex.new()
+var _capture_owner: int = -1
+var _provider_call: ObservabilityProviderCall?
+var _installed: bool = false
+var _detached: bool = false
 
 
 ## Creates a logger with a shared observability runtime.
 func _init(
 		service: FoundryObservability,
-		config: ObservabilityConfig,
+		config: ObservabilityAutomaticCaptureConfig,
 		runtime: ObservabilityRuntime,
 ) -> void:
 	assert(runtime != null, "AutomaticObservabilityLogger requires a runtime.")
@@ -36,7 +42,7 @@ func _log_error(
 		error_type: int,
 		script_backtraces: Array[ScriptBacktrace],
 ) -> void:
-	if _service == null or not _service.try_begin_automatic_capture():
+	if _service == null or not _try_begin_capture():
 		return
 	_capture_error(
 			function_name,
@@ -48,7 +54,7 @@ func _log_error(
 			error_type,
 			script_backtraces,
 		)
-	_service.end_automatic_capture()
+	_end_capture()
 
 
 func _capture_error(
@@ -61,15 +67,17 @@ func _capture_error(
 		error_type: int,
 		script_backtraces: Array[ScriptBacktrace],
 ) -> void:
+	if not _capture_is_current():
+		return
 
 	var category_mask: int = _category_mask(error_type)
 	var level: int = _error_level(error_type)
 	var type_name: String = _error_type_name(error_type)
 	var message: String = rationale if not rationale.is_empty() else code
 	var engine_ticks_msec: int = _runtime.monotonic_time_msec()
-	var as_event: bool = (_config.automatic_capture().event_mask() & category_mask) != 0
-	var as_breadcrumb: bool = (_config.automatic_capture().breadcrumb_mask() & category_mask) != 0
-	var as_log: bool = (_config.automatic_capture().log_mask() & category_mask) != 0
+	var as_event: bool = (_config.event_mask() & category_mask) != 0
+	var as_breadcrumb: bool = (_config.breadcrumb_mask() & category_mask) != 0
+	var as_log: bool = (_config.log_mask() & category_mask) != 0
 	if not as_event and not as_breadcrumb and not as_log:
 		return
 
@@ -124,15 +132,17 @@ func _capture_error(
 
 ## Receives ordinary engine output messages.
 func _log_message(message: String, error: bool) -> void:
-	if _service == null or not _service.try_begin_automatic_capture():
+	if _service == null or not _try_begin_capture():
 		return
 	_capture_message(message, error)
-	_service.end_automatic_capture()
+	_end_capture()
 
 
 func _capture_message(message: String, error: bool) -> void:
-	if (_config.automatic_capture().breadcrumb_mask() & ObservabilityCaptureMask.MESSAGE) == 0 \
-			and (_config.automatic_capture().log_mask() & ObservabilityCaptureMask.MESSAGE) == 0:
+	if not _capture_is_current():
+		return
+	if (_config.breadcrumb_mask() & ObservabilityCaptureMask.MESSAGE) == 0 \
+			and (_config.log_mask() & ObservabilityCaptureMask.MESSAGE) == 0:
 		return
 
 	var processed_message: String = _strip_invisible(message)
@@ -145,7 +155,7 @@ func _capture_message(message: String, error: bool) -> void:
 		"log.error_stream": error,
 		"observability.origin": _ORIGIN,
 	}
-	if (_config.automatic_capture().breadcrumb_mask() & ObservabilityCaptureMask.MESSAGE) != 0:
+	if (_config.breadcrumb_mask() & ObservabilityCaptureMask.MESSAGE) != 0:
 		_service._capture_automatic_breadcrumb(ObservabilityBreadcrumb.new(
 				p_message = processed_message,
 				p_level = level,
@@ -153,7 +163,7 @@ func _capture_message(message: String, error: bool) -> void:
 				p_timestamp_msec = engine_ticks_msec,
 				p_attributes = attributes,
 			))
-	if (_config.automatic_capture().log_mask() & ObservabilityCaptureMask.MESSAGE) != 0:
+	if (_config.log_mask() & ObservabilityCaptureMask.MESSAGE) != 0:
 		_service.capture_log(
 				processed_message,
 				level,
@@ -196,13 +206,43 @@ func _error_type_name(error_type: int) -> String:
 	return "ERROR"
 
 
-## Retained for logger registration lifecycle compatibility.
-func reset() -> void:
-	pass
+## Installs this logger once.
+func install() -> void:
+	_capture_mutex.lock()
+	if _installed or _detached:
+		_capture_mutex.unlock()
+		return
+	OS.add_logger(self)
+	_installed = true
+	_capture_mutex.unlock()
+
+
+## Unregisters and permanently rejects callbacks already queued by the engine.
+func remove() -> void:
+	_capture_mutex.lock()
+	if _detached:
+		_capture_mutex.unlock()
+		return
+	_detached = true
+	if _installed:
+		OS.remove_logger(self)
+		_installed = false
+	_capture_mutex.unlock()
+
+
+## Unregisters without detaching for tests that invoke callbacks directly.
+func uninstall_for_testing() -> void:
+	_capture_mutex.lock()
+	if not _installed:
+		_capture_mutex.unlock()
+		return
+	OS.remove_logger(self)
+	_installed = false
+	_capture_mutex.unlock()
 
 
 ## Replaces automatic routing policy.
-func reconfigure(config: ObservabilityConfig) -> void:
+func reconfigure(config: ObservabilityAutomaticCaptureConfig) -> void:
 	_config = config
 
 
@@ -235,7 +275,7 @@ func _serialize_backtraces(script_backtraces: Array[ScriptBacktrace]) -> Diction
 
 
 func _has_filtered_prefix(message: String) -> bool:
-	for prefix: String in _config.automatic_capture().message_filter_prefixes():
+	for prefix: String in _config.message_filter_prefixes():
 		if message.begins_with(prefix):
 			return true
 	return false
@@ -261,3 +301,44 @@ func _strip_invisible(message: String) -> String:
 		output += message[index]
 		index += 1
 	return output
+
+
+func _try_begin_capture() -> bool:
+	if not _capture_mutex.try_lock():
+		return false
+	if _detached:
+		_capture_mutex.unlock()
+		return false
+	var owner: int = _runtime.caller_id()
+	if _capture_owner != -1:
+		_capture_mutex.unlock()
+		return false
+	var provider_call: ObservabilityProviderCall = (
+			_service._begin_automatic_capture()
+		)
+	if not provider_call.accepted():
+		_capture_mutex.unlock()
+		return false
+	_capture_owner = owner
+	_provider_call = provider_call
+	_capture_mutex.unlock()
+	return true
+
+
+func _capture_is_current() -> bool:
+	_capture_mutex.lock()
+	var current: bool = not _detached \
+			and _capture_owner != -1 \
+			and _provider_call != null
+	_capture_mutex.unlock()
+	return current
+
+
+func _end_capture() -> void:
+	_capture_mutex.lock()
+	var provider_call: ObservabilityProviderCall? = _provider_call
+	_provider_call = null
+	_capture_owner = -1
+	_capture_mutex.unlock()
+	if provider_call != null:
+		_service._end_automatic_capture(provider_call)
