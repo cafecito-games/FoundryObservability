@@ -1696,6 +1696,277 @@ func test_admission_decision_canonicalizes_invalid_public_construction() -> void
 	Expect.that(decision.limit_kind()).to_equal(ObservabilityLimitKind.NONE)
 
 
+func test_redaction_result_preserves_typed_shapes_and_canonicalizes_invalid_states() -> void:
+	var event := ObservabilityEvent.new(p_kind = &"message", p_message = "safe")
+	var success: ObservabilityRedactionResult[ObservabilityEvent] = (
+			ObservabilityRedactionResult[ObservabilityEvent].success(event)
+		)
+	var failure: ObservabilityRedactionResult[ObservabilityEvent] = (
+			ObservabilityRedactionResult[ObservabilityEvent].failure(3)
+		)
+	var null_success := ObservabilityRedactionResult[ObservabilityEvent].success(null)
+	var malformed_index := ObservabilityRedactionResult[ObservabilityEvent].failure(-2)
+
+	Expect.that(success.valid()).to_be_true()
+	Expect.that(success.value()).to_equal(event)
+	Expect.that(success.failed_rule_index()).to_equal(-1)
+	Expect.that(success.error()).to_equal(Error.OK)
+	Expect.that(failure.valid()).to_be_false()
+	Expect.that(failure.value()).to_equal(null)
+	Expect.that(failure.failed_rule_index()).to_equal(3)
+	Expect.that(failure.error()).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(ObservabilityRedactionResult[ObservabilityEvent].is_valid_state(
+			true, event, -1, Error.OK,
+		)).to_be_true()
+	Expect.that(ObservabilityRedactionResult[ObservabilityEvent].is_valid_state(
+			false, null, 3, Error.ERR_INVALID_DATA,
+		)).to_be_true()
+	Expect.that(ObservabilityRedactionResult[ObservabilityEvent].is_valid_state(
+			false, null, -2, Error.ERR_INVALID_DATA,
+		)).to_be_false()
+	Expect.that(null_success.valid()).to_be_false()
+	Expect.that(null_success.failed_rule_index()).to_equal(-1)
+	Expect.that(null_success.error()).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(malformed_index.valid()).to_be_false()
+	Expect.that(malformed_index.failed_rule_index()).to_equal(-1)
+
+
+func test_processing_result_preserves_every_factory_field_and_specialization() -> void:
+	var metric := ObservabilityMetric.new(p_name = "frame.time", p_value = 16.0)
+	var accepted: ObservabilityProcessingResult[ObservabilityMetric] = (
+			ObservabilityProcessingResult[ObservabilityMetric].accepted(
+					ObservabilitySignal.METRIC,
+					metric,
+					17,
+				)
+		)
+	var dropped: ObservabilityProcessingResult[ObservabilityEvent] = (
+			ObservabilityProcessingResult[ObservabilityEvent].dropped(
+					ObservabilitySignal.EVENT,
+					ObservabilityProcessingReason.RATE_LIMITED,
+					ObservabilityLimitKind.WINDOW,
+					4,
+					5,
+					Error.ERR_BUSY,
+				)
+		)
+	var failed: ObservabilityProcessingResult[ObservabilityEvent] = (
+			ObservabilityProcessingResult[ObservabilityEvent].failed(
+					ObservabilitySignal.LOG,
+					ObservabilityProcessingReason.PROCESSOR,
+					Error.ERR_BUSY,
+					2,
+					3,
+				)
+		)
+
+	Expect.that(accepted.outcome()).to_equal(ObservabilityProcessingOutcome.ACCEPTED)
+	Expect.that(accepted.processing_signal()).to_equal(ObservabilitySignal.METRIC)
+	Expect.that(accepted.value()).to_equal(metric)
+	Expect.that(accepted.operation_token()).to_equal(17)
+	Expect.that(accepted.reason()).to_equal(ObservabilityProcessingReason.NONE)
+	Expect.that(accepted.processor_index()).to_equal(-1)
+	Expect.that(accepted.redaction_rule_index()).to_equal(-1)
+	Expect.that(accepted.limit_kind()).to_equal(ObservabilityLimitKind.NONE)
+	Expect.that(accepted.error()).to_equal(Error.OK)
+	Expect.that(dropped.outcome()).to_equal(ObservabilityProcessingOutcome.DROPPED)
+	Expect.that(dropped.processing_signal()).to_equal(ObservabilitySignal.EVENT)
+	Expect.that(dropped.value()).to_equal(null)
+	Expect.that(dropped.operation_token()).to_equal(-1)
+	Expect.that(dropped.reason()).to_equal(ObservabilityProcessingReason.RATE_LIMITED)
+	Expect.that(dropped.processor_index()).to_equal(4)
+	Expect.that(dropped.redaction_rule_index()).to_equal(5)
+	Expect.that(dropped.limit_kind()).to_equal(ObservabilityLimitKind.WINDOW)
+	Expect.that(dropped.error()).to_equal(Error.ERR_BUSY)
+	Expect.that(failed.outcome()).to_equal(ObservabilityProcessingOutcome.FAILED)
+	Expect.that(failed.processing_signal()).to_equal(ObservabilitySignal.LOG)
+	Expect.that(failed.value()).to_equal(null)
+	Expect.that(failed.operation_token()).to_equal(-1)
+	Expect.that(failed.reason()).to_equal(ObservabilityProcessingReason.PROCESSOR)
+	Expect.that(failed.processor_index()).to_equal(2)
+	Expect.that(failed.redaction_rule_index()).to_equal(3)
+	Expect.that(failed.limit_kind()).to_equal(ObservabilityLimitKind.NONE)
+	Expect.that(failed.error()).to_equal(Error.ERR_BUSY)
+	Expect.that(metric.name()).to_equal("frame.time")
+
+
+func test_processing_result_validates_closed_enum_members() -> void:
+	var event := ObservabilityEvent.new(p_kind = &"message", p_message = "valid")
+	for processing_signal: ObservabilitySignal in [
+			ObservabilitySignal.EVENT,
+			ObservabilitySignal.LOG,
+			ObservabilitySignal.METRIC,
+			ObservabilitySignal.STATE,
+	]:
+		Expect.that(_processing_result_state_is_valid(
+				ObservabilityProcessingOutcome.DROPPED,
+				null,
+				-1,
+				ObservabilityProcessingReason.SAMPLED,
+				p_signal = processing_signal,
+			)).to_be_true()
+	Expect.that(_processing_result_state_is_valid(
+			ObservabilityProcessingOutcome.ACCEPTED,
+			event,
+			1,
+			ObservabilityProcessingReason.NONE,
+		)).to_be_true()
+	for reason: ObservabilityProcessingReason in [
+			ObservabilityProcessingReason.PROCESSOR,
+			ObservabilityProcessingReason.SAMPLED,
+			ObservabilityProcessingReason.RECURSIVE,
+			ObservabilityProcessingReason.INVALID_PROCESSOR_RESULT,
+			ObservabilityProcessingReason.REDACTION_FAILED,
+			ObservabilityProcessingReason.INVALID_PAYLOAD,
+			ObservabilityProcessingReason.PROVIDER_REJECTED,
+			ObservabilityProcessingReason.STALE_GENERATION,
+	]:
+		Expect.that(_processing_result_state_is_valid(
+				ObservabilityProcessingOutcome.DROPPED,
+				null,
+				-1,
+				reason,
+			)).to_be_true()
+	for limit_kind: ObservabilityLimitKind in [
+			ObservabilityLimitKind.PER_FRAME,
+			ObservabilityLimitKind.REPEATED,
+			ObservabilityLimitKind.WINDOW,
+			ObservabilityLimitKind.LEGACY_LOG_WINDOW,
+	]:
+		Expect.that(_processing_result_state_is_valid(
+				ObservabilityProcessingOutcome.DROPPED,
+				null,
+				-1,
+				ObservabilityProcessingReason.RATE_LIMITED,
+				limit_kind,
+			)).to_be_true()
+	Expect.that(_processing_result_state_is_valid(
+			ObservabilityProcessingOutcome.FAILED,
+			null,
+			-1,
+			ObservabilityProcessingReason.PROVIDER_REJECTED,
+			p_signal = ObservabilitySignal.STATE,
+			p_error = Error.ERR_BUSY,
+		)).to_be_true()
+
+
+func test_processing_result_rejects_invalid_shape_combinations() -> void:
+	var event := ObservabilityEvent.new(p_kind = &"message", p_message = "invalid")
+	for operation_token: int in [0, -1, -2]:
+		Expect.that(_processing_result_state_is_valid(
+				ObservabilityProcessingOutcome.ACCEPTED,
+				event,
+				operation_token,
+				ObservabilityProcessingReason.NONE,
+			)).to_be_false()
+	Expect.that(_processing_result_state_is_valid(
+			ObservabilityProcessingOutcome.DROPPED,
+			null,
+			-1,
+			ObservabilityProcessingReason.NONE,
+		)).to_be_false()
+	Expect.that(_processing_result_state_is_valid(
+			ObservabilityProcessingOutcome.FAILED,
+			null,
+			-1,
+			ObservabilityProcessingReason.NONE,
+			p_error = Error.ERR_BUSY,
+		)).to_be_false()
+	Expect.that(_processing_result_state_is_valid(
+			ObservabilityProcessingOutcome.FAILED,
+			null,
+			-1,
+			ObservabilityProcessingReason.PROCESSOR,
+		)).to_be_false()
+	Expect.that(_processing_result_state_is_valid(
+			ObservabilityProcessingOutcome.DROPPED,
+			null,
+			-1,
+			ObservabilityProcessingReason.RATE_LIMITED,
+		)).to_be_false()
+	Expect.that(_processing_result_state_is_valid(
+			ObservabilityProcessingOutcome.DROPPED,
+			null,
+			-1,
+			ObservabilityProcessingReason.SAMPLED,
+			ObservabilityLimitKind.PER_FRAME,
+		)).to_be_false()
+	Expect.that(_processing_result_state_is_valid(
+			ObservabilityProcessingOutcome.DROPPED,
+			null,
+			-1,
+			ObservabilityProcessingReason.PROCESSOR,
+			p_processor_index = -2,
+		)).to_be_false()
+	Expect.that(_processing_result_state_is_valid(
+			ObservabilityProcessingOutcome.DROPPED,
+			null,
+			-1,
+			ObservabilityProcessingReason.PROCESSOR,
+			p_redaction_rule_index = -2,
+		)).to_be_false()
+
+
+func test_processing_result_canonicalizes_invalid_factory_inputs() -> void:
+	var event := ObservabilityEvent.new(p_kind = &"message", p_message = "fallback")
+	var null_accepted := ObservabilityProcessingResult[ObservabilityEvent].accepted(
+			ObservabilitySignal.EVENT, null, 17,
+		)
+	var zero_token := ObservabilityProcessingResult[ObservabilityEvent].accepted(
+			ObservabilitySignal.EVENT, event, 0,
+		)
+	var ok_failure := ObservabilityProcessingResult[ObservabilityEvent].failed(
+			ObservabilitySignal.EVENT,
+			ObservabilityProcessingReason.PROCESSOR,
+			Error.OK,
+		)
+	Expect.that(null_accepted.outcome()).to_equal(ObservabilityProcessingOutcome.FAILED)
+	Expect.that(null_accepted.processing_signal()).to_equal(ObservabilitySignal.EVENT)
+	Expect.that(null_accepted.value()).to_equal(null)
+	Expect.that(null_accepted.operation_token()).to_equal(-1)
+	Expect.that(null_accepted.reason()).to_equal(
+			ObservabilityProcessingReason.INVALID_PAYLOAD,
+		)
+	Expect.that(null_accepted.processor_index()).to_equal(-1)
+	Expect.that(null_accepted.redaction_rule_index()).to_equal(-1)
+	Expect.that(null_accepted.limit_kind()).to_equal(ObservabilityLimitKind.NONE)
+	Expect.that(null_accepted.error()).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(zero_token.outcome()).to_equal(ObservabilityProcessingOutcome.FAILED)
+	Expect.that(zero_token.reason()).to_equal(
+			ObservabilityProcessingReason.INVALID_PAYLOAD,
+		)
+	Expect.that(zero_token.error()).to_equal(Error.ERR_INVALID_DATA)
+	Expect.that(ok_failure.outcome()).to_equal(ObservabilityProcessingOutcome.FAILED)
+	Expect.that(ok_failure.reason()).to_equal(
+			ObservabilityProcessingReason.INVALID_PAYLOAD,
+		)
+	Expect.that(ok_failure.error()).to_equal(Error.ERR_INVALID_DATA)
+
+
+func _processing_result_state_is_valid(
+		p_outcome: ObservabilityProcessingOutcome,
+		p_value: ObservabilityEvent?,
+		p_operation_token: int,
+		p_reason: ObservabilityProcessingReason,
+		p_limit_kind: ObservabilityLimitKind = ObservabilityLimitKind.NONE,
+		p_processor_index: int = -1,
+		p_redaction_rule_index: int = -1,
+		p_signal: ObservabilitySignal = ObservabilitySignal.EVENT,
+		p_error: int = Error.OK,
+) -> bool:
+	return ObservabilityProcessingResult[ObservabilityEvent].is_valid_state(
+			p_outcome,
+			p_signal,
+			p_value,
+			p_operation_token,
+			p_reason,
+			p_processor_index,
+			p_redaction_rule_index,
+			p_limit_kind,
+			p_error,
+		)
+
+
 func _expect_admission(
 		admission: ObservabilityAdmissionDecision,
 		is_accepted: bool,
