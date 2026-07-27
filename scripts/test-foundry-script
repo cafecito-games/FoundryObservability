@@ -140,7 +140,7 @@ command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 	|| fail "ObservabilityRedactionRule.fs is missing"
 [[ -f "$addon/ObservabilityRedactionPolicy.fs" ]] \
 	|| fail "ObservabilityRedactionPolicy.fs is missing"
-[[ -f "$addon/ObservabilityRedactor.fs" ]] \
+[[ -f "$addon/processing/ObservabilityRedactor.fs" ]] \
 	|| fail "ObservabilityRedactor.fs is missing"
 [[ -f "$addon/ObservabilityProcessingDiagnostic.fs" ]] \
 	|| fail "ObservabilityProcessingDiagnostic.fs is missing"
@@ -176,13 +176,21 @@ for processing_resource in \
 	ObservabilitySignalLimiter \
 	ObservabilityRedactionRule \
 	ObservabilityRedactionPolicy \
-	ObservabilityRedactor \
 	ObservabilityProcessingDiagnostic \
 	ObservabilityProcessingPipeline; do
 	[[ -s "$addon/${processing_resource}.fs.uid" ]] \
 		|| fail "${processing_resource}.fs.uid is missing or empty"
 done
-grep -Fxq 'uid://d13rdctcore1' "$addon/ObservabilityRedactor.fs.uid" \
+for typed_processing_resource in \
+	ObservabilityRedactor \
+	ObservabilityValueVisitDecision \
+	ObservabilityValuePolicy \
+	ObservabilityValueWalker; do
+	[[ -s "$addon/processing/${typed_processing_resource}.fs.uid" ]] \
+		|| fail "${typed_processing_resource}.fs.uid is missing or empty"
+done
+grep -Fxq 'uid://d13rdctcore1' \
+	"$addon/processing/ObservabilityRedactor.fs.uid" \
 	|| fail "ObservabilityRedactor.fs.uid has the wrong stable UID"
 grep -Fxq 'uid://d13sgnlmit1' "$addon/ObservabilitySignalLimiter.fs.uid" \
 	|| fail "ObservabilitySignalLimiter.fs.uid has the wrong stable UID"
@@ -286,7 +294,8 @@ for field in _type _name _value _unit _attributes; do
 		|| fail "ObservabilityMetric field must be immutable: ${field}"
 done
 for field in _policy _rules _rule_paths _compiled_patterns _invalid_rule_index; do
-	rg -q "^final var ${field}:" "$addon/ObservabilityRedactor.fs" \
+	rg -q "^final var ${field}:" \
+		"$addon/processing/ObservabilityRedactor.fs" \
 		|| fail "ObservabilityRedactor field must be immutable: ${field}"
 done
 rg -q '^func processing_signal\(\) -> StringName:$' \
@@ -437,6 +446,71 @@ require_exact_file \
 	"addons/FoundryObservability/processing/ObservabilityAdmissionDecision.fs.uid" \
 	$'uid://d14process005\n' \
 	"admission decision UID contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityValueVisitDecision.fs.uid" \
+	$'uid://d14process009\n' \
+	"value visit decision UID contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityValuePolicy.fs.uid" \
+	$'uid://d14process010\n' \
+	"value policy UID contract is missing"
+require_exact_file \
+	"addons/FoundryObservability/processing/ObservabilityValueWalker.fs.uid" \
+	$'uid://d14process011\n' \
+	"value walker UID contract is missing"
+rg -q '^final class_name ObservabilityValueVisitDecision extends RefCounted$' \
+	"$addon/processing/ObservabilityValueVisitDecision.fs" \
+	|| fail "typed value visit decision model is missing"
+rg -q -U \
+	'^enum Action:\n\tKEEP = 0\n\tDESCEND = 1\n\tREJECT = 2$' \
+	"$addon/processing/ObservabilityValueVisitDecision.fs" \
+	|| fail "value visit decision action enum contract is missing"
+for decision_field in \
+	'_action: Action' \
+	'_value: Variant'; do
+	rg -Fq "final var ${decision_field}" \
+		"$addon/processing/ObservabilityValueVisitDecision.fs" \
+		|| fail "value visit decision field must be final and typed: $decision_field"
+done
+rg -q -U \
+	'^abstract func visit\(\n\t\tpath: PackedStringArray,\n\t\tvalue: Variant,\n\) -> ObservabilityValueVisitDecision$' \
+	"$addon/processing/ObservabilityValuePolicy.fs" \
+	|| fail "typed structured value policy contract is missing"
+rg -q -U \
+	'^func _init\(max_depth: int, max_items: int\) -> void:$' \
+	"$addon/processing/ObservabilityValueWalker.fs" \
+	|| fail "bounded value walker constructor contract is missing"
+rg -q -U \
+	'^func walk\(\n\t\tvalue: Variant,\n\t\tpolicy: ObservabilityValuePolicy,\n\) -> ObservabilityRedactionResult\[Variant\]:$' \
+	"$addon/processing/ObservabilityValueWalker.fs" \
+	|| fail "typed value walker result contract is missing"
+redactor_source="$addon/processing/ObservabilityRedactor.fs"
+for typed_redactor_signature in \
+	$'func redact_event(\n\t\tevent: ObservabilityEvent,\n\t\tsignal_type: ObservabilitySignal,\n) -> ObservabilityRedactionResult[ObservabilityEvent]:' \
+	$'func redact_metric(\n\t\tmetric: ObservabilityMetric,\n) -> ObservabilityRedactionResult[ObservabilityMetric]:' \
+	$'func redact_contexts(\n\t\tcontexts: Dictionary,\n) -> ObservabilityRedactionResult[Dictionary]:' \
+	$'func redact_user(\n\t\tuser: ObservabilityUser,\n) -> ObservabilityRedactionResult[ObservabilityUser]:' \
+	$'func redact_breadcrumb(\n\t\tbreadcrumb: ObservabilityBreadcrumb,\n) -> ObservabilityRedactionResult[ObservabilityBreadcrumb]:' \
+	$'func redact_attachment(\n\t\tattachment: ObservabilityAttachment,\n) -> ObservabilityRedactionResult[ObservabilityAttachment]:' \
+	$'func redact_attachment_payload(\n\t\tpayload: Dictionary,\n) -> ObservabilityRedactionResult[Dictionary]:'; do
+	rg -Fq -U "$typed_redactor_signature" "$redactor_source" \
+		|| fail "redactor is missing typed result: $typed_redactor_signature"
+done
+if rg -q -U '^func redact_(event|metric|contexts|user|breadcrumb|attachment|attachment_payload)\([^)]*\) -> Dictionary:' \
+	"$redactor_source"; then
+	fail "redactor must not retain Dictionary-returning public entry points"
+fi
+if rg -q '^func _(typed_failure|failure|success|success_with_rule|traversal_success)\(' \
+	"$redactor_source"; then
+	fail "redactor must not retain dictionary-shaped traversal result helpers"
+fi
+if rg -q '^func _redact_value\(|^func _consume_traversal_item\(|^func _enter_active_container\(|^func _copy_(dictionary_key|leaf)\(' \
+	"$redactor_source"; then
+	fail "redactor rule application must use the shared value walker"
+fi
+if rg -q 'active_containers|is_same\(' "$redactor_source"; then
+	fail "redactor must delegate cycle identity state to the shared value walker"
+fi
 rg -q '^import foundry\.observability\.processing$' \
 	"$addon/ObservabilitySignalLimiter.fs" \
 	|| fail "signal limiter must import the processing model"
@@ -484,7 +558,8 @@ rg -q 'identity\.sha256_text()' "$addon/ObservabilitySignalLimiter.fs" \
 if rg -q '^var [^_]' "$addon/ObservabilitySignalLimiter.fs"; then
 	fail "signal limiter runtime state must remain private"
 fi
-rg -q '^class_name ObservabilityRedactor$' "$addon/ObservabilityRedactor.fs" \
+rg -q '^class_name ObservabilityRedactor$' \
+	"$addon/processing/ObservabilityRedactor.fs" \
 	|| fail "redactor value type declaration is missing"
 rg -q '^class_name ObservabilityStackFrame$' "$addon/ObservabilityStackFrame.fs" \
 	|| fail "stack frame value type declaration is missing"

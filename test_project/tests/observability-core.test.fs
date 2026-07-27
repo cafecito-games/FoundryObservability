@@ -66,6 +66,54 @@ class MutableProcessingCallbacks extends Node:
 		return true
 
 
+class RejectingStructuredValuePolicy extends RefCounted:
+	uses ObservabilityValuePolicy
+
+	func visit(
+			_path: PackedStringArray,
+			value: Variant,
+	) -> ObservabilityValueVisitDecision:
+		if value is Dictionary or value is Array:
+			return ObservabilityValueVisitDecision.descend()
+		if value == null or value is bool or value is int \
+				or value is float or value is String or value is StringName:
+			return ObservabilityValueVisitDecision.keep(value)
+		return ObservabilityValueVisitDecision.reject()
+
+
+class KeepingContainerValuePolicy extends RefCounted:
+	uses ObservabilityValuePolicy
+
+	func visit(
+			_path: PackedStringArray,
+			value: Variant,
+	) -> ObservabilityValueVisitDecision:
+		return ObservabilityValueVisitDecision.keep(value)
+
+
+class KeepingContainerDictionaryKeyPolicy extends RefCounted:
+	uses ObservabilityValuePolicy
+
+	final var _replacement_key: Dictionary
+
+	func _init(replacement_key: Dictionary) -> void:
+		_replacement_key = replacement_key
+
+	func visit(
+			_path: PackedStringArray,
+			value: Variant,
+	) -> ObservabilityValueVisitDecision:
+		if value is Dictionary or value is Array:
+			return ObservabilityValueVisitDecision.descend()
+		return ObservabilityValueVisitDecision.keep(value)
+
+	func visit_dictionary_key(
+			_path: PackedStringArray,
+			_key: Variant,
+	) -> ObservabilityValueVisitDecision:
+		return ObservabilityValueVisitDecision.keep(_replacement_key)
+
+
 class ConfigureCountingMemoryProvider extends \
 		"res://addons/FoundryObservability/MemoryObservabilityProvider.fs":
 	var configure_calls: int = 0
@@ -1577,6 +1625,17 @@ func test_stack_frame_capture_preserves_valid_repeat_after_unsupported_key() -> 
 	service.shutdown()
 
 
+func test_stack_frame_truncation_charges_unsupported_dictionary_entries() -> void:
+	var sanitized: Dictionary = ObservabilityStackFrame.new(
+		)._bounded_sanitized_variable_source(
+			{7: "unsupported key", "valid": "beyond budget"},
+			ObservabilityStackFrame.MAX_VARIABLE_CONTAINER_DEPTH,
+			1,
+		)
+
+	Expect.that(sanitized).to_equal({})
+
+
 func test_stack_frame_internal_sanitizer_omits_mutual_cycle_back_edge() -> void:
 	var cyclic_array: Array = []
 	var cyclic_dictionary: Dictionary = {"kept": "cycle value"}
@@ -2338,6 +2397,179 @@ func test_redaction_policy_keeps_null_rules_invalid_without_crashing() -> void:
 	Expect.that(copied.is_valid()).to_be_false()
 
 
+func test_redactor_returns_typed_event_result() -> void:
+	var policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["event", "attributes", "password"]),
+			),
+	])
+	var redactor := ObservabilityRedactor.new(policy)
+	var event := ObservabilityEvent.new(
+			p_kind = &"message",
+			p_attributes = {"password": "secret", "safe": true},
+		)
+
+	var result: ObservabilityRedactionResult[ObservabilityEvent] = (
+			redactor.redact_event(event, ObservabilitySignal.EVENT)
+		)
+
+	Expect.that(result.valid()).to_be_true()
+	Expect.that(result.failed_rule_index()).to_equal(-1)
+	Expect.that(result.value().attributes()).to_equal({"safe": true})
+
+
+func test_shared_value_walker_rejects_cycles_without_aliasing() -> void:
+	var cyclic: Dictionary = {}
+	cyclic["self"] = cyclic
+	var policy := RejectingStructuredValuePolicy.new()
+	var walker := ObservabilityValueWalker.new(8, 32)
+
+	var result := walker.walk(cyclic, policy)
+
+	Expect.that(result.valid()).to_be_false()
+	Expect.that(result.value()).to_equal(null)
+
+
+func test_shared_value_walker_rebuilds_equal_siblings_as_isolated_values() -> void:
+	var shared: Dictionary = {"values": [1, 2]}
+	var source: Dictionary = {"first": shared, "second": shared}
+	var result: ObservabilityRedactionResult[Variant] = (
+			ObservabilityValueWalker.new(8, 32).walk(
+				source,
+				RejectingStructuredValuePolicy.new(),
+			)
+		)
+
+	Expect.that(result.valid()).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var rebuilt: Dictionary = result.value() as Dictionary
+	@warning_ignore("unsafe_cast")
+	var rebuilt_first: Dictionary = rebuilt["first"] as Dictionary
+	@warning_ignore("unsafe_cast")
+	var rebuilt_values: Array = rebuilt_first["values"] as Array
+	rebuilt_values.append(3)
+	Expect.that(rebuilt["second"]).to_equal({"values": [1, 2]})
+	Expect.that(source).to_equal({
+		"first": {"values": [1, 2]},
+		"second": {"values": [1, 2]},
+	})
+
+
+func test_shared_value_walker_rejects_keep_for_container_values() -> void:
+	var source: Dictionary = {"nested": {"value": 1}}
+	var result: ObservabilityRedactionResult[Variant] = (
+			ObservabilityValueWalker.new(8, 32).walk(
+				source,
+				KeepingContainerValuePolicy.new(),
+			)
+		)
+
+	Expect.that(result.valid()).to_be_false()
+	Expect.that(result.value()).to_be_null()
+	Expect.that(result.failed_rule_index()).to_equal(-1)
+	Expect.that(source).to_equal({"nested": {"value": 1}})
+
+
+func test_shared_value_walker_rejects_keep_for_container_dictionary_keys() -> void:
+	var source: Dictionary = {"safe": "value"}
+	var replacement_key: Dictionary = {"aliased": true}
+	var result: ObservabilityRedactionResult[Variant] = (
+			ObservabilityValueWalker.new(8, 32).walk(
+				source,
+				KeepingContainerDictionaryKeyPolicy.new(replacement_key),
+			)
+		)
+
+	Expect.that(result.valid()).to_be_false()
+	Expect.that(result.value()).to_be_null()
+	Expect.that(result.failed_rule_index()).to_equal(-1)
+	Expect.that(source).to_equal({"safe": "value"})
+	Expect.that(replacement_key).to_equal({"aliased": true})
+
+
+func test_redaction_rule_policy_preserves_unchanged_string_name_values() -> void:
+	var pattern: RegEx = RegEx.new()
+	Expect.that(pattern.compile("secret")).to_equal(Error.OK)
+	var rule: ObservabilityRedactionRule = ObservabilityRedactionRule.replace_text(
+			PackedStringArray(["value"]),
+			"secret",
+			"masked",
+		)
+	var policy: ObservabilityValuePolicy = (
+			ObservabilityRedactor.RedactionRulePolicy.new(
+				rule,
+				rule.path(),
+				pattern,
+				0,
+			)
+		)
+	var result: ObservabilityRedactionResult[Variant] = (
+			ObservabilityValueWalker.new(8, 32).walk(
+				{"value": &"safe"},
+				policy,
+			)
+		)
+
+	Expect.that(result.valid()).to_be_true()
+	@warning_ignore("unsafe_cast")
+	var rebuilt: Dictionary = result.value() as Dictionary
+	Expect.that(rebuilt["value"]).to_equal(&"safe")
+	Expect.that(typeof(rebuilt["value"])).to_equal(TYPE_STRING_NAME)
+
+
+func test_walker_backed_redactor_handles_nested_replace_remove_and_reject() -> void:
+	var source: Dictionary = {
+		"game": {
+			"profile": {
+				"secret": "raw",
+				"remove_me": "gone",
+				"items": ["cannot remove array members"],
+			},
+		},
+	}
+	var successful_policy := ObservabilityRedactionPolicy.new([
+		ObservabilityRedactionRule.replace_text(
+				PackedStringArray(["contexts", "game", "profile", "secret"]),
+				"",
+				"masked",
+			),
+		ObservabilityRedactionRule.remove_field(
+				PackedStringArray(["contexts", "game", "profile", "remove_me"]),
+			),
+	])
+	var successful: ObservabilityRedactionResult[Dictionary] = (
+			ObservabilityRedactor.new(successful_policy).redact_contexts(source)
+		)
+
+	Expect.that(successful.valid()).to_be_true()
+	Expect.that(successful.value()).to_equal({
+		"game": {
+			"profile": {
+				"secret": "masked",
+				"items": ["cannot remove array members"],
+			},
+		},
+	})
+
+	var rejecting_rules: Array[ObservabilityRedactionRule] = (
+			successful_policy.rules()
+		)
+	rejecting_rules.append(ObservabilityRedactionRule.remove_field(
+			PackedStringArray([
+				"contexts", "game", "profile", "items", "0",
+			]),
+		))
+	var rejecting_policy := ObservabilityRedactionPolicy.new(rejecting_rules)
+	var rejected: ObservabilityRedactionResult[Dictionary] = (
+			ObservabilityRedactor.new(rejecting_policy).redact_contexts(source)
+		)
+
+	Expect.that(rejected.valid()).to_be_false()
+	Expect.that(rejected.failed_rule_index()).to_equal(2)
+	Expect.that(source["game"]["profile"]["secret"]).to_equal("raw")
+	Expect.that(source["game"]["profile"]["remove_me"]).to_equal("gone")
+
+
 func test_redactor_applies_recursive_keys_paths_and_text_patterns() -> void:
 	var source_attributes: Dictionary = {
 		"password": "secret",
@@ -2360,10 +2592,12 @@ func test_redactor_applies_recursive_keys_paths_and_text_patterns() -> void:
 			p_message = "customer 123-45-6789 and 987-65-4321",
 			p_attributes = source_attributes,
 		)
-	var result: Dictionary = redactor.redact_event(source, &"event")
+	var result: ObservabilityRedactionResult[ObservabilityEvent] = (
+			redactor.redact_event(source, ObservabilitySignal.EVENT)
+		)
 
-	Expect.that(result["valid"]).to_be_true()
-	var event: ObservabilityEvent = result["value"]
+	Expect.that(result.valid()).to_be_true()
+	var event: ObservabilityEvent = result.value()
 	Expect.that(event).to_not_equal(source)
 	Expect.that(event.message()).to_equal("customer [ssn] and [ssn]")
 	Expect.that(event.attributes()["password"]).to_equal("[REDACTED]")
@@ -2414,9 +2648,11 @@ func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
 			11,
 			scope,
 		)
-	var event_result: Dictionary = redactor.redact_event(source_event, &"log")
-	Expect.that(event_result["valid"]).to_be_true()
-	var event: ObservabilityEvent = event_result["value"]
+	var event_result: ObservabilityRedactionResult[ObservabilityEvent] = (
+			redactor.redact_event(source_event, ObservabilitySignal.LOG)
+		)
+	Expect.that(event_result.valid()).to_be_true()
+	var event: ObservabilityEvent = event_result.value()
 	Expect.that(event.kind()).to_equal(&"safe-kind")
 	Expect.that(event.message()).to_equal("safe event")
 	Expect.that(event.source()).to_equal(&"safe-source")
@@ -2441,41 +2677,44 @@ func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
 	Expect.that(frame.file()).to_equal("secret.fs")
 	Expect.that(scope.tags()).to_equal({"secret-tag": "secret"})
 
-	var metric_result: Dictionary = redactor.redact_metric(ObservabilityMetric.new(
+	var metric_result: ObservabilityRedactionResult[ObservabilityMetric] = (
+			redactor.redact_metric(ObservabilityMetric.new(
 			ObservabilityMetricType.GAUGE,
 			"secret.metric",
 			1.0,
 			"secret-unit",
 			{"token": "secret"},
-	))
-	Expect.that(metric_result["valid"]).to_be_true()
-	@warning_ignore("unsafe_cast")
-	var metric: ObservabilityMetric = metric_result["value"] as ObservabilityMetric
+		)))
+	Expect.that(metric_result.valid()).to_be_true()
+	var metric: ObservabilityMetric = metric_result.value()
 	Expect.that(metric.name()).to_equal("safe.metric")
 	Expect.that(metric.unit()).to_equal("safe-unit")
 	Expect.that(metric.attributes()["token"]).to_equal("safe")
 
 	var contexts_source := {"secret-context": {"token": "secret"}}
-	var contexts_result: Dictionary = redactor.redact_contexts(contexts_source)
-	Expect.that(contexts_result["valid"]).to_be_true()
-	Expect.that(contexts_result["value"]).to_equal({
+	var contexts_result: ObservabilityRedactionResult[Dictionary] = (
+			redactor.redact_contexts(contexts_source)
+		)
+	Expect.that(contexts_result.valid()).to_be_true()
+	Expect.that(contexts_result.value()).to_equal({
 			"secret-context": {"token": "safe"},
 		})
 	Expect.that(contexts_source).to_equal({"secret-context": {"token": "secret"}})
 
-	var user_result: Dictionary = redactor.redact_user(ObservabilityUser.new(
+	var user_result: ObservabilityRedactionResult[ObservabilityUser] = (
+			redactor.redact_user(ObservabilityUser.new(
 			"secret-id",
 			"secret-name",
 			"secret@example.invalid",
-	))
-	Expect.that(user_result["valid"]).to_be_true()
-	@warning_ignore("unsafe_cast")
-	var user: ObservabilityUser = user_result["value"] as ObservabilityUser
+		)))
+	Expect.that(user_result.valid()).to_be_true()
+	var user: ObservabilityUser = user_result.value()
 	Expect.that(user.application_user_id()).to_equal("safe-id")
 	Expect.that(user.display_name()).to_equal("safe-name")
 	Expect.that(user.contact_email()).to_equal("safe@example.invalid")
 
-	var breadcrumb_result: Dictionary = redactor.redact_breadcrumb(
+	var breadcrumb_result: ObservabilityRedactionResult[ObservabilityBreadcrumb] = (
+			redactor.redact_breadcrumb(
 			ObservabilityBreadcrumb.new(
 					"secret message",
 					ObservabilityLevel.INFO,
@@ -2485,11 +2724,9 @@ func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
 					&"secret-type",
 				),
 		)
-	Expect.that(breadcrumb_result["valid"]).to_be_true()
-	@warning_ignore("unsafe_cast")
-	var breadcrumb: ObservabilityBreadcrumb = (
-			breadcrumb_result["value"] as ObservabilityBreadcrumb
-		)
+	)
+	Expect.that(breadcrumb_result.valid()).to_be_true()
+	var breadcrumb: ObservabilityBreadcrumb = breadcrumb_result.value()
 	Expect.that(breadcrumb.message()).to_equal("safe message")
 	Expect.that(breadcrumb.category()).to_equal(&"safe.category")
 	Expect.that(breadcrumb.type()).to_equal(&"safe-type")
@@ -2500,12 +2737,11 @@ func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
 			"secret.log",
 			"secret/plain",
 		)
-	var attachment_result: Dictionary = redactor.redact_attachment(path_attachment)
-	Expect.that(attachment_result["valid"]).to_be_true()
-	@warning_ignore("unsafe_cast")
-	var rebuilt_path_attachment: ObservabilityAttachment = (
-			attachment_result["value"] as ObservabilityAttachment
+	var attachment_result: ObservabilityRedactionResult[ObservabilityAttachment] = (
+			redactor.redact_attachment(path_attachment)
 		)
+	Expect.that(attachment_result.valid()).to_be_true()
+	var rebuilt_path_attachment: ObservabilityAttachment = attachment_result.value()
 	Expect.that(rebuilt_path_attachment.path()).to_equal("user://private.log")
 	Expect.that(rebuilt_path_attachment.filename()).to_equal("safe.log")
 	Expect.that(rebuilt_path_attachment.content_type()).to_equal("safe/plain")
@@ -2517,13 +2753,12 @@ func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
 			"secret.bin",
 			"secret/binary",
 		)
-	var byte_result: Dictionary = redactor.redact_attachment(byte_attachment)
-	byte_source[0] = 9
-	Expect.that(byte_result["valid"]).to_be_true()
-	@warning_ignore("unsafe_cast")
-	var rebuilt_byte_attachment: ObservabilityAttachment = (
-			byte_result["value"] as ObservabilityAttachment
+	var byte_result: ObservabilityRedactionResult[ObservabilityAttachment] = (
+			redactor.redact_attachment(byte_attachment)
 		)
+	byte_source[0] = 9
+	Expect.that(byte_result.valid()).to_be_true()
+	var rebuilt_byte_attachment: ObservabilityAttachment = byte_result.value()
 	Expect.that(rebuilt_byte_attachment.bytes()).to_equal(PackedByteArray([1, 2, 3]))
 	Expect.that(rebuilt_byte_attachment.filename()).to_equal("safe.bin")
 
@@ -2534,27 +2769,31 @@ func test_redactor_rebuilds_every_provider_owned_value_type() -> void:
 		"category": "event.attachment",
 		"persistent": true,
 	}
-	var payload_result: Dictionary = redactor.redact_attachment_payload(payload_source)
-	Expect.that(payload_result["valid"]).to_be_true()
-	Expect.that(payload_result["value"]["path"]).to_equal("/tmp/secret-source.log")
-	Expect.that(payload_result["value"]["filename"]).to_equal("safe.log")
-	Expect.that(payload_result["value"]["content_type"]).to_equal("safe/plain")
-	Expect.that(payload_result["value"]["category"]).to_equal("event.attachment")
-	Expect.that(payload_result["value"]["persistent"]).to_be_true()
+	var payload_result: ObservabilityRedactionResult[Dictionary] = (
+			redactor.redact_attachment_payload(payload_source)
+		)
+	Expect.that(payload_result.valid()).to_be_true()
+	Expect.that(payload_result.value()["path"]).to_equal("/tmp/secret-source.log")
+	Expect.that(payload_result.value()["filename"]).to_equal("safe.log")
+	Expect.that(payload_result.value()["content_type"]).to_equal("safe/plain")
+	Expect.that(payload_result.value()["category"]).to_equal("event.attachment")
+	Expect.that(payload_result.value()["persistent"]).to_be_true()
 	Expect.that(payload_source["filename"]).to_equal("secret.log")
 
 	var payload_bytes := PackedByteArray([4, 5, 6])
-	var byte_payload_result: Dictionary = redactor.redact_attachment_payload({
-		"bytes": payload_bytes,
-		"filename": "secret.data",
-		"content_type": "secret/binary",
-		"category": "event.view_hierarchy",
-	})
+	var byte_payload_result: ObservabilityRedactionResult[Dictionary] = (
+			redactor.redact_attachment_payload({
+				"bytes": payload_bytes,
+				"filename": "secret.data",
+				"content_type": "secret/binary",
+				"category": "event.view_hierarchy",
+			})
+		)
 	payload_bytes[0] = 9
-	Expect.that(byte_payload_result["valid"]).to_be_true()
-	Expect.that(byte_payload_result["value"]["bytes"]).to_equal(
+	Expect.that(byte_payload_result.valid()).to_be_true()
+	Expect.that(byte_payload_result.value()["bytes"]).to_equal(
 			PackedByteArray([4, 5, 6]))
-	Expect.that(byte_payload_result["value"]["filename"]).to_equal("safe.data")
+	Expect.that(byte_payload_result.value()["filename"]).to_equal("safe.data")
 
 
 func test_redactor_wildcards_are_case_insensitive_and_preserve_input() -> void:
@@ -2577,11 +2816,12 @@ func test_redactor_wildcards_are_case_insensitive_and_preserve_input() -> void:
 			"secret",
 			{"nested": ["secret", {"token": "secret"}]},
 		)
-	var result: Dictionary = ObservabilityRedactor.new(policy).redact_metric(source)
+	var result: ObservabilityRedactionResult[ObservabilityMetric] = (
+			ObservabilityRedactor.new(policy).redact_metric(source)
+		)
 
-	Expect.that(result["valid"]).to_be_true()
-	@warning_ignore("unsafe_cast")
-	var rebuilt: ObservabilityMetric = result["value"] as ObservabilityMetric
+	Expect.that(result.valid()).to_be_true()
+	var rebuilt: ObservabilityMetric = result.value()
 	Expect.that(rebuilt.name()).to_equal("safe")
 	Expect.that(rebuilt.unit()).to_equal("safe")
 	Expect.that(rebuilt.attributes()).to_equal({
@@ -2610,15 +2850,15 @@ func test_redactor_child_rules_do_not_reapply_to_later_parent_replacements() -> 
 				{"token": "parent-replacement", "source": "parent"},
 			),
 	])
-	var replacement_result: Dictionary = ObservabilityRedactor.new(
-			replacement_policy,
-		).redact_contexts({
-			"profile": {
-				"credentials": {"token": "original", "source": "original"},
-			},
-		})
-	Expect.that(replacement_result["valid"]).to_be_true()
-	Expect.that(replacement_result["value"]["profile"]["credentials"]).to_equal({
+	var replacement_result: ObservabilityRedactionResult[Dictionary] = (
+			ObservabilityRedactor.new(replacement_policy).redact_contexts({
+				"profile": {
+					"credentials": {"token": "original", "source": "original"},
+				},
+			})
+		)
+	Expect.that(replacement_result.valid()).to_be_true()
+	Expect.that(replacement_result.value()["profile"]["credentials"]).to_equal({
 		"token": "parent-replacement",
 		"source": "parent",
 	})
@@ -2635,15 +2875,15 @@ func test_redactor_child_rules_do_not_reapply_to_later_parent_replacements() -> 
 				{"token": "restored-by-parent", "source": "parent"},
 			),
 	])
-	var removal_result: Dictionary = ObservabilityRedactor.new(
-			removal_policy,
-		).redact_contexts({
-			"profile": {
-				"credentials": {"token": "original", "source": "original"},
-			},
-		})
-	Expect.that(removal_result["valid"]).to_be_true()
-	Expect.that(removal_result["value"]["profile"]["credentials"]).to_equal({
+	var removal_result: ObservabilityRedactionResult[Dictionary] = (
+			ObservabilityRedactor.new(removal_policy).redact_contexts({
+				"profile": {
+					"credentials": {"token": "original", "source": "original"},
+				},
+			})
+		)
+	Expect.that(removal_result.valid()).to_be_true()
+	Expect.that(removal_result.value()["profile"]["credentials"]).to_equal({
 		"token": "restored-by-parent",
 		"source": "parent",
 	})
@@ -2666,15 +2906,15 @@ func test_redactor_later_child_rules_see_earlier_parent_replacements() -> void:
 				"child-after-parent",
 			),
 	])
-	var replacement_result: Dictionary = ObservabilityRedactor.new(
-			replacement_policy,
-		).redact_contexts({
-			"profile": {
-				"credentials": {"token": "original", "source": "original"},
-			},
-		})
-	Expect.that(replacement_result["valid"]).to_be_true()
-	Expect.that(replacement_result["value"]["profile"]["credentials"]).to_equal({
+	var replacement_result: ObservabilityRedactionResult[Dictionary] = (
+			ObservabilityRedactor.new(replacement_policy).redact_contexts({
+				"profile": {
+					"credentials": {"token": "original", "source": "original"},
+				},
+			})
+		)
+	Expect.that(replacement_result.valid()).to_be_true()
+	Expect.that(replacement_result.value()["profile"]["credentials"]).to_equal({
 		"token": "child-after-parent",
 		"source": "parent",
 	})
@@ -2691,15 +2931,15 @@ func test_redactor_later_child_rules_see_earlier_parent_replacements() -> void:
 			"token",
 		])),
 	])
-	var removal_result: Dictionary = ObservabilityRedactor.new(
-			removal_policy,
-		).redact_contexts({
-			"profile": {
-				"credentials": {"token": "original", "source": "original"},
-			},
-		})
-	Expect.that(removal_result["valid"]).to_be_true()
-	Expect.that(removal_result["value"]["profile"]["credentials"]).to_equal({
+	var removal_result: ObservabilityRedactionResult[Dictionary] = (
+			ObservabilityRedactor.new(removal_policy).redact_contexts({
+				"profile": {
+					"credentials": {"token": "original", "source": "original"},
+				},
+			})
+		)
+	Expect.that(removal_result.valid()).to_be_true()
+	Expect.that(removal_result.value()["profile"]["credentials"]).to_equal({
 		"source": "parent",
 	})
 
@@ -2715,26 +2955,32 @@ func test_redactor_fails_closed_without_returning_sensitive_payloads() -> void:
 			p_message = "do-not-leak-this-message",
 			p_attributes = {"token": "do-not-leak-this-token"},
 		)
-	var result: Dictionary = ObservabilityRedactor.new(incompatible).redact_event(
-			source,
-			&"event",
+	var result: ObservabilityRedactionResult[ObservabilityEvent] = (
+			ObservabilityRedactor.new(incompatible).redact_event(
+				source,
+				ObservabilitySignal.EVENT,
+			)
 		)
-	Expect.that(result).to_equal({"valid": false, "rule_index": 0})
+	Expect.that(result.valid()).to_be_false()
+	Expect.that(result.failed_rule_index()).to_equal(0)
+	Expect.that(result.value()).to_be_null()
 	Expect.that(source.message()).to_equal("do-not-leak-this-message")
 
 	var malformed_rules: Array[ObservabilityRedactionRule] = [null]
 	var malformed := ObservabilityRedactor.new(
 			ObservabilityRedactionPolicy.new(malformed_rules),
-		).redact_event(source, &"event")
-	Expect.that(malformed).to_equal({"valid": false, "rule_index": 0})
+		).redact_event(source, ObservabilitySignal.EVENT)
+	Expect.that(malformed.valid()).to_be_false()
+	Expect.that(malformed.failed_rule_index()).to_equal(0)
 
-	var no_policy: Dictionary = ObservabilityRedactor.new(null).redact_event(
-			source,
-			&"event",
+	var no_policy: ObservabilityRedactionResult[ObservabilityEvent] = (
+			ObservabilityRedactor.new(null).redact_event(
+				source,
+				ObservabilitySignal.EVENT,
+			)
 		)
-	Expect.that(no_policy["valid"]).to_be_true()
-	@warning_ignore("unsafe_cast")
-	var isolated: ObservabilityEvent = no_policy["value"] as ObservabilityEvent
+	Expect.that(no_policy.valid()).to_be_true()
+	var isolated: ObservabilityEvent = no_policy.value()
 	Expect.that(isolated).to_not_equal(source)
 	Expect.that(isolated.message()).to_equal("do-not-leak-this-message")
 
@@ -2745,16 +2991,16 @@ func test_redactor_remove_field_only_removes_dictionary_children() -> void:
 				PackedStringArray(["event", "attributes", "delete_me"]),
 			),
 	])
-	var attribute_result: Dictionary = ObservabilityRedactor.new(
-			attribute_policy,
-	).redact_event(ObservabilityEvent.new(
-			p_attributes = {"delete_me": "secret", "keep": "safe"},
-		), &"event")
-	Expect.that(attribute_result["valid"]).to_be_true()
-	@warning_ignore("unsafe_cast")
-	var rebuilt: ObservabilityEvent = (
-			attribute_result["value"] as ObservabilityEvent
+	var attribute_result: ObservabilityRedactionResult[ObservabilityEvent] = (
+			ObservabilityRedactor.new(attribute_policy).redact_event(
+				ObservabilityEvent.new(
+					p_attributes = {"delete_me": "secret", "keep": "safe"},
+				),
+				ObservabilitySignal.EVENT,
+			)
 		)
+	Expect.that(attribute_result.valid()).to_be_true()
+	var rebuilt: ObservabilityEvent = attribute_result.value()
 	Expect.that(rebuilt.attributes()).to_equal({"keep": "safe"})
 
 	for path: PackedStringArray in [
@@ -2765,14 +3011,17 @@ func test_redactor_remove_field_only_removes_dictionary_children() -> void:
 		var policy := ObservabilityRedactionPolicy.new([
 			ObservabilityRedactionRule.remove_field(path),
 		])
-		var result: Dictionary = ObservabilityRedactor.new(policy).redact_event(
+		var result: ObservabilityRedactionResult[ObservabilityEvent] = (
+				ObservabilityRedactor.new(policy).redact_event(
 				ObservabilityEvent.new(
 						p_message = "sensitive-message",
 						p_attributes = {"items": ["sensitive-item"]},
 					),
-				&"event",
+				ObservabilitySignal.EVENT,
 			)
-		Expect.that(result).to_equal({"valid": false, "rule_index": 0})
+		)
+		Expect.that(result.valid()).to_be_false()
+		Expect.that(result.failed_rule_index()).to_equal(0)
 
 	var ordered_policy := ObservabilityRedactionPolicy.new([
 		ObservabilityRedactionRule.replace_text(
@@ -2784,66 +3033,83 @@ func test_redactor_remove_field_only_removes_dictionary_children() -> void:
 				PackedStringArray(["event", "message"]),
 			),
 	])
-	var ordered_result: Dictionary = ObservabilityRedactor.new(
-			ordered_policy,
-		).redact_event(ObservabilityEvent.new(
-			p_message = "sensitive-message",
-		), &"event")
-	Expect.that(ordered_result).to_equal({"valid": false, "rule_index": 1})
+	var ordered_result: ObservabilityRedactionResult[ObservabilityEvent] = (
+			ObservabilityRedactor.new(ordered_policy).redact_event(
+				ObservabilityEvent.new(p_message = "sensitive-message"),
+				ObservabilitySignal.EVENT,
+			)
+		)
+	Expect.that(ordered_result.valid()).to_be_false()
+	Expect.that(ordered_result.failed_rule_index()).to_equal(1)
 
 
 func test_redactor_rejects_cyclic_contexts_without_retaining_payloads() -> void:
 	var self_cycle: Dictionary = {}
 	self_cycle["self"] = self_cycle
-	var self_result: Dictionary = ObservabilityRedactor.new().redact_contexts({
-		"cycle": self_cycle,
-	})
-	Expect.that(self_result).to_equal({"valid": false, "rule_index": -1})
+	var self_result: ObservabilityRedactionResult[Dictionary] = (
+			ObservabilityRedactor.new().redact_contexts({"cycle": self_cycle})
+		)
+	Expect.that(self_result.valid()).to_be_false()
+	Expect.that(self_result.failed_rule_index()).to_equal(-1)
 	var replacement_policy := ObservabilityRedactionPolicy.new([
 		ObservabilityRedactionRule.replace_value(
 				PackedStringArray(["contexts", "cycle"]),
 				{"replacement": "safe"},
 			),
 	])
-	var concealed_result: Dictionary = ObservabilityRedactor.new(
-			replacement_policy,
-		).redact_contexts({"cycle": self_cycle})
-	Expect.that(concealed_result).to_equal({"valid": false, "rule_index": -1})
+	var concealed_result: ObservabilityRedactionResult[Dictionary] = (
+			ObservabilityRedactor.new(replacement_policy).redact_contexts({
+				"cycle": self_cycle,
+			})
+		)
+	Expect.that(concealed_result.valid()).to_be_false()
+	Expect.that(concealed_result.failed_rule_index()).to_equal(-1)
 
 	var mutual_array: Array = []
 	var mutual_dictionary: Dictionary = {"array": mutual_array}
 	mutual_array.append(mutual_dictionary)
-	var mutual_result: Dictionary = ObservabilityRedactor.new().redact_contexts({
-		"cycle": mutual_dictionary,
-	})
-	Expect.that(mutual_result).to_equal({"valid": false, "rule_index": -1})
+	var mutual_result: ObservabilityRedactionResult[Dictionary] = (
+			ObservabilityRedactor.new().redact_contexts({
+				"cycle": mutual_dictionary,
+			})
+		)
+	Expect.that(mutual_result.valid()).to_be_false()
+	Expect.that(mutual_result.failed_rule_index()).to_equal(-1)
 
 
 func test_redactor_bounds_container_depth_and_visited_items_per_call() -> void:
 	var deep: Dictionary = {"value": "kept"}
 	for _index: int in range(70):
 		deep = {"child": deep}
-	var deep_result: Dictionary = ObservabilityRedactor.new().redact_event(
-			ObservabilityEvent.new(p_attributes = deep),
-			&"event",
+	var deep_result: ObservabilityRedactionResult[ObservabilityEvent] = (
+			ObservabilityRedactor.new().redact_event(
+				ObservabilityEvent.new(p_attributes = deep),
+				ObservabilitySignal.EVENT,
+			)
 		)
-	Expect.that(deep_result).to_equal({"valid": false, "rule_index": -1})
+	Expect.that(deep_result.valid()).to_be_false()
+	Expect.that(deep_result.failed_rule_index()).to_equal(-1)
 
 	var flooded: Array = []
 	for index: int in range(10_010):
 		flooded.append(index)
 	var redactor := ObservabilityRedactor.new()
-	var flooded_result: Dictionary = redactor.redact_event(
-			ObservabilityEvent.new(p_attributes = {"items": flooded}),
-			&"event",
+	var flooded_result: ObservabilityRedactionResult[ObservabilityEvent] = (
+			redactor.redact_event(
+				ObservabilityEvent.new(p_attributes = {"items": flooded}),
+				ObservabilitySignal.EVENT,
+			)
 		)
-	Expect.that(flooded_result).to_equal({"valid": false, "rule_index": -1})
+	Expect.that(flooded_result.valid()).to_be_false()
+	Expect.that(flooded_result.failed_rule_index()).to_equal(-1)
 
-	var recovery_result: Dictionary = redactor.redact_event(
-			ObservabilityEvent.new(p_attributes = {"value": "kept"}),
-			&"event",
+	var recovery_result: ObservabilityRedactionResult[ObservabilityEvent] = (
+			redactor.redact_event(
+				ObservabilityEvent.new(p_attributes = {"value": "kept"}),
+				ObservabilitySignal.EVENT,
+			)
 		)
-	Expect.that(recovery_result["valid"]).to_be_true()
+	Expect.that(recovery_result.valid()).to_be_true()
 
 
 func test_redactor_allows_repeated_acyclic_context_containers() -> void:
@@ -2856,10 +3122,12 @@ func test_redactor_allows_repeated_acyclic_context_containers() -> void:
 				"safe",
 			),
 	])
-	var result: Dictionary = ObservabilityRedactor.new(policy).redact_contexts(source)
+	var result: ObservabilityRedactionResult[Dictionary] = (
+			ObservabilityRedactor.new(policy).redact_contexts(source)
+		)
 
-	Expect.that(result["valid"]).to_be_true()
-	Expect.that(result["value"]).to_equal({
+	Expect.that(result.valid()).to_be_true()
+	Expect.that(result.value()).to_equal({
 		"first": {"value": "safe"},
 		"second": {"value": "safe"},
 	})
@@ -2894,48 +3162,53 @@ func test_redactor_attachment_payload_matches_native_mapper_contract() -> void:
 		},
 	]
 	for payload: Dictionary in invalid_payloads:
-		Expect.that(redactor.redact_attachment_payload(payload)).to_equal({
-			"valid": false,
-			"rule_index": -1,
+		var invalid_result: ObservabilityRedactionResult[Dictionary] = (
+				redactor.redact_attachment_payload(payload)
+			)
+		Expect.that(invalid_result.valid()).to_be_false()
+		Expect.that(invalid_result.failed_rule_index()).to_equal(-1)
+
+	var path_result: ObservabilityRedactionResult[Dictionary] = (
+			redactor.redact_attachment_payload({
+				"filename": "path.log",
+				"category": "event.attachment",
+				"path": "/tmp/path.log",
+			})
+		)
+	Expect.that(path_result.valid()).to_be_true()
+	Expect.that(path_result.value()).to_equal({
+		"filename": "path.log",
+		"category": "event.attachment",
+		"path": "/tmp/path.log",
+	})
+
+	var empty_bytes_result: ObservabilityRedactionResult[Dictionary] = (
+			redactor.redact_attachment_payload({
+			"filename": "empty.bin",
+			"category": "event.attachment",
+			"bytes": PackedByteArray(),
 		})
-
-	var path_result: Dictionary = redactor.redact_attachment_payload({
-		"filename": "path.log",
-		"category": "event.attachment",
-		"path": "/tmp/path.log",
-	})
-	Expect.that(path_result["valid"]).to_be_true()
-	Expect.that(path_result["value"]).to_equal({
-		"filename": "path.log",
-		"category": "event.attachment",
-		"path": "/tmp/path.log",
-	})
-
-	var empty_bytes_result: Dictionary = redactor.redact_attachment_payload({
+		)
+	Expect.that(empty_bytes_result.valid()).to_be_true()
+	Expect.that(empty_bytes_result.value()).to_equal({
 		"filename": "empty.bin",
 		"category": "event.attachment",
 		"bytes": PackedByteArray(),
 	})
-	Expect.that(empty_bytes_result).to_equal({
-		"valid": true,
-		"value": {
-			"filename": "empty.bin",
-			"category": "event.attachment",
-			"bytes": PackedByteArray(),
-		},
-	})
 
 	var source_bytes := PackedByteArray([1, 2, 3])
-	var bytes_result: Dictionary = redactor.redact_attachment_payload({
-		"filename": "view.json",
-		"content_type": "",
-		"category": "event.view_hierarchy",
-		"bytes": source_bytes,
-	})
+	var bytes_result: ObservabilityRedactionResult[Dictionary] = (
+			redactor.redact_attachment_payload({
+				"filename": "view.json",
+				"content_type": "",
+				"category": "event.view_hierarchy",
+				"bytes": source_bytes,
+			})
+		)
 	source_bytes[0] = 9
-	Expect.that(bytes_result["valid"]).to_be_true()
-	Expect.that(bytes_result["value"]["bytes"]).to_equal(PackedByteArray([1, 2, 3]))
-	Expect.that(bytes_result["value"]["content_type"]).to_equal("")
+	Expect.that(bytes_result.valid()).to_be_true()
+	Expect.that(bytes_result.value()["bytes"]).to_equal(PackedByteArray([1, 2, 3]))
+	Expect.that(bytes_result.value()["content_type"]).to_equal("")
 
 
 func test_redactor_reports_latest_effective_rule_for_invalid_metadata() -> void:
@@ -2956,18 +3229,19 @@ func test_redactor_reports_latest_effective_rule_for_invalid_metadata() -> void:
 		"category": "event.attachment",
 		"path": "/tmp/safe.log",
 	}
-	var result: Dictionary = ObservabilityRedactor.new(
+	var result: ObservabilityRedactionResult[Dictionary] = ObservabilityRedactor.new(
 			policy,
 		).redact_attachment_payload(source)
 
-	Expect.that(result).to_equal({"valid": false, "rule_index": 1})
+	Expect.that(result.valid()).to_be_false()
+	Expect.that(result.failed_rule_index()).to_equal(1)
 	Expect.that(source["category"]).to_equal("event.attachment")
 
-	var no_op_result: Dictionary = ObservabilityRedactor.new(
+	var no_op_result: ObservabilityRedactionResult[Dictionary] = ObservabilityRedactor.new(
 			ObservabilityRedactionPolicy.new([policy.rules()[0]]),
 		).redact_attachment_payload(source)
-	Expect.that(no_op_result["valid"]).to_be_true()
-	Expect.that(no_op_result["value"]["filename"]).to_equal("safe.log")
+	Expect.that(no_op_result.valid()).to_be_true()
+	Expect.that(no_op_result.value()["filename"]).to_equal("safe.log")
 
 	var mixed_policy := ObservabilityRedactionPolicy.new([
 		ObservabilityRedactionRule.remove_field(
@@ -2978,20 +3252,22 @@ func test_redactor_reports_latest_effective_rule_for_invalid_metadata() -> void:
 				"invalid",
 			),
 	])
-	var mixed_result: Dictionary = ObservabilityRedactor.new(
+	var mixed_result: ObservabilityRedactionResult[Dictionary] = ObservabilityRedactor.new(
 			mixed_policy,
 		).redact_attachment_payload(source)
-	Expect.that(mixed_result).to_equal({"valid": false, "rule_index": 1})
+	Expect.that(mixed_result.valid()).to_be_false()
+	Expect.that(mixed_result.failed_rule_index()).to_equal(1)
 
 	var removal_only_policy := ObservabilityRedactionPolicy.new([
 		ObservabilityRedactionRule.remove_field(
 				PackedStringArray(["attachments", "filename"]),
 			),
 	])
-	var removal_only_result: Dictionary = ObservabilityRedactor.new(
+	var removal_only_result: ObservabilityRedactionResult[Dictionary] = ObservabilityRedactor.new(
 			removal_only_policy,
 		).redact_attachment_payload(source)
-	Expect.that(removal_only_result).to_equal({"valid": false, "rule_index": 0})
+	Expect.that(removal_only_result.valid()).to_be_false()
+	Expect.that(removal_only_result.failed_rule_index()).to_equal(0)
 
 
 func test_redactor_fails_closed_on_adversarial_rule_paths() -> void:
@@ -3006,7 +3282,7 @@ func test_redactor_fails_closed_on_adversarial_rule_paths() -> void:
 				"changed",
 			),
 	])
-	var result: Dictionary = ObservabilityRedactor.new(
+	var result: ObservabilityRedactionResult[Dictionary] = ObservabilityRedactor.new(
 			policy,
 		).redact_attachment_payload({
 			"filename": "safe.log",
@@ -3014,7 +3290,8 @@ func test_redactor_fails_closed_on_adversarial_rule_paths() -> void:
 			"path": "/tmp/safe.log",
 		})
 
-	Expect.that(result).to_equal({"valid": false, "rule_index": 0})
+	Expect.that(result.valid()).to_be_false()
+	Expect.that(result.failed_rule_index()).to_equal(0)
 
 
 func test_processing_diagnostic_preserves_payload_free_fields() -> void:

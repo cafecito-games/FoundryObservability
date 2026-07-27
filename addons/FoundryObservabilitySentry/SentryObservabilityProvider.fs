@@ -1,6 +1,7 @@
 namespace foundry.observability.sentry
 
 import foundry.observability
+import foundry.observability.processing
 
 ## FoundryScript adapter for the optional cross-platform Sentry native bridge.
 class_name SentryObservabilityProvider
@@ -146,25 +147,23 @@ func configure(config: ObservabilityConfig) -> int:
 				config.environment(),
 				send_default_pii,
 			)
-		var stable_result: Dictionary = candidate_redactor.redact_contexts(
-				candidate_stable_contexts,
+		var stable_result: ObservabilityRedactionResult[Dictionary] = (
+				candidate_redactor.redact_contexts(
+					candidate_stable_contexts,
+				)
 			)
-		if not stable_result.get("valid", false) \
-				or not (stable_result.get("value") is Dictionary):
+		if not stable_result.valid():
 			return Error.ERR_INVALID_DATA
-		@warning_ignore("unsafe_cast")
-		candidate_stable_contexts = stable_result["value"] as Dictionary
+		candidate_stable_contexts = stable_result.value()
 	var candidate_global_attributes: Dictionary = {}
-	var global_attributes_result: Dictionary = candidate_redactor.redact_contexts({
-		"global_attributes": config.global_attributes(),
-	})
-	if not global_attributes_result.get("valid", false) \
-			or not (global_attributes_result.get("value") is Dictionary):
-		return Error.ERR_INVALID_DATA
-	@warning_ignore("unsafe_cast")
-	var candidate_contexts: Dictionary = (
-			global_attributes_result["value"] as Dictionary
+	var global_attributes_result: ObservabilityRedactionResult[Dictionary] = (
+			candidate_redactor.redact_contexts({
+				"global_attributes": config.global_attributes(),
+			})
 		)
+	if not global_attributes_result.valid():
+		return Error.ERR_INVALID_DATA
+	var candidate_contexts: Dictionary = global_attributes_result.value()
 	if not candidate_contexts.has("global_attributes") \
 			or not (candidate_contexts["global_attributes"] is Dictionary):
 		return Error.ERR_INVALID_DATA
@@ -216,19 +215,15 @@ func configure(config: ObservabilityConfig) -> int:
 			if attachment.get("persistent", false) == true:
 				var persistent: Dictionary = attachment.duplicate(true)
 				persistent.erase("persistent")
-				var redacted_attachment: Dictionary = (
+				var redacted_attachment: ObservabilityRedactionResult[Dictionary] = (
 						candidate_redactor.redact_attachment_payload(persistent)
 					)
-				if not redacted_attachment.get("valid", false) \
-						or not (redacted_attachment.get("value") is Dictionary):
+				if not redacted_attachment.valid():
 					candidate_persistent_failures.append(
 							_redacted_attachment_failure(attachment),
 						)
 					continue
-				@warning_ignore("unsafe_cast")
-				candidate_persistent_builtins.append(
-						redacted_attachment["value"] as Dictionary,
-					)
+				candidate_persistent_builtins.append(redacted_attachment.value())
 	var candidate_matches_committed_config: bool = (
 			_has_last_config_payload
 			and _config_payloads_are_equivalent(candidate_config_payload)
@@ -350,14 +345,14 @@ func capture(event: ObservabilityEvent) -> String:
 			"engine_ticks_msec": event.engine_ticks_msec(),
 			"attributes": event.attributes(),
 		}
-	var volatile_result: Dictionary = _redactor.redact_contexts(
-			_context_collector.volatile_contexts(),
+	var volatile_result: ObservabilityRedactionResult[Dictionary] = (
+			_redactor.redact_contexts(
+				_context_collector.volatile_contexts(),
+			)
 		)
-	if not volatile_result.get("valid", false) \
-			or not (volatile_result.get("value") is Dictionary):
+	if not volatile_result.valid():
 		return ""
-	@warning_ignore("unsafe_cast")
-	var redacted_volatile: Dictionary = volatile_result["value"] as Dictionary
+	var redacted_volatile: Dictionary = volatile_result.value()
 	var redacted_contexts: Dictionary = _context_collector.merge_contexts(
 			_stable_contexts,
 			redacted_volatile,
@@ -770,19 +765,17 @@ func _capture_local_attachments(event: ObservabilityEvent) -> Array:
 	for payload: Dictionary in built_ins["attachments"]:
 		var candidate_payload: Dictionary = payload.duplicate(true)
 		candidate_payload.erase("persistent")
-		var redacted_payload: Dictionary = _redactor.redact_attachment_payload(
-				candidate_payload,
+		var redacted_payload: ObservabilityRedactionResult[Dictionary] = (
+				_redactor.redact_attachment_payload(candidate_payload)
 			)
-		if not redacted_payload.get("valid", false) \
-				or not (redacted_payload.get("value") is Dictionary):
+		if not redacted_payload.valid():
 			_append_attachment_failure_once(
 					_redacted_attachment_failure(payload),
 				)
 			continue
 		if payload.get("persistent", false) == true:
 			continue
-		@warning_ignore("unsafe_cast")
-		var capture_payload: Dictionary = redacted_payload["value"] as Dictionary
+		var capture_payload: Dictionary = redacted_payload.value()
 		local.append(capture_payload)
 	return local
 

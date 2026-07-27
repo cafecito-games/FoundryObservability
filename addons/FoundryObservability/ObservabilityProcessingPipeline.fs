@@ -216,13 +216,21 @@ func _process_event_signal(event: ObservabilityEvent, p_signal: StringName) -> D
 
 	@warning_ignore("unsafe_cast")
 	var redactor: ObservabilityRedactor = snapshot["redactor"] as ObservabilityRedactor
-	var redacted: Dictionary = redactor.redact_event(event, p_signal)
-	if not redacted["valid"]:
-		return _finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
-	if not (redacted["value"] is ObservabilityEvent):
-		return _finish_invalid_payload(snapshot, p_signal)
-	@warning_ignore("unsafe_cast")
-	var current: ObservabilityEvent = redacted["value"] as ObservabilityEvent
+	var signal_type: ObservabilitySignal = (
+			ObservabilitySignal.LOG
+			if p_signal == ObservabilityProcessingDiagnostic.LOG
+			else ObservabilitySignal.EVENT
+		)
+	var redacted: ObservabilityRedactionResult[ObservabilityEvent] = (
+			redactor.redact_event(event, signal_type)
+		)
+	if not redacted.valid():
+		return _finish_redaction_failure(
+				snapshot,
+				p_signal,
+				redacted.failed_rule_index(),
+			)
+	var current: ObservabilityEvent = redacted.value()
 	if not _valid_event(current, p_signal):
 		return _finish_invalid_payload(snapshot, p_signal)
 
@@ -242,13 +250,14 @@ func _process_event_signal(event: ObservabilityEvent, p_signal: StringName) -> D
 		if not _valid_event(current, p_signal):
 			return _finish_invalid_processor(snapshot, p_signal, index)
 
-	redacted = redactor.redact_event(current, p_signal)
-	if not redacted["valid"]:
-		return _finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
-	if not (redacted["value"] is ObservabilityEvent):
-		return _finish_invalid_payload(snapshot, p_signal)
-	@warning_ignore("unsafe_cast")
-	current = redacted["value"] as ObservabilityEvent
+	redacted = redactor.redact_event(current, signal_type)
+	if not redacted.valid():
+		return _finish_redaction_failure(
+				snapshot,
+				p_signal,
+				redacted.failed_rule_index(),
+			)
+	current = redacted.value()
 	if not _valid_event(current, p_signal):
 		return _finish_invalid_payload(snapshot, p_signal)
 
@@ -270,13 +279,16 @@ func _process_metric_signal(metric: ObservabilityMetric) -> Dictionary:
 
 	@warning_ignore("unsafe_cast")
 	var redactor: ObservabilityRedactor = snapshot["redactor"] as ObservabilityRedactor
-	var redacted: Dictionary = redactor.redact_metric(metric)
-	if not redacted["valid"]:
-		return _finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
-	if not (redacted["value"] is ObservabilityMetric):
-		return _finish_invalid_payload(snapshot, p_signal)
-	@warning_ignore("unsafe_cast")
-	var current: ObservabilityMetric = redacted["value"] as ObservabilityMetric
+	var redacted: ObservabilityRedactionResult[ObservabilityMetric] = (
+			redactor.redact_metric(metric)
+		)
+	if not redacted.valid():
+		return _finish_redaction_failure(
+				snapshot,
+				p_signal,
+				redacted.failed_rule_index(),
+			)
+	var current: ObservabilityMetric = redacted.value()
 	if not _valid_metric(current):
 		return _finish_invalid_payload(snapshot, p_signal)
 
@@ -309,12 +321,13 @@ func _process_metric_signal(metric: ObservabilityMetric) -> Dictionary:
 			return _finish_invalid_processor(snapshot, p_signal, index)
 
 	redacted = redactor.redact_metric(current)
-	if not redacted["valid"]:
-		return _finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
-	if not (redacted["value"] is ObservabilityMetric):
-		return _finish_invalid_payload(snapshot, p_signal)
-	@warning_ignore("unsafe_cast")
-	current = redacted["value"] as ObservabilityMetric
+	if not redacted.valid():
+		return _finish_redaction_failure(
+				snapshot,
+				p_signal,
+				redacted.failed_rule_index(),
+			)
+	current = redacted.value()
 	if not _valid_metric(current):
 		return _finish_invalid_payload(snapshot, p_signal)
 
@@ -334,39 +347,59 @@ func _redact_state_value(kind: StringName, value: Variant) -> Dictionary:
 			)
 	@warning_ignore("unsafe_cast")
 	var redactor: ObservabilityRedactor = snapshot["redactor"] as ObservabilityRedactor
-	var redacted: Dictionary = {}
 	match kind:
 		&"contexts":
 			if not (value is Dictionary):
 				return _finish_state_invalid(snapshot)
 			@warning_ignore("unsafe_call_argument")
-			redacted = redactor.redact_contexts(value)
+			return _finish_state_redaction[Dictionary](
+					snapshot,
+					redactor.redact_contexts(value),
+				)
 		&"user":
 			if not (value is ObservabilityUser):
 				return _finish_state_invalid(snapshot)
 			@warning_ignore("unsafe_call_argument")
-			redacted = redactor.redact_user(value)
+			return _finish_state_redaction[ObservabilityUser](
+					snapshot,
+					redactor.redact_user(value),
+				)
 		&"breadcrumb":
 			if not (value is ObservabilityBreadcrumb):
 				return _finish_state_invalid(snapshot)
 			@warning_ignore("unsafe_call_argument")
-			redacted = redactor.redact_breadcrumb(value)
+			return _finish_state_redaction[ObservabilityBreadcrumb](
+					snapshot,
+					redactor.redact_breadcrumb(value),
+				)
 		&"attachment":
 			if not (value is ObservabilityAttachment):
 				return _finish_state_invalid(snapshot)
 			@warning_ignore("unsafe_call_argument")
-			redacted = redactor.redact_attachment(value)
+			return _finish_state_redaction[ObservabilityAttachment](
+					snapshot,
+					redactor.redact_attachment(value),
+				)
 		_:
 			return _finish_state_invalid(snapshot)
-	if not redacted.get("valid", false):
-		_finish_redaction_failure(snapshot, p_signal, _rule_index(redacted))
+
+
+func _finish_state_redaction[T](
+		snapshot: Dictionary,
+		redacted: ObservabilityRedactionResult[T],
+) -> Dictionary:
+	var p_signal: StringName = ObservabilityProcessingDiagnostic.STATE
+	if not redacted.valid():
+		_finish_redaction_failure(
+				snapshot,
+				p_signal,
+				redacted.failed_rule_index(),
+			)
 		return _state_rejected(
 				ObservabilityProcessingDiagnostic.REDACTION_FAILED,
 				Error.ERR_INVALID_DATA,
 			)
-	if not redacted.has("value"):
-		return _finish_state_invalid(snapshot)
-	return _finish_state_success(snapshot, redacted["value"])
+	return _finish_state_success(snapshot, redacted.value())
 
 
 func _reserve(p_signal: StringName, owner_id: int) -> Dictionary:
