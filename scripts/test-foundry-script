@@ -399,9 +399,38 @@ require_fs_signature \
 	"$normalization_result_source" error \
 	'func error() -> int:'
 rg -Fq \
-	'Current Foundry rejects direct generic T-to-T? constructor passage; this internal' \
+	'return ObservabilityNormalizationResult[T].new(true, value, Error.OK)' \
 	"$normalization_result_source" \
-	|| fail "normalization result must document its narrow generic-nullable analyzer bridge"
+	|| fail "normalization result must pass T directly to its matching T? constructor parameter"
+if rg -n 'nullable_value: Variant|Current Foundry rejects direct generic T-to-T\?' \
+		"$normalization_result_source"; then
+	fail "normalization result retains an obsolete generic-nullable bridge"
+fi
+
+if rg -n --glob '*.fs' \
+		'@warning_ignore\([^)]*"unsafe_call_argument"' \
+		"$addon" "$sentry_addon"; then
+	fail "shipped addons must not suppress unsafe_call_argument"
+fi
+test_unsafe_call_suppressions=$(
+	rg -n --glob '*.fs' \
+		'@warning_ignore\([^)]*"unsafe_call_argument"' \
+		"$project_dir/tests" \
+		| wc -l \
+		| tr -d ' '
+)
+[[ "$test_unsafe_call_suppressions" == "1" ]] \
+	|| fail "tests must retain exactly one intentional unsafe_call_argument suppression"
+null_event_test=$(
+	sed -n \
+		'/^func test_normalizer_rejects_null_event_before_sampling_capture_time()/,/^func /p' \
+		"$project_dir/tests/observability-core.test.fs"
+)
+rg -Fq '@warning_ignore("unsafe_call_argument")' <<<"$null_event_test" \
+	|| fail "null-event negative test must retain its intentional call-warning suppression"
+rg -Fq 'normalizer.normalize_event(null, ObservabilityConfig.new())' \
+	<<<"$null_event_test" \
+	|| fail "null-event negative test must exercise the guarded non-null call"
 
 require_fs_signature \
 	"$normalizer_source" _init \
@@ -2148,6 +2177,9 @@ foundry_bin=$(resolve_foundry_bin)
 import_log=$(mktemp "${TMPDIR:-/tmp}/foundryobservability-import.XXXXXX")
 invalid_callable_log=""
 invalid_callable_fixture=""
+generic_nullable_fixture=""
+generic_distinct_log=""
+generic_distinct_fixture=""
 cleanup() {
 	rm -f "$import_log"
 	if [[ -n "$invalid_callable_log" ]]; then
@@ -2155,6 +2187,15 @@ cleanup() {
 	fi
 	if [[ -n "$invalid_callable_fixture" ]]; then
 		rm -f "$invalid_callable_fixture"
+	fi
+	if [[ -n "$generic_nullable_fixture" ]]; then
+		rm -f "$generic_nullable_fixture"
+	fi
+	if [[ -n "$generic_distinct_log" ]]; then
+		rm -f "$generic_distinct_log"
+	fi
+	if [[ -n "$generic_distinct_fixture" ]]; then
+		rm -f "$generic_distinct_fixture"
 	fi
 	restore_test_addons
 }
@@ -2182,6 +2223,81 @@ fi
 		--fail-on=warning \
 		addons/FoundryObservabilitySentry
 )
+
+generic_nullable_fixture="$test_addon/processing/GenericNullableSameParameterContract.fixture.fs"
+printf '%s\n' \
+	'namespace foundry.observability.processing.contract' \
+	'' \
+	'class Holder[T] extends RefCounted:' \
+	'	var stored: T?' \
+	'' \
+	'	func _init(p_value: T?) -> void:' \
+	'		stored = p_value' \
+	'' \
+	'	static func of(value: T) -> Holder[T]:' \
+	'		return Holder[T].new(value)' \
+	'' \
+	'	func widen_local(value: T) -> T?:' \
+	'		var widened: T? = value' \
+	'		return widened' \
+	'' \
+	'	func widen_return(value: T) -> T?:' \
+	'		return value' \
+	'' \
+	'	func store(value: T) -> void:' \
+	'		stored = value' \
+	'' \
+	'func prove_same_parameter_widening() -> void:' \
+	'	var holder: Holder[int] = Holder[int].of(7)' \
+	'	assert(holder.widen_local(3) == 3)' \
+	'	assert(holder.widen_return(4) == 4)' \
+	'	holder.store(9)' \
+	'	assert(holder.stored == 9)' \
+	>"$generic_nullable_fixture"
+(
+	cd "$project_dir"
+	"$foundry_bin" --headless script lint \
+		--project "$project_dir" \
+		--fail-on=warning \
+		addons/FoundryObservability/processing/GenericNullableSameParameterContract.fixture.fs
+)
+rm -f "$generic_nullable_fixture"
+generic_nullable_fixture=""
+
+generic_distinct_log=$(mktemp "${TMPDIR:-/tmp}/foundryobservability-generic-distinct.XXXXXX")
+generic_distinct_fixture="$test_addon/processing/GenericDistinctNullableContract.fixture.fs"
+printf '%s\n' \
+	'namespace foundry.observability.processing.contract' \
+	'' \
+	'class Pair[T, U] extends RefCounted:' \
+	'	var second: U?' \
+	'' \
+	'	func store_first(value: T) -> void:' \
+	'		second = value' \
+	'' \
+	'func prove_distinct_parameter_rejection() -> void:' \
+	'	var pair: Pair[int, String] = Pair[int, String].new()' \
+	'	pair.store_first(7)' \
+	>"$generic_distinct_fixture"
+if (
+	cd "$project_dir"
+	"$foundry_bin" --headless script lint \
+		--project "$project_dir" \
+		--fail-on=warning \
+		addons/FoundryObservability/processing/GenericDistinctNullableContract.fixture.fs
+) >"$generic_distinct_log" 2>&1; then
+	cat "$generic_distinct_log" >&2
+	fail "Foundry Script analyzer accepted T where independent U? was required"
+fi
+if ! rg -Fq 'Value of type \"T\" cannot be assigned to a variable of type \"U?\".' \
+		"$generic_distinct_log" \
+		|| ! rg -Fq '"ruleId": "analyzer-error"' "$generic_distinct_log"; then
+	cat "$generic_distinct_log" >&2
+	fail "Foundry Script analyzer did not report the expected T-to-U? rejection"
+fi
+rm -f "$generic_distinct_fixture" "$generic_distinct_log"
+generic_distinct_fixture=""
+generic_distinct_log=""
 
 invalid_callable_log=$(mktemp "${TMPDIR:-/tmp}/foundryobservability-invalid-callable.XXXXXX")
 invalid_callable_fixture="$test_addon/processing/InvalidTypedCallableContract.fixture.fs"

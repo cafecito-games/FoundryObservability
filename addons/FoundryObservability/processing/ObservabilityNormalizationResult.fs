@@ -27,11 +27,7 @@ func _init(
 
 @warning_ignore("shadowed_variable")
 static func success(value: T) -> ObservabilityNormalizationResult[T]:
-	## Current Foundry rejects direct generic T-to-T? constructor passage; this internal
-	## bridge keeps the public constructor and stored payload fully typed as T?.
-	var nullable_value: Variant = value
-	@warning_ignore("unsafe_call_argument")
-	return ObservabilityNormalizationResult[T].new(true, nullable_value, Error.OK)
+	return ObservabilityNormalizationResult[T].new(true, value, Error.OK)
 
 
 @warning_ignore("shadowed_variable")

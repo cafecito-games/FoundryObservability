@@ -275,17 +275,20 @@ func redact_event(
 	var rebuilt_scope: ObservabilityScope? = (
 			scope_result.value() as ObservabilityScope
 		)
-	@warning_ignore("unsafe_call_argument", "unsafe_cast")
+	var level: int = data["level"]
+	var timestamp_msec: int = data["timestamp_msec"]
+	var engine_ticks_msec: int = data["engine_ticks_msec"]
+	@warning_ignore("unsafe_cast")
 	return ObservabilityRedactionResult[ObservabilityEvent].success(
 			ObservabilityEvent.new(
 				StringName(str(data["kind"])),
-				int(data["level"]),
+				level,
 				str(data["message"]),
 				StringName(str(data["source"])),
-				int(data["timestamp_msec"]),
+				timestamp_msec,
 				data["attributes"] as Dictionary,
 				rebuilt_exception,
-				int(data["engine_ticks_msec"]),
+				engine_ticks_msec,
 				rebuilt_scope,
 			),
 		)
@@ -327,12 +330,14 @@ func redact_metric(
 		return ObservabilityRedactionResult[ObservabilityMetric].failure(
 				_result_rule_index(redacted),
 			)
-	@warning_ignore("unsafe_call_argument", "unsafe_cast")
+	var metric_type: int = data["type"]
+	var metric_value: float = data["value"]
+	@warning_ignore("unsafe_cast")
 	return ObservabilityRedactionResult[ObservabilityMetric].success(
 			ObservabilityMetric.new(
-				int(data["type"]),
+				metric_type,
 				str(data["name"]),
-				float(data["value"]),
+				metric_value,
 				str(data["unit"]),
 				data["attributes"] as Dictionary,
 			),
@@ -363,7 +368,7 @@ func redact_contexts(
 			return ObservabilityRedactionResult[Dictionary].failure(
 					_result_rule_index(redacted),
 				)
-		@warning_ignore("unsafe_call_argument", "unsafe_cast")
+		@warning_ignore("unsafe_cast")
 		if not (data[name] is Dictionary) \
 				or not normalized_scope.set_context(
 						str(name),
@@ -457,13 +462,15 @@ func redact_breadcrumb(
 		return ObservabilityRedactionResult[ObservabilityBreadcrumb].failure(
 				_result_rule_index(redacted),
 			)
-	@warning_ignore("unsafe_call_argument", "unsafe_cast")
+	var level: int = data["level"]
+	var timestamp_msec: int = data["timestamp_msec"]
+	@warning_ignore("unsafe_cast")
 	return ObservabilityRedactionResult[ObservabilityBreadcrumb].success(
 			ObservabilityBreadcrumb.new(
 				str(data["message"]),
-				int(data["level"]),
+				level,
 				StringName(str(data["category"])),
-				int(data["timestamp_msec"]),
+				timestamp_msec,
 				data["attributes"] as Dictionary,
 				StringName(str(data["type"])),
 			),
@@ -690,21 +697,23 @@ func _exception_from_value(
 				or not _is_string_array(frame, "post_context") \
 				or not _has_type(frame, "variables", TYPE_DICTIONARY):
 			return TraversalResult.failure(redacted.failed_rule_index())
-		@warning_ignore("unsafe_call_argument", "unsafe_cast")
+		var line: int = frame["line"]
+		var in_app: bool = frame["in_app"]
+		@warning_ignore("unsafe_cast")
 		rebuilt_frames.append(
 				ObservabilityStackFrame.new(
 					str(frame["file"]),
 					str(frame["function"]),
-					int(frame["line"]),
+					line,
 					str(frame["language"]),
-					bool(frame["in_app"]),
+					in_app,
 					str(frame["context_line"]),
 					PackedStringArray(frame["pre_context"] as Array),
 					PackedStringArray(frame["post_context"] as Array),
 					frame["variables"] as Dictionary,
 				),
 			)
-	@warning_ignore("unsafe_call_argument", "unsafe_cast")
+	@warning_ignore("unsafe_cast")
 	return TraversalResult.success(
 			ObservabilityException.new(
 				str(data["type_name"]),
@@ -740,14 +749,13 @@ func _scope_from_value(
 	var rebuilt: ObservabilityScope = ObservabilityScope.new()
 	var tags: Dictionary = data["tags"]
 	for key: Variant in tags:
-		@warning_ignore("unsafe_call_argument")
 		if (not (key is String) and not (key is StringName)) \
 				or not (tags[key] is String) \
 				or not rebuilt.set_tag(str(key), str(tags[key])):
 			return TraversalResult.failure(redacted.failed_rule_index())
 	var contexts: Dictionary = data["contexts"]
 	for name: Variant in contexts:
-		@warning_ignore("unsafe_call_argument", "unsafe_cast")
+		@warning_ignore("unsafe_cast")
 		if (not (name is String) and not (name is StringName)) \
 				or not (contexts[name] is Dictionary) \
 				or not rebuilt.set_context(
