@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Foundry `v0.1.0-alpha.8` or a compatible local development build
+- Foundry `v0.1.0-alpha.9` or a compatible local development build
 - Go with the `anvil` package tool available on `PATH`
 - Task
 - Xcode 15+, Swift 6, XcodeGen, and LLDB for Apple native crash validation

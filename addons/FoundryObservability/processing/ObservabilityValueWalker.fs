@@ -147,11 +147,10 @@ func _descend(
 	state.active_containers.append(value)
 	var result: WalkStep
 	if value is Dictionary:
-		@warning_ignore("unsafe_call_argument")
 		result = _walk_dictionary(value, path, depth, policy, state)
 	else:
-		@warning_ignore("unsafe_call_argument")
-		result = _walk_array(value, path, depth, policy, state)
+		var array_value: Array = value
+		result = _walk_array(array_value, path, depth, policy, state)
 	state.active_containers.pop_back()
 	return result
 

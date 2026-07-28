@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  FOUNDRY_VERSION: "v0.1.0-alpha.8"
+  FOUNDRY_VERSION: "v0.1.0-alpha.9"
 
 jobs:
   build:

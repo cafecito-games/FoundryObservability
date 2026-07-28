@@ -180,8 +180,8 @@ rg -q 'actions/setup-go@v7\.0\.0([[:space:]]|$)' "$release_workflow" \
 	|| fail "release.yml must use actions/setup-go@v7.0.0"
 rg -q 'go-task/setup-task@v2\.1\.0([[:space:]]|$)' "$release_workflow" \
 	|| fail "release.yml must use go-task/setup-task@v2.1.0"
-rg -q -U '^env:\n  FOUNDRY_VERSION: "v0\.1\.0-alpha\.8"$' "$release_workflow" \
-	|| fail "release.yml must pin Foundry v0.1.0-alpha.8"
+rg -q -U '^env:\n  FOUNDRY_VERSION: "v0\.1\.0-alpha\.9"$' "$release_workflow" \
+	|| fail "release.yml must pin Foundry v0.1.0-alpha.9"
 release_foundry_version=$(
 	sed -n '
 		/^env:$/ {
@@ -360,8 +360,8 @@ rg -Fq 'go install github.com/cafecito-games/foundry-tools/cmd/anvil@176f5f7c590
 if rg -q 'foundry-tools/cmd/anvil@latest' <<<"$core_job"; then
 	fail "validate-core job must not install Anvil from a mutable latest reference"
 fi
-rg -Fxq '      FOUNDRY_VERSION: "v0.1.0-alpha.8"' <<<"$core_job" \
-	|| fail "validate-core job must pin Foundry v0.1.0-alpha.8"
+rg -Fxq '      FOUNDRY_VERSION: "v0.1.0-alpha.9"' <<<"$core_job" \
+	|| fail "validate-core job must pin Foundry v0.1.0-alpha.9"
 core_foundry_version=$(
 	sed -n '
 		/^    env:$/ {
