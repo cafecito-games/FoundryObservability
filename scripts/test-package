@@ -484,7 +484,7 @@ while IFS= read -r resource; do
 	grep -qx "$relative.uid" <<<"$sentry_listing" \
 		|| fail "$relative.uid is missing from the Sentry package"
 done < <(
-	find "$repo_root/addons/FoundryObservabilitySentry" -maxdepth 1 -type f -name '*.fs' | sort
+	find "$repo_root/addons/FoundryObservabilitySentry" -type f -name '*.fs' | sort
 )
 
 probe_version="9.8.7"

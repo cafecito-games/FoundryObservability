@@ -8,6 +8,12 @@ fail() {
 	exit 1
 }
 
+find_foundry_files() {
+	local source_root=$1
+	local filename_pattern=$2
+	find "$source_root" -type f -name "$filename_pattern" | sort
+}
+
 source_roots=(
 	"$repo_root/addons/FoundryObservability"
 	"$repo_root/addons/FoundryObservabilitySentry"
@@ -35,13 +41,13 @@ for source_root in "${source_roots[@]}"; do
 			&& fail "$relative_uid is ignored by Git"
 		git -C "$repo_root" ls-files --error-unmatch "$relative_uid" >/dev/null 2>&1 \
 			|| fail "$relative_uid is not tracked by Git"
-	done < <(find "$source_root" -type f -name '*.fs' | sort)
+	done < <(find_foundry_files "$source_root" '*.fs')
 
 	while IFS= read -r uid_file; do
 		resource=${uid_file%.uid}
 		[[ -f "$resource" ]] \
 			|| fail "orphan UID companion: ${uid_file#"$repo_root/"}"
-	done < <(find "$source_root" -type f -name '*.fs.uid' | sort)
+	done < <(find_foundry_files "$source_root" '*.fs.uid')
 done
 
 echo "Foundry UID contract checks passed"

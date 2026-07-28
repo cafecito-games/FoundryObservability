@@ -159,6 +159,50 @@ resolve_foundry_bin() {
 
 command -v rg >/dev/null 2>&1 || fail "ripgrep is required"
 
+first_party_sources=(
+	"$addon"
+	"$sentry_addon"
+)
+if rg -n --glob '*.fs' \
+	'(:|->|Array\[)[[:space:]]*Callable([[:space:]=,)\]]|$)' \
+	"${first_party_sources[@]}"; then
+	fail "first-party addon source contains a bare Callable"
+fi
+if rg -n --glob '*.fs' 'Callable\(\)' "${first_party_sources[@]}"; then
+	fail "first-party addon source contains an invalid Callable sentinel"
+fi
+if rg -n --glob '*.fs' '_probe: Object|_probe\.call\(' "$sentry_addon"; then
+	fail "Sentry addon contains a dynamic probe"
+fi
+if rg -n '_frame_supplier|positional compatibility seam' "$addon"; then
+	fail "first-party source contains compatibility-only constructor baggage"
+fi
+
+namespace_directories=(
+	"$addon/runtime"
+	"$addon/processing"
+	"$addon/foundrylib"
+)
+expected_namespaces=(
+	"foundry.observability.runtime"
+	"foundry.observability.processing"
+	"foundry.observability.foundrylib"
+)
+for namespace_index in "${!namespace_directories[@]}"; do
+	namespace_directory=${namespace_directories[$namespace_index]}
+	expected_namespace=${expected_namespaces[$namespace_index]}
+	while IFS= read -r source_file; do
+		rg -q "^namespace ${expected_namespace//./\\.}$" "$source_file" \
+			|| fail \
+				"${source_file#"$repo_root/"} must declare namespace $expected_namespace"
+	done < <(find "$namespace_directory" -type f -name '*.fs' | sort)
+done
+while IFS= read -r source_file; do
+	rg -q '^namespace foundry\.observability\.sentry$' "$source_file" \
+		|| fail \
+			"${source_file#"$repo_root/"} must declare namespace foundry.observability.sentry"
+done < <(find "$sentry_addon" -maxdepth 1 -type f -name '*.fs' | sort)
+
 [[ -f "$addon/plugin.cfg" ]] || fail "plugin.cfg is missing"
 [[ -f "$addon/export_plugin.fs" ]] || fail "export_plugin.fs is missing"
 [[ -f "$addon/FoundryObservability.fs" ]] || fail "FoundryObservability.fs is missing"
@@ -1960,7 +2004,19 @@ rg -Fq '"foundry_engine"' "$sentry_addon/SentryRuntimeContextCollector.fs" \
 materialize_sentry_addon() {
 	destination=$1
 	mkdir -p "$destination"
-	find "$sentry_addon" -maxdepth 1 -type f -exec cp {} "$destination/" \;
+	find "$sentry_addon" -maxdepth 1 -type f \
+		! -name '*.fs' ! -name '*.fs.uid' \
+		-exec cp {} "$destination/" \;
+	while IFS= read -r source_resource; do
+		relative_resource=${source_resource#"$sentry_addon/"}
+		destination_resource="$destination/$relative_resource"
+		mkdir -p "$(dirname "$destination_resource")"
+		cp "$source_resource" "$destination_resource"
+	done < <(
+		find "$sentry_addon" -type f \
+			\( -name '*.fs' -o -name '*.fs.uid' \) \
+			| sort
+	)
 	for artifact_dir in ios macos_arm64 android/debug android/release; do
 		mkdir -p "$destination/bin/$artifact_dir"
 		cp -R "$sentry_addon/bin/$artifact_dir/." \

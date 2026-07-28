@@ -13,6 +13,18 @@ Use `foundry.observability` for core imports and
 `foundry.observability.foundrylib` for the FoundryLib adapter. The old
 pre-release namespace is not supported.
 
+## Foundry Script modeling
+
+- Use complete `Callable[[ArgumentType], ResultType]` or
+  `AsyncCallable[[ArgumentType], ResultType]`
+  signatures for functional extension points.
+- Use traits for injected dependencies with named operations.
+- Use `null` for an absent nullable callback; do not use `Callable()` as a
+  sentinel.
+- Keep dynamic native calls inside the owning bridge adapter.
+- Use `async` only when a function has a real suspension point.
+- Match implementation subnamespace suffixes to source directories.
+
 Before opening a pull request, run:
 
 ```sh

@@ -37,7 +37,19 @@ fi
 materialize_sentry_addon() {
 	destination=$1
 	mkdir -p "$destination"
-	find "$sentry_source" -maxdepth 1 -type f -exec cp {} "$destination/" \;
+	find "$sentry_source" -maxdepth 1 -type f \
+		! -name '*.fs' ! -name '*.fs.uid' \
+		-exec cp {} "$destination/" \;
+	while IFS= read -r source_resource; do
+		relative_resource=${source_resource#"$sentry_source/"}
+		destination_resource="$destination/$relative_resource"
+		mkdir -p "$(dirname "$destination_resource")"
+		cp "$source_resource" "$destination_resource"
+	done < <(
+		find "$sentry_source" -type f \
+			\( -name '*.fs' -o -name '*.fs.uid' \) \
+			| sort
+	)
 	for artifact_dir in ios macos_arm64 android/debug android/release; do
 		mkdir -p "$destination/bin/$artifact_dir"
 		cp -R "$sentry_source/bin/$artifact_dir/." \
