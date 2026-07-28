@@ -23,6 +23,8 @@ export FOUNDRY_BIN=/path/to/foundry
 
 ## Commands
 
+Run the repository validation gates with:
+
 ```sh
 task lint
 task test:foundry-script
@@ -38,6 +40,26 @@ task ios:sentry
 FOUNDRYOBSERVABILITY_STRICT_NATIVE_RUNTIME=1 task test:project
 task android:sentry
 ```
+
+`task test` is the complete ordinary local gate. The equivalent individual
+checks are:
+
+```sh
+prek run --all-files
+scripts/test-ci-workflows
+scripts/test-package
+scripts/test-project
+scripts/test-foundry-script
+scripts/test-foundry-uids
+(cd addons/FoundryObservabilitySentry/FoundryObservabilitySentry && swift test)
+scripts/test-sentry-ios-build-contract
+(cd addons/FoundryObservabilitySentry/AndroidFoundryObservabilitySentry && ./gradlew test)
+scripts/test-sentry-android-build-contract
+git diff --check
+```
+
+Run `scripts/test-foundry-script` and `scripts/test-project` sequentially. Both
+materialize test-project addon state and are not safe to overlap.
 
 `task test:project` installs the packages declared in
 `test_project/packages.toml` with Anvil and runs both the core and FoundryLib
@@ -94,8 +116,26 @@ the archives in an isolated output directory. The strict project test installs
 the pinned FoundrySwift `0.1.0-alpha.2` companion addon and proves the built
 Sentry framework loads against its shared runtime before packaging.
 
-Current public source namespaces are `foundry.observability`,
-`foundry.observability.foundrylib`, and `foundry.observability.sentry`.
+## Recursive Foundry Script source layout
+
+Packaging and validation scan `.fs` and `.fs.uid` files recursively. Public
+sources are organized by responsibility:
+
+```text
+addons/
+├── FoundryObservability/
+│   ├── *.fs                         foundry.observability
+│   ├── runtime/*.fs                 foundry.observability.runtime
+│   ├── processing/*.fs              foundry.observability.processing
+│   └── foundrylib/*.fs              foundry.observability.foundrylib
+└── FoundryObservabilitySentry/
+    └── *.fs                         foundry.observability.sentry
+```
+
+Do not flatten the runtime or processing directories when packaging. Their
+namespace declarations and imports are part of the source contract. The core
+archive retains the full recursive `addons/FoundryObservability` tree; the
+Sentry archive retains its complete addon tree plus available native artifacts.
 
 ## Native crash validation tooling
 

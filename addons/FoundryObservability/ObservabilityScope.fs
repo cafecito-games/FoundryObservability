@@ -1,5 +1,7 @@
 namespace foundry.observability
 
+import foundry.observability.processing
+
 ## Provider-neutral event-local tags and structured contexts.
 class_name ObservabilityScope
 extends RefCounted
@@ -9,6 +11,32 @@ const MAX_CONTAINER_ITEMS: int = 256
 
 final var _tags: Dictionary = {}
 final var _contexts: Dictionary = {}
+
+
+class ScopeValuePolicy extends RefCounted:
+	uses ObservabilityValuePolicy
+
+	func visit(
+			_path: PackedStringArray,
+			value: Variant,
+	) -> ObservabilityValueVisitDecision:
+		if value is Dictionary or value is Array:
+			return ObservabilityValueVisitDecision.descend()
+		if value == null or value is bool or value is int or value is String:
+			return ObservabilityValueVisitDecision.keep(value)
+		if value is StringName:
+			return ObservabilityValueVisitDecision.keep(str(value))
+		if value is float and is_finite(value):
+			return ObservabilityValueVisitDecision.keep(value)
+		return ObservabilityValueVisitDecision.reject()
+
+	func visit_dictionary_key(
+			_path: PackedStringArray,
+			key: Variant,
+	) -> ObservabilityValueVisitDecision:
+		if key is String or key is StringName:
+			return ObservabilityValueVisitDecision.keep(str(key))
+		return ObservabilityValueVisitDecision.reject()
 
 
 func tags() -> Dictionary:
@@ -40,17 +68,19 @@ func clear_tags() -> void:
 func set_context(name: String, value: Dictionary) -> bool:
 	if not _is_valid_name(name):
 		return false
-	var budget: Dictionary = {"remaining": MAX_CONTAINER_ITEMS}
-	var active_containers: Array = [value]
-	var normalized: Dictionary = _normalize_dictionary(
-			value,
-			0,
-			budget,
-			active_containers,
-	)
-	if not normalized["valid"]:
+	var normalized: ObservabilityRedactionResult[Variant] = (
+			ObservabilityValueWalker.new(
+				MAX_CONTAINER_DEPTH,
+				MAX_CONTAINER_ITEMS + 1,
+			).walk(
+				value,
+				ScopeValuePolicy.new(),
+			)
+		)
+	if not normalized.valid() or not (normalized.value() is Dictionary):
 		return false
-	_contexts[name] = normalized["value"]
+	@warning_ignore("unsafe_cast")
+	_contexts[name] = normalized.value() as Dictionary
 	return true
 
 
@@ -77,109 +107,6 @@ func duplicate() -> ObservabilityScope:
 		var context: Dictionary = _contexts[name]
 		copied._contexts[name] = context.duplicate(true)
 	return copied
-
-
-func _normalize_dictionary(
-		source: Dictionary,
-		container_depth: int,
-		budget: Dictionary,
-		active_containers: Array,
-) -> Dictionary:
-	var normalized: Dictionary = {}
-	for key: Variant in source:
-		if not _consume_item(budget):
-			return {"valid": false}
-		if not (key is String) and not (key is StringName):
-			return {"valid": false}
-		var value_result: Dictionary = _normalize_value(
-				source[key],
-				container_depth,
-				budget,
-				active_containers,
-		)
-		if not value_result["valid"]:
-			return {"valid": false}
-		normalized[str(key)] = value_result["value"]
-	return {"valid": true, "value": normalized}
-
-
-func _normalize_array(
-		source: Array,
-		container_depth: int,
-		budget: Dictionary,
-		active_containers: Array,
-) -> Dictionary:
-	var normalized: Array = []
-	for value: Variant in source:
-		if not _consume_item(budget):
-			return {"valid": false}
-		var value_result: Dictionary = _normalize_value(
-				value,
-				container_depth,
-				budget,
-				active_containers,
-		)
-		if not value_result["valid"]:
-			return {"valid": false}
-		normalized.append(value_result["value"])
-	return {"valid": true, "value": normalized}
-
-
-func _normalize_value(
-		value: Variant,
-		container_depth: int,
-		budget: Dictionary,
-		active_containers: Array,
-) -> Dictionary:
-	if value == null:
-		return {"valid": true, "value": null}
-	if value is bool or value is int or value is String:
-		return {"valid": true, "value": value}
-	if value is StringName:
-		return {"valid": true, "value": str(value)}
-	if value is float:
-		return {"valid": is_finite(value), "value": value}
-	if value is Array:
-		if container_depth + 1 > MAX_CONTAINER_DEPTH \
-				or not _enter_container(value, active_containers):
-			return {"valid": false}
-		var array_result: Dictionary = _normalize_array(
-				value,
-				container_depth + 1,
-				budget,
-				active_containers,
-		)
-		active_containers.pop_back()
-		return array_result
-	if value is Dictionary:
-		if container_depth + 1 > MAX_CONTAINER_DEPTH \
-				or not _enter_container(value, active_containers):
-			return {"valid": false}
-		var dictionary_result: Dictionary = _normalize_dictionary(
-				value,
-				container_depth + 1,
-				budget,
-				active_containers,
-		)
-		active_containers.pop_back()
-		return dictionary_result
-	return {"valid": false}
-
-
-func _consume_item(budget: Dictionary) -> bool:
-	var remaining: int = budget["remaining"]
-	if remaining <= 0:
-		return false
-	budget["remaining"] = remaining - 1
-	return true
-
-
-func _enter_container(container: Variant, active_containers: Array) -> bool:
-	for active_container: Variant in active_containers:
-		if is_same(container, active_container):
-			return false
-	active_containers.append(container)
-	return true
 
 
 func _is_valid_name(value: String) -> bool:

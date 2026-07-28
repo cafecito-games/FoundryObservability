@@ -9,22 +9,22 @@ extends RefCounted
 const MAX_SCENE_DEPTH: int = 32
 const MAX_SCENE_NODES: int = 1024
 
-var _probe: Object
+var _source: SentryAttachmentSource
 var _cached_screenshot_frame: int = -1
 var _cached_screenshot: PackedByteArray = PackedByteArray()
 
 
-func _init(p_probe: Object) -> void:
-	_probe = p_probe
+func _init(p_source: SentryAttachmentSource) -> void:
+	_source = p_source
 
 
 ## Returns persistent and capture-local attachment payloads plus isolated failures.
-func collect(event: ObservabilityEvent?, config: ObservabilityConfig) -> Dictionary:
+func collect(event: ObservabilityEvent?, config: ObservabilityConfig) -> SentryAttachmentCollection:
 	var attachments: Array[Dictionary] = []
 	var failures: Array[ObservabilityAttachmentFailure] = []
-	if config.max_attachment_bytes == 0:
-		if config.attach_game_log:
-			var game_log_path: String = str(_probe.call("game_log_path"))
+	if config.attachments().max_bytes() == 0:
+		if config.attachments().attach_game_log():
+			var game_log_path: String = _source.game_log_path()
 			var game_log_filename: String = (
 					game_log_path.get_file()
 					if not game_log_path.is_empty()
@@ -36,39 +36,33 @@ func collect(event: ObservabilityEvent?, config: ObservabilityConfig) -> Diction
 					ObservabilityAttachmentFailure.OVERSIZED,
 					Error.FAILED,
 				))
-		if event != null and config.attach_screenshot:
+		if event != null and config.attachments().attach_screenshot():
 			failures.append(_failure(
 					"built-in:screenshot",
 					"screenshot.png",
 					ObservabilityAttachmentFailure.OVERSIZED,
 					Error.FAILED,
 				))
-		if event != null and config.attach_scene_tree:
+		if event != null and config.attachments().attach_scene_tree():
 			failures.append(_failure(
 					"built-in:scene-tree",
 					"view-hierarchy.json",
 					ObservabilityAttachmentFailure.OVERSIZED,
 					Error.FAILED,
 				))
-		return {
-			"attachments": attachments,
-			"failures": failures,
-		}
-	if config.attach_game_log:
+		return SentryAttachmentCollection.new(attachments, failures)
+	if config.attachments().attach_game_log():
 		_collect_game_log(
 				event != null,
-				config.max_attachment_bytes,
+				config.attachments().max_bytes(),
 				attachments,
 				failures,
 			)
-	if event != null and config.attach_screenshot:
-		_collect_screenshot(config.max_attachment_bytes, attachments, failures)
-	if event != null and config.attach_scene_tree:
-		_collect_scene_tree(config.max_attachment_bytes, attachments, failures)
-	return {
-		"attachments": attachments,
-		"failures": failures,
-	}
+	if event != null and config.attachments().attach_screenshot():
+		_collect_screenshot(config.attachments().max_bytes(), attachments, failures)
+	if event != null and config.attachments().attach_scene_tree():
+		_collect_scene_tree(config.attachments().max_bytes(), attachments, failures)
+	return SentryAttachmentCollection.new(attachments, failures)
 
 
 func _collect_game_log(
@@ -77,7 +71,7 @@ func _collect_game_log(
 		attachments: Array[Dictionary],
 		failures: Array[ObservabilityAttachmentFailure],
 ) -> void:
-	var path: String = str(_probe.call("game_log_path"))
+	var path: String = _source.game_log_path()
 	if path.is_empty():
 		failures.append(_failure(
 				"built-in:game-log",
@@ -139,7 +133,7 @@ func _collect_screenshot(
 		attachments: Array[Dictionary],
 		failures: Array[ObservabilityAttachmentFailure],
 ) -> void:
-	if _probe.call("is_main_thread") != true or _probe.call("is_headless") == true:
+	if not _source.is_main_thread() or _source.is_headless():
 		failures.append(_failure(
 				"built-in:screenshot",
 				"screenshot.png",
@@ -147,8 +141,8 @@ func _collect_screenshot(
 				Error.ERR_UNAVAILABLE,
 			))
 		return
-	var tree: Object? = _probe.call("main_scene_tree")
-	if tree == null or not (tree.get("root") is Node):
+	var root: Node? = _source.scene_root()
+	if root == null:
 		failures.append(_failure(
 				"built-in:screenshot",
 				"screenshot.png",
@@ -156,11 +150,10 @@ func _collect_screenshot(
 				Error.ERR_UNAVAILABLE,
 			))
 		return
-	var frame_value: Variant = _probe.call("frames_drawn")
-	var frame: int = frame_value if frame_value is int else -1
+	var frame: int = _source.frames_drawn()
 	if frame != _cached_screenshot_frame:
 		_cached_screenshot_frame = frame
-		_cached_screenshot = _probe.call("screenshot_png")
+		_cached_screenshot = _source.screenshot_png()
 	if _cached_screenshot.is_empty():
 		failures.append(_failure(
 				"built-in:screenshot",
@@ -191,7 +184,7 @@ func _collect_scene_tree(
 		attachments: Array[Dictionary],
 		failures: Array[ObservabilityAttachmentFailure],
 ) -> void:
-	if _probe.call("is_main_thread") != true:
+	if not _source.is_main_thread():
 		failures.append(_failure(
 				"built-in:scene-tree",
 				"view-hierarchy.json",
@@ -199,17 +192,8 @@ func _collect_scene_tree(
 				Error.ERR_UNAVAILABLE,
 			))
 		return
-	var tree: Object? = _probe.call("main_scene_tree")
-	if tree == null:
-		failures.append(_failure(
-				"built-in:scene-tree",
-				"view-hierarchy.json",
-				ObservabilityAttachmentFailure.PLATFORM_UNAVAILABLE,
-				Error.ERR_UNAVAILABLE,
-			))
-		return
-	var root_value: Variant = tree.get("root")
-	if not (root_value is Node):
+	var root: Node? = _source.scene_root()
+	if root == null:
 		failures.append(_failure(
 				"built-in:scene-tree",
 				"view-hierarchy.json",
@@ -218,7 +202,6 @@ func _collect_scene_tree(
 			))
 		return
 	var count: Array[int] = [0]
-	var root: Node = root_value
 	var hierarchy: Dictionary = _scene_node(root, 0, count)
 	var bytes: PackedByteArray = JSON.stringify(hierarchy).to_utf8_buffer()
 	if bytes.size() > max_bytes:
@@ -244,10 +227,12 @@ func _scene_node(node: Node, depth: int, count: Array[int]) -> Dictionary:
 		"type": node.get_class(),
 		"name": String(node.name),
 	}
-	if node.has_method("is_visible_in_tree"):
-		var visible_result: Variant = node.call("is_visible_in_tree")
-		if visible_result is bool:
-			result["visible"] = visible_result
+	if node is CanvasItem:
+		var canvas_item: CanvasItem = node
+		result["visible"] = canvas_item.is_visible_in_tree()
+	elif node is Node3D:
+		var spatial_node: Node3D = node
+		result["visible"] = spatial_node.is_visible_in_tree()
 	var children: Array = []
 	if depth < MAX_SCENE_DEPTH and count[0] < MAX_SCENE_NODES:
 		for child: Node in node.get_children():

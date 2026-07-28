@@ -215,6 +215,11 @@ Value types:
 
 - ObservabilityLevel
 - ObservabilityConfig
+- ObservabilityProcessingConfig
+- ObservabilityAutomaticCaptureConfig
+- ObservabilityAttachmentConfig
+- ObservabilityStackTraceConfig
+- ObservabilityMobileDiagnosticsConfig
 - ObservabilityException
 - ObservabilityStackFrame
 - ObservabilityEvent
@@ -233,6 +238,18 @@ Value types:
 - ObservabilityProcessingDiagnostic
 - ObservabilityStartupStatus: stable project-settings startup result constants; see the [startup status table](#skip-decisions-and-results).
 
+Runtime and processing namespaces:
+
+- `foundry.observability.runtime.ObservabilityRuntime`
+- `foundry.observability.runtime.SystemObservabilityRuntime`
+- `foundry.observability.processing.ObservabilitySignal`
+- `foundry.observability.processing.ObservabilityProcessingOutcome`
+- `foundry.observability.processing.ObservabilityProcessingReason`
+- `foundry.observability.processing.ObservabilityLimitKind`
+- typed admission, normalization, redaction, processing, lease, and provider
+  session objects documented under
+  [provider-neutral signal processing](#provider-neutral-signal-processing)
+
 Optional provider capabilities:
 
 - ObservabilityMetricsProvider
@@ -248,6 +265,13 @@ Built-in providers:
 FoundryLib integration:
 
 - foundry.observability.foundrylib.FoundryLibObservabilitySink
+
+Optional Sentry boundary:
+
+- `foundry.observability.sentry.SentryRuntimeContextSource`
+- `foundry.observability.sentry.SentryAttachmentSource`
+- `foundry.observability.sentry.SentryNativeBridge`
+- their system implementations and `DynamicSentryNativeBridgeAdapter`
 
 ## Conventions
 
@@ -290,6 +314,38 @@ mutating a payload after it has been handed to the observability service.
 Memory provider list accessors copy the containing array; the payload objects
 themselves are the captured objects.
 
+### Runtime abstraction and synchronous capture
+
+The clock, processed-frame index, and execution-owner identity used by the core
+are supplied by a trait in `foundry.observability.runtime`:
+
+~~~foundryscript
+namespace foundry.observability.runtime
+
+trait_name ObservabilityRuntime
+
+abstract func monotonic_time_msec() -> int
+abstract func unix_time_msec() -> int
+abstract func process_frame() -> int
+abstract func caller_id() -> int
+abstract func main_thread_id() -> int
+~~~
+
+`SystemObservabilityRuntime` implements that trait with `Time`, `Engine`, and
+`OS`. Tests and embedders can inject another `ObservabilityRuntime` into the
+processing pipeline and provider session, giving deterministic time, frame, and
+owner behavior without callable suppliers.
+
+Capture, configuration, flush, and shutdown entry points deliberately remain
+synchronous. Foundry Script `async` is cooperative: it does not make a native
+SDK call nonblocking and it changes a public function into a coroutine-shaped
+API. The provider contracts are synchronous, automatic logger callbacks cannot
+await, ordering and generation pinning must cover the complete provider call,
+and the current native Sentry bridges expose synchronous return values.
+Therefore adding `async` would add scheduling semantics without moving native
+work off the caller. Callers that need background scheduling should own that
+policy outside the observability boundary.
+
 ## ObservabilityLevel
 
 ObservabilityLevel defines the shared severity values used by events and log
@@ -315,12 +371,12 @@ LEVEL(value), for example LEVEL(35).
 
 ## ObservabilityConfig
 
-ObservabilityConfig contains provider-neutral deployment metadata and opaque
-provider options.
+`ObservabilityConfig` is an immutable aggregate. It owns deployment metadata
+and five focused configuration objects; it no longer accepts processing,
+automatic-capture, attachment, stack-trace, or mobile-diagnostic options
+directly.
 
-Constructor:
-
-~~~
+~~~foundryscript
 ObservabilityConfig.new(
 		p_enabled: bool = true,
 		p_environment: String = "",
@@ -328,124 +384,199 @@ ObservabilityConfig.new(
 		p_dist: String = "",
 		p_global_attributes: Dictionary = {},
 		p_provider_options: Dictionary = {},
+		p_processing: ObservabilityProcessingConfig? = null,
+		p_automatic_capture: ObservabilityAutomaticCaptureConfig? = null,
+		p_attachments: ObservabilityAttachmentConfig? = null,
+		p_stack_traces: ObservabilityStackTraceConfig? = null,
+		p_mobile_diagnostics: ObservabilityMobileDiagnosticsConfig? = null,
+)
+
+func enabled() -> bool
+func environment() -> String
+func release() -> String
+func dist() -> String
+func global_attributes() -> Dictionary
+func provider_options() -> Dictionary
+func processing() -> ObservabilityProcessingConfig
+func automatic_capture() -> ObservabilityAutomaticCaptureConfig
+func attachments() -> ObservabilityAttachmentConfig
+func stack_traces() -> ObservabilityStackTraceConfig
+func mobile_diagnostics() -> ObservabilityMobileDiagnosticsConfig
+~~~
+
+A null focused argument creates that focused type with its defaults.
+`global_attributes()` and `provider_options()` return deep copies. The focused
+objects are immutable and are returned directly.
+
+### ObservabilityProcessingConfig
+
+This object owns the complete provider-neutral signal policy. Its callables are
+fully typed:
+
+~~~foundryscript
+ObservabilityProcessingConfig.new(
 		p_logs_enabled: bool = true,
 		p_log_minimum_level: int = ObservabilityLevel.TRACE,
 		p_log_rate_limit_per_second: int = 0,
 		p_metrics_enabled: bool = true,
-		p_metric_sample_rate: float = 1.0,
-		p_metric_filter: Callable = Callable(),
-		p_automatic_capture_enabled: bool = true,
-		p_automatic_event_mask: int = ObservabilityCaptureMask.DEFAULT_EVENTS,
-		p_automatic_breadcrumb_mask: int = ObservabilityCaptureMask.DEFAULT_BREADCRUMBS,
-		p_automatic_log_mask: int = ObservabilityCaptureMask.NONE,
-		p_automatic_events_per_frame: int = 5,
-		p_automatic_repeated_error_window_msec: int = 1000,
-		p_automatic_event_throttle_count: int = 20,
-		p_automatic_event_throttle_window_msec: int = 10000,
-		p_stack_trace_source_context_enabled: bool = true,
-		p_stack_trace_variables_enabled: bool = false,
-		p_automatic_message_filter_prefixes: PackedStringArray = PackedStringArray(
-				["FoundryObservability: "],
-		),
-		p_application_hang_detection_enabled: bool = true,
-		p_application_hang_timeout_msec: int = 5000,
-		p_android_anr_detection_enabled: bool = true,
-		p_android_anr_timeout_msec: int = 5000,
-		p_android_anr_attach_thread_dump: bool = false,
-		p_max_breadcrumbs: int = 100,
-		p_max_attachment_bytes: int = 20 * 1024 * 1024,
-		p_attach_game_log: bool = false,
-		p_attach_screenshot: bool = false,
-		p_attach_scene_tree: bool = false,
 		p_event_sample_rate: float = 1.0,
 		p_log_sample_rate: float = 1.0,
-		p_event_processors: Array[Callable] = [],
-		p_log_processors: Array[Callable] = [],
-		p_metric_processors: Array[Callable] = [],
+		p_metric_sample_rate: float = 1.0,
+		p_metric_filter: Callable[[ObservabilityMetric], bool]? = null,
+		p_event_processors: Array[
+			Callable[[ObservabilityEvent], ObservabilityEvent?]
+		] = [],
+		p_log_processors: Array[
+			Callable[[ObservabilityEvent], ObservabilityEvent?]
+		] = [],
+		p_metric_processors: Array[
+			Callable[[ObservabilityMetric], ObservabilityMetric?]
+		] = [],
 		p_event_limits: ObservabilitySignalLimits? = null,
 		p_log_limits: ObservabilitySignalLimits? = null,
 		p_metric_limits: ObservabilitySignalLimits? = null,
 		p_redaction_policy: ObservabilityRedactionPolicy? = null,
 )
-~~~
 
-Public fields:
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| enabled | bool | Whether the service may capture events after configuration |
-| environment | String | Deployment environment such as production or staging |
-| release | String | Game release identifier |
-| dist | String | Optional distribution variant |
-| logs_enabled | bool | Whether structured logs are accepted; enabled by default |
-| log_minimum_level | int | Lowest structured-log severity accepted; TRACE by default |
-| log_rate_limit_per_second | int | Compatibility maximum accepted logs per monotonic engine-tick second, evaluated after the log signal limits; zero disables this limit |
-| metrics_enabled | bool | Whether custom metrics are accepted; enabled by default |
-| metric_sample_rate | float | Deterministic accepted fraction from 0.0 through 1.0 |
-| metric_filter | Callable | Optional predicate receiving each normalized, pre-redacted metric before metric processors |
-| automatic_capture_enabled | bool | Whether successful enabled configuration installs the automatic engine logger |
-| automatic_event_mask | int | Categories routed to exception events |
-| automatic_breadcrumb_mask | int | Categories routed to breadcrumbs |
-| automatic_log_mask | int | Categories routed to structured logs |
-| automatic_events_per_frame | int | Compatibility per-frame event limit used when `p_event_limits` is absent; zero disables it |
-| automatic_repeated_error_window_msec | int | Compatibility repeated-identity event window used when `p_event_limits` is absent; zero disables it |
-| automatic_event_throttle_count | int | Compatibility event sliding-window count used when `p_event_limits` is absent; zero disables it |
-| automatic_event_throttle_window_msec | int | Compatibility event sliding-window duration used when `p_event_limits` is absent; zero disables it |
-| stack_trace_source_context_enabled | bool | Retain bounded stack-frame source context; enabled by default |
-| stack_trace_variables_enabled | bool | Retain a bounded, type-filtered copy of stack-frame variables; disabled by default and requires explicit opt-in |
-| application_hang_detection_enabled | bool | Enable native main-thread hang detection on macOS and iOS; enabled by default |
-| application_hang_timeout_msec | int | Apple hang threshold in milliseconds; defaults to 5000 and normalizes to at least 1000 |
-| android_anr_detection_enabled | bool | Enable native Android ANR detection; enabled by default |
-| android_anr_timeout_msec | int | Pre-Android-11 watchdog threshold in milliseconds; defaults to 5000 and normalizes to at least 1000 |
-| android_anr_attach_thread_dump | bool | Request an Android 11+ ANR thread dump when available; disabled by default |
-| max_breadcrumbs | int | Maximum retained breadcrumbs; defaults to 100, negative values normalize to zero, and zero disables storage |
-| max_attachment_bytes | int | Maximum bytes accepted per attachment; defaults to 20 MiB, negative values normalize to zero, and zero disables attachment delivery |
-| attach_game_log | bool | Include the current game log when supported; disabled by default |
-| attach_screenshot | bool | Include a capture-time screenshot when supported; disabled by default |
-| attach_scene_tree | bool | Include a bounded capture-time scene-tree snapshot when supported; disabled by default |
-| event_sample_rate | float | Deterministic retained fraction for ordinary and automatic events; defaults to 1.0 |
-| log_sample_rate | float | Deterministic retained fraction for structured logs; defaults to 1.0 |
-
-Accessors:
-
-~~~
-func global_attributes() -> Dictionary
-func provider_options() -> Dictionary
-func automatic_message_filter_prefixes() -> PackedStringArray
-func event_processors() -> Array[Callable]
-func log_processors() -> Array[Callable]
-func metric_processors() -> Array[Callable]
+func logs_enabled() -> bool
+func log_minimum_level() -> int
+func log_rate_limit_per_second() -> int
+func metrics_enabled() -> bool
+func event_sample_rate() -> float
+func log_sample_rate() -> float
+func metric_sample_rate() -> float
+func has_metric_filter() -> bool
+func metric_filter() -> Callable[[ObservabilityMetric], bool]?
+func event_processors() -> Array[
+	Callable[[ObservabilityEvent], ObservabilityEvent?]
+]
+func log_processors() -> Array[
+	Callable[[ObservabilityEvent], ObservabilityEvent?]
+]
+func metric_processors() -> Array[
+	Callable[[ObservabilityMetric], ObservabilityMetric?]
+]
 func event_limits() -> ObservabilitySignalLimits
 func log_limits() -> ObservabilitySignalLimits
 func metric_limits() -> ObservabilitySignalLimits
 func redaction_policy() -> ObservabilityRedactionPolicy
 ~~~
 
-Dictionary accessors return deep copies. global_attributes are shared metadata
-for a provider integration. The Sentry provider redacts its candidate copy
-before native configuration, using the canonical
-`contexts/global_attributes/...` path described below; the caller's config is
-not modified. provider_options are opaque to the core and are passed to
-provider implementations through the config object.
-automatic_message_filter_prefixes returns a copied list of ordinary output
-prefixes excluded from automatic capture.
+The default event limits are `(5, 1000, 20, 10000)`; log and metric limits
+default to all-zero disabled groups. Negative log-rate input becomes zero.
+Limit and redaction accessors return copies, as do processor arrays.
 
-Structured logs are enabled by default independently of messages and
-exceptions. The core applies `log_minimum_level` before entering the log
-pipeline. `log_rate_limit_per_second` remains a compatibility limit evaluated
-after the log signal's per-frame, repeated, and sliding limits. It uses the
-pipeline's monotonic clock in a fixed one-second window; zero disables it. A
-disabled log configuration or a record below the configured level returns an
-empty ID without calling the provider or replacing the latest processing
-diagnostic.
+Event and log processors have signature
+`Callable[[ObservabilityEvent], ObservabilityEvent?]`. Metric processors have
+signature `Callable[[ObservabilityMetric], ObservabilityMetric?]`. Each
+processor returns a same-type replacement or `null` to drop the signal. The
+nullable metric predicate has signature
+`Callable[[ObservabilityMetric], bool]?`; `has_metric_filter()` distinguishes
+an absent filter without requiring callers to cross a nullable callable
+boundary. A false predicate is a policy drop.
 
-Metrics are independently enabled by default. metric_sample_rate must be finite
-and between 0.0 and 1.0 inclusive; invalid configuration returns
-Error.ERR_INVALID_PARAMETER without replacing the active provider. A valid
-metric_filter must return bool. It receives the normalized, pre-redacted
-metric before the ordered metric processor array. Returning false produces the
-same normal `processor` drop as a processor returning null; returning another
-type produces `invalid_processor_result` and stores Error.ERR_INVALID_DATA.
+Structured logs and metrics are enabled independently by default. Sample rates
+must be finite and in `0.0...1.0`; invalid values reject configuration
+transactionally. Records below `log_minimum_level()` do not enter the pipeline.
+
+### ObservabilityAutomaticCaptureConfig
+
+~~~foundryscript
+ObservabilityAutomaticCaptureConfig.new(
+		p_enabled: bool = true,
+		p_event_mask: int = ObservabilityCaptureMask.DEFAULT_EVENTS,
+		p_breadcrumb_mask: int = ObservabilityCaptureMask.DEFAULT_BREADCRUMBS,
+		p_log_mask: int = ObservabilityCaptureMask.NONE,
+		p_max_breadcrumbs: int = 100,
+		p_message_filter_prefixes: PackedStringArray = PackedStringArray(
+				["FoundryObservability: "],
+		),
+)
+
+func enabled() -> bool
+func event_mask() -> int
+func breadcrumb_mask() -> int
+func log_mask() -> int
+func max_breadcrumbs() -> int
+func message_filter_prefixes() -> PackedStringArray
+~~~
+
+Negative breadcrumb capacity becomes zero. Prefix access returns a copy.
+
+### ObservabilityAttachmentConfig
+
+~~~foundryscript
+ObservabilityAttachmentConfig.new(
+		p_max_bytes: int = 20 * 1024 * 1024,
+		p_attach_game_log: bool = false,
+		p_attach_screenshot: bool = false,
+		p_attach_scene_tree: bool = false,
+)
+
+func max_bytes() -> int
+func attach_game_log() -> bool
+func attach_screenshot() -> bool
+func attach_scene_tree() -> bool
+~~~
+
+The default maximum is 20 MiB per attachment. Negative input becomes zero;
+zero disables delivery. Every built-in attachment is an independent opt-in.
+
+### ObservabilityStackTraceConfig
+
+~~~foundryscript
+ObservabilityStackTraceConfig.new(
+		p_source_context_enabled: bool = true,
+		p_variables_enabled: bool = false,
+)
+
+func source_context_enabled() -> bool
+func variables_enabled() -> bool
+~~~
+
+Source context is retained by default within the documented bounds. Variables
+remain off until explicitly enabled because they may contain credentials, PII,
+or game state.
+
+### ObservabilityMobileDiagnosticsConfig
+
+~~~foundryscript
+ObservabilityMobileDiagnosticsConfig.new(
+		p_application_hang_detection_enabled: bool = true,
+		p_application_hang_timeout_msec: int = 5000,
+		p_android_anr_detection_enabled: bool = true,
+		p_android_anr_timeout_msec: int = 5000,
+		p_android_anr_attach_thread_dump: bool = false,
+)
+
+func application_hang_detection_enabled() -> bool
+func application_hang_timeout_msec() -> int
+func android_anr_detection_enabled() -> bool
+func android_anr_timeout_msec() -> int
+func android_anr_attach_thread_dump() -> bool
+~~~
+
+Both detectors default to enabled. Timeout inputs normalize to at least 1,000
+milliseconds. Android thread-dump attachment is disabled by default.
+
+### Hard-cut migration
+
+There is no compatibility constructor. Move each former root concern into its
+focused owner:
+
+| Former root arguments | New owner |
+| --- | --- |
+| `p_logs_enabled`, sampling, metric filter, processor, limit, and redaction arguments | `ObservabilityProcessingConfig` |
+| automatic enablement, masks, breadcrumb bound, and message prefixes | `ObservabilityAutomaticCaptureConfig` |
+| maximum bytes and built-in attachment opt-ins | `ObservabilityAttachmentConfig` |
+| source-context and variable flags | `ObservabilityStackTraceConfig` |
+| Apple hang and Android ANR options | `ObservabilityMobileDiagnosticsConfig` |
+
+Then pass those objects through `p_processing`, `p_automatic_capture`,
+`p_attachments`, `p_stack_traces`, and `p_mobile_diagnostics`. Field reads
+likewise become accessor chains such as
+`config.processing().metrics_enabled()` and
+`config.attachments().max_bytes()`.
 
 ### Provider-neutral signal processing
 
@@ -487,7 +618,7 @@ language exceptions, so a failure that yields `null` has the same closed
 delivery result as an intentional drop. The pipeline does not print callable
 errors or payloads.
 
-The legacy `metric_filter` runs on the pre-redacted normalized metric before
+The optional `metric_filter` runs on the pre-redacted normalized metric before
 `metric_processors`. Ordinary event processors never receive logs, and all
 Foundry-originated automatic and explicit events use the same event pipeline.
 Provider-owned state redaction uses the same policy but does not run signal
@@ -519,11 +650,10 @@ positive.
 Events, structured logs, and metrics have independent sampling accumulators and independent `ObservabilitySignalLimits` groups.
 The default event group is 5 accepted events per processed frame, one accepted
 matching event per 1,000 milliseconds, and 20 accepted events per 10,000
-milliseconds. It applies to manual and automatic events. These defaults come
-from the four legacy `automatic_*` fields when `p_event_limits` is absent; an
-explicit `p_event_limits` wins. Log and metric limit groups are disabled by
-default. `log_rate_limit_per_second` remains an additional disabled-by-default
-legacy log-only limit, so no signal can consume another signal's capacity.
+milliseconds. It applies to manual and automatic events. An explicit
+`p_event_limits` replaces that group. Log and metric limit groups are disabled
+by default. `log_rate_limit_per_second` is an additional disabled-by-default
+log-only limit, so no signal can consume another signal's capacity.
 
 Limits are evaluated in this order:
 
@@ -643,39 +773,40 @@ It returns an isolated snapshot of the latest published processing outcome, or
 
 ~~~
 func sequence() -> int
-func processing_signal() -> StringName
-func outcome() -> StringName
-func reason() -> StringName
+func processing_signal() -> ObservabilitySignal
+func outcome() -> ObservabilityProcessingOutcome
+func reason() -> ObservabilityProcessingReason
 func processor_index() -> int
-func rule_index() -> int
-func limit_kind() -> StringName
+func redaction_rule_index() -> int
+func limit_kind() -> ObservabilityLimitKind
 func error() -> int
 func duplicate() -> ObservabilityProcessingDiagnostic
 ~~~
 
 `processing_signal()` is named this way because `signal` is a reserved
-FoundryScript keyword. Signals are `event`, `log`, `metric`, and `state`;
-outcomes are `accepted` and `dropped`. Successful provider delivery publishes
-`accepted`, an empty reason, and `Error.OK`. State is published for redaction
-failures or recursive provider-state mutation; successful state changes do not
-replace the diagnostic.
+Foundry Script keyword. It returns an `ObservabilitySignal` enum. Outcome,
+reason, and limit accessors likewise return the typed enums documented below.
+Successful provider delivery publishes `ACCEPTED`, `NONE`, and `Error.OK`.
+State is published for redaction failures or recursive provider-state
+mutation; successful state changes do not replace the diagnostic.
 
 Drop reasons map to errors as follows:
 
 | Reason | Diagnostic error | `last_error()` behavior |
 | --- | --- | --- |
-| `processor` | `Error.OK` | Expected policy drop; remains `Error.OK` |
-| `sampled` | `Error.OK` | Expected policy drop; remains `Error.OK` |
-| `rate_limited` | `Error.OK` | Expected policy drop; remains `Error.OK` |
-| `recursive` | `Error.OK` for event/log/metric; `Error.ERR_BUSY` for state | Signal recursion is an expected drop; recursive state mutation reports busy |
-| `invalid_processor_result` | `Error.ERR_INVALID_DATA` | Stores `Error.ERR_INVALID_DATA` |
-| `redaction_failed` | `Error.ERR_INVALID_DATA` | Stores `Error.ERR_INVALID_DATA` |
-| `invalid_payload` | `Error.ERR_INVALID_DATA` | Stores `Error.ERR_INVALID_DATA` |
-| `provider_rejected` | Provider/effective non-OK error, or `Error.FAILED` when none was supplied | Stores the effective provider error |
+| `PROCESSOR` | `Error.OK` | Expected policy drop; remains `Error.OK` |
+| `SAMPLED` | `Error.OK` | Expected policy drop; remains `Error.OK` |
+| `RATE_LIMITED` | `Error.OK` | Expected policy drop; remains `Error.OK` |
+| `RECURSIVE` | `Error.OK` for event/log/metric; `Error.ERR_BUSY` for state | Signal recursion is an expected drop; recursive state mutation reports busy |
+| `INVALID_PROCESSOR_RESULT` | `Error.ERR_INVALID_DATA` | Stores `Error.ERR_INVALID_DATA` |
+| `REDACTION_FAILED` | `Error.ERR_INVALID_DATA` | Stores `Error.ERR_INVALID_DATA` |
+| `INVALID_PAYLOAD` | `Error.ERR_INVALID_DATA` | Stores `Error.ERR_INVALID_DATA` |
+| `PROVIDER_REJECTED` | Provider/effective non-OK error, or `Error.FAILED` when none was supplied | Stores the effective provider error |
+| `STALE_GENERATION` | `Error.ERR_BUSY` | Stores `Error.ERR_BUSY` |
 
-For `rate_limited`, `limit_kind()` is `per_frame`, `repeated`, `window`, or
-`legacy_log_window`. Other drops use an empty limit kind.
-`processor_index()` and `rule_index()` identify only the configured array
+For `RATE_LIMITED`, `limit_kind()` is `PER_FRAME`, `REPEATED`, `WINDOW`, or
+`LEGACY_LOG_WINDOW`. Other results use `NONE`.
+`processor_index()` and `redaction_rule_index()` identify only the configured array
 position; they are `-1` when not applicable. Sequence numbers are local,
 monotonic within one configured pipeline, and reset after successful
 configuration.
@@ -684,6 +815,52 @@ Diagnostics never retain payload objects, messages, attribute keys or values, co
 Disabled calls and severity/capability gates that never enter a signal pipeline
 preserve the prior diagnostic, matching the existing disabled no-op behavior
 of `last_error()`.
+
+#### Typed processing model
+
+The `foundry.observability.processing` namespace exposes closed enums instead
+of stringly typed statuses:
+
+| Enum | Values |
+| --- | --- |
+| `ObservabilitySignal` | `EVENT`, `LOG`, `METRIC`, `STATE` |
+| `ObservabilityProcessingOutcome` | `ACCEPTED`, `DROPPED`, `FAILED` |
+| `ObservabilityProcessingReason` | `NONE`, `PROCESSOR`, `SAMPLED`, `RATE_LIMITED`, `RECURSIVE`, `INVALID_PROCESSOR_RESULT`, `REDACTION_FAILED`, `INVALID_PAYLOAD`, `PROVIDER_REJECTED`, `STALE_GENERATION` |
+| `ObservabilityLimitKind` | `NONE`, `PER_FRAME`, `REPEATED`, `WINDOW`, `LEGACY_LOG_WINDOW` |
+
+The immutable result objects preserve the type of their payload rather than
+placing it in an untyped dictionary:
+
+~~~foundryscript
+func ObservabilityAdmissionDecision.accepted() -> bool
+func ObservabilityAdmissionDecision.reason() -> ObservabilityProcessingReason
+func ObservabilityAdmissionDecision.limit_kind() -> ObservabilityLimitKind
+
+func ObservabilityNormalizationResult[T].valid() -> bool
+func ObservabilityNormalizationResult[T].value() -> T?
+func ObservabilityNormalizationResult[T].error() -> int
+
+func ObservabilityRedactionResult[T].valid() -> bool
+func ObservabilityRedactionResult[T].value() -> T?
+func ObservabilityRedactionResult[T].failed_rule_index() -> int
+func ObservabilityRedactionResult[T].error() -> int
+
+func ObservabilityProcessingResult[T].outcome() -> ObservabilityProcessingOutcome
+func ObservabilityProcessingResult[T].is_accepted() -> bool
+func ObservabilityProcessingResult[T].processing_signal() -> ObservabilitySignal
+func ObservabilityProcessingResult[T].value() -> T?
+func ObservabilityProcessingResult[T].operation_token() -> int
+func ObservabilityProcessingResult[T].reason() -> ObservabilityProcessingReason
+func ObservabilityProcessingResult[T].processor_index() -> int
+func ObservabilityProcessingResult[T].redaction_rule_index() -> int
+func ObservabilityProcessingResult[T].limit_kind() -> ObservabilityLimitKind
+func ObservabilityProcessingResult[T].error() -> int
+~~~
+
+Accepted processing results carry a typed value and a positive operation token.
+Dropped and failed results carry no value and use token `-1`. Only rate-limited
+results carry a non-`NONE` limit kind. Invalid public result construction is
+reported and canonicalized to a safe, payload-free closed state.
 
 #### Recursion, lifecycle, and privacy boundaries
 
@@ -711,6 +888,17 @@ If provider or configuration work is active, the void call returns before flush,
 Completion clears processing state and callables and installs a disabled
 pipeline. A later intentional successful `configure()` can start a new
 generation.
+
+`ObservabilityProcessingLease[T]` pins the runtime, typed processor array,
+redactor, limiter, signal, owner, generation, and operation token used by one
+admission attempt. `ObservabilityProviderSnapshot` pins one coherent
+provider/configuration/pipeline generation. `ObservabilityProviderCall` is a
+closed accepted-or-rejected result that exposes collaborators only for an
+accepted call. `ObservabilityProviderSession` owns those snapshots, provider
+replacement, nested per-owner call contexts, flush, and shutdown. These types
+live in `foundry.observability.processing`; application code normally uses the
+autoload instead. Their purpose is to guarantee that an accepted signal never
+mixes dependencies from different generations.
 
 The service applies the policy to Foundry-owned global contexts, explicit user
 fields, breadcrumbs, attachment metadata, event-local scope, events, logs, and
@@ -787,7 +975,7 @@ capture, flush, or shutdown cannot recursively enter automatic capture.
 Providers should still avoid deliberately reporting their own failures through
 the same observability pipeline.
 
-`max_breadcrumbs` is a provider-neutral capacity. The memory provider and
+`ObservabilityAutomaticCaptureConfig.max_breadcrumbs()` is a provider-neutral capacity. The memory provider and
 native Apple/Android Sentry integrations retain at most that many breadcrumbs,
 evicting the oldest first. Zero disables storage; the memory provider rejects
 capture at zero, while native Sentry retains no breadcrumb. Negative constructor
@@ -805,7 +993,7 @@ can reveal source text, so callers must review it before capture. Frame
 variables are disabled by default. They may contain credentials, tokens, PII,
 or game state. Acquiring, inspecting, and copying stack locals can also be
 expensive and increase capture latency and memory use. Producers must check
-`stack_trace_variables_enabled` before acquiring locals, and only acquire them
+`config.stack_traces().variables_enabled()` before acquiring locals, and only acquire them
 when it is explicitly enabled. Without an explicit redaction policy this is
 type filtering and bounding, not content redaction: supported strings are
 forwarded verbatim, and callers must review both source context and variables
@@ -1415,7 +1603,7 @@ func last_processing_diagnostic() -> ObservabilityProcessingDiagnostic?
 Before configuration, the service is disabled, unavailable, reports provider
 name null, and has last_error() equal to Error.OK.
 
-is_enabled reflects config.enabled. is_available delegates to the active
+`is_enabled()` reflects `config.enabled()`. `is_available()` delegates to the active
 provider. provider_name delegates to the active provider and returns null when
 no provider is active. last_error returns the latest stored configuration,
 capture, or flush error. A successful provider configuration clears the error.
@@ -1644,7 +1832,7 @@ func capture_distribution(
 ) -> bool
 ~~~
 
-`capture_metric()` follows the shared processing section: pre-redaction, the legacy filter, ordered metric processors, post-redaction, validation, deterministic metric sampling, metric signal limits, and provider dispatch.
+`capture_metric()` follows the shared processing section: pre-redaction, the optional metric filter, ordered metric processors, post-redaction, validation, deterministic metric sampling, metric signal limits, and provider dispatch.
 Before that shared path, the service validates and normalizes the input metric
 and merges valid global and per-metric attributes. The convenience methods
 construct the corresponding `ObservabilityMetric`. A true result means the
@@ -1693,7 +1881,7 @@ are disabled returns false without changing the prior processing diagnostic or
 error. A missing metric provider capability returns false with
 `Error.ERR_UNAVAILABLE`.
 
-Once processing begins, a false legacy filter result or processor `null`
+Once processing begins, a false metric-filter result or processor `null`
 publishes `processor`; deterministic sampling publishes `sampled`; and a metric
 limit publishes `rate_limited`. A same-owner recursive metric capture publishes
 `recursive`. Those expected false results leave `last_error()` at `Error.OK`.
@@ -1733,7 +1921,9 @@ FoundryObservability.configure(
 		provider,
 		ObservabilityConfig.new(
 				p_enabled = true,
-				p_stack_trace_variables_enabled = true,
+				p_stack_traces = ObservabilityStackTraceConfig.new(
+						p_variables_enabled = true,
+					),
 		),
 )
 
@@ -1977,12 +2167,12 @@ object remains active.
 
 ### Limits, materialization, and failures
 
-| Configuration key | Default |
-| --- | --- |
-| max_attachment_bytes | `20 * 1024 * 1024` (20 MiB) |
-| attach_game_log | `false` |
-| attach_screenshot | `false` |
-| attach_scene_tree | `false` |
+| Former root name | Default | `ObservabilityAttachmentConfig` accessor |
+| --- | --- | --- |
+| max_attachment_bytes | `20 * 1024 * 1024` (20 MiB) | `max_bytes()` |
+| attach_game_log | `false` | `attach_game_log()` |
+| attach_screenshot | `false` | `attach_screenshot()` |
+| attach_scene_tree | `false` | `attach_scene_tree()` |
 
 Negative values normalize to zero. Zero disables all attachment delivery, while attachment management may continue.
 The limit applies independently to each attachment.
@@ -2004,8 +2194,10 @@ Calling the failure accessor itself also leaves `last_error()` unchanged.
 
 ### Built-in attachments and native delivery
 
-`attach_game_log`, `attach_screenshot`, and `attach_scene_tree` are independent,
-false-by-default opt-ins. The game log remains a lazy path attachment.
+`attach_game_log`, `attach_screenshot`, and `attach_scene_tree` are independent, false-by-default opt-ins.
+They are configured by the like-named
+`ObservabilityAttachmentConfig` constructor arguments and exposed through
+accessors with `()` suffixes. The game log remains a lazy path attachment.
 Screenshot capture runs on the main thread, is unavailable headlessly, and may
 reuse the current frame.
 Scene-tree output is bounded and may contain game-authored names or text.
@@ -2094,11 +2286,12 @@ through FoundryLib, preventing recursive error reporting.
 
 ## Mobile hang and ANR diagnostics
 
-ObservabilityConfig exposes provider-neutral controls for native main-thread
-hang diagnostics. `application_hang_detection_enabled` and
-`application_hang_timeout_msec` apply to macOS and iOS.
-`android_anr_detection_enabled`, `android_anr_timeout_msec`, and
-`android_anr_attach_thread_dump` apply only to Android. Both detectors are
+`ObservabilityMobileDiagnosticsConfig` exposes provider-neutral controls for
+native main-thread hang diagnostics.
+`application_hang_detection_enabled()` and
+`application_hang_timeout_msec()` apply to macOS and iOS.
+`android_anr_detection_enabled()`, `android_anr_timeout_msec()`, and
+`android_anr_attach_thread_dump()` apply only to Android. Both detectors are
 enabled by default with a 5000 ms timeout; Android thread-dump attachment is
 disabled by default. Timeout values below 1000 ms normalize to 1000 ms.
 
@@ -2148,6 +2341,74 @@ transport.
 | iOS | Block the main thread for longer than 5 seconds on a physical test device. | Enabled: one native event after recovery; disabled: no event. Inspect severity, mechanism, blocked thread, stack, release, environment, device, and OS data. |
 | Android 10 or earlier | Block the main thread beyond the configured watchdog timeout. | Enabled: one watchdog ANR event only when ActivityManager considers the process not responding; native severity is ERROR. Disabled: no event. Inspect mechanism, threads, release, environment, device, and OS data. |
 | Android 11 or later | Trigger a controlled system ANR, then relaunch the app. | Enabled: when usable `ApplicationExitInfo` and readable trace data produce the native V2 ANR diagnostic, its severity is FATAL; parsed threads appear only after successful trace parsing, and a raw thread dump only when requested and readable and available. If no actionable trace is available, no event may be produced. Disabled: no event. Inspect mechanism, threads when parsed, release, environment, device, and OS data. |
+
+## Sentry typed sources and native adapter
+
+The optional addon lives in `foundry.observability.sentry`. Engine acquisition
+is isolated behind two injectable traits:
+
+~~~foundryscript
+trait_name SentryRuntimeContextSource
+
+abstract func stable_snapshot() -> SentryRuntimeSnapshot
+abstract func volatile_snapshot() -> SentryRuntimeSnapshot
+abstract func privacy_snapshot() -> SentryRuntimeSnapshot.Privacy
+
+trait_name SentryAttachmentSource
+
+abstract func is_main_thread() -> bool
+abstract func is_headless() -> bool
+abstract func frames_drawn() -> int
+abstract func scene_root() -> Node?
+abstract func screenshot_png() -> PackedByteArray
+abstract func game_log_path() -> String
+~~~
+
+`SystemSentryRuntimeContextSource` and `SystemSentryAttachmentSource` are the
+engine-backed implementations. `SentryRuntimeSnapshot` is an immutable typed
+aggregate of application, engine, device, display, GPU, runtime, privacy, and
+free-storage facts. Stable and volatile collection exclude identifying values;
+`privacy_snapshot()` is called only when the matching provider privacy option
+is enabled. `SentryAttachmentCollection` returns copied native payload
+dictionaries and typed `ObservabilityAttachmentFailure` values.
+
+The native extension is isolated behind this typed trait:
+
+~~~foundryscript
+trait_name SentryNativeBridge
+
+abstract func contract_valid() -> bool
+abstract func supports_core() -> bool
+abstract func lifecycle_version() -> int
+abstract func configure(payload: Dictionary) -> int
+abstract func is_available(owner: String) -> bool
+abstract func capture(payload: Dictionary) -> String
+abstract func supports_logs() -> bool
+abstract func capture_log(payload: Dictionary) -> String
+abstract func supports_scope() -> bool
+abstract func apply_scope(payload: Dictionary) -> bool
+abstract func supports_breadcrumbs() -> bool
+abstract func capture_breadcrumb(payload: Dictionary) -> bool
+abstract func clear_breadcrumbs() -> bool
+abstract func supports_feedback() -> bool
+abstract func capture_feedback(payload: Dictionary) -> String
+abstract func supports_metrics() -> bool
+abstract func capture_metric(payload: Dictionary) -> bool
+abstract func supports_attachments() -> bool
+abstract func replace_attachments(payloads: Array[Dictionary]) -> bool
+abstract func capture_with_attachments(payload: Dictionary) -> String
+abstract func flush(owner: String, timeout_msec: int) -> int
+abstract func shutdown(owner: String) -> void
+~~~
+
+`DynamicSentryNativeBridgeAdapter` is the only Foundry Script class allowed to
+call the dynamically loaded native object. It checks required core/log methods,
+validates every dynamic return type, and exposes optional capability groups.
+Once an invoked method is missing or returns the wrong type,
+`contract_valid()` becomes false monotonically. The provider then shuts the
+owner down and fails closed, because a state-changing native call may have
+mutated the SDK before returning malformed data. Dynamic calls and
+`Object.call()` do not escape this adapter.
 
 ## Sentry native crash lifecycle
 

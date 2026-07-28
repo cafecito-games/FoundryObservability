@@ -368,11 +368,25 @@ for processing_resource in \
 	ObservabilitySignalLimits \
 	ObservabilityRedactionRule \
 	ObservabilityRedactionPolicy \
-	ObservabilityProcessingDiagnostic \
+	ObservabilityProcessingDiagnostic; do
+	resource_path="addons/FoundryObservability/${processing_resource}.fs"
+	grep -qx "$resource_path" <<<"$listing" \
+		|| fail "package is missing $resource_path"
+	grep -qx "$resource_path.uid" <<<"$listing" \
+		|| fail "package is missing $resource_path.uid"
+done
+for typed_processing_resource in \
 	ObservabilityRedactor \
 	ObservabilitySignalLimiter \
-	ObservabilityProcessingPipeline; do
-	resource_path="addons/FoundryObservability/${processing_resource}.fs"
+	ObservabilityProcessingPipeline \
+	ObservabilityProcessingLease \
+	ObservabilityNormalizationResult \
+	ObservabilityNormalizer \
+	ObservabilityProviderSnapshot \
+	ObservabilityProviderCall \
+	ObservabilityPipelineClaimToken \
+	ObservabilityProviderSession; do
+	resource_path="addons/FoundryObservability/processing/${typed_processing_resource}.fs"
 	grep -qx "$resource_path" <<<"$listing" \
 		|| fail "package is missing $resource_path"
 	grep -qx "$resource_path.uid" <<<"$listing" \
@@ -409,13 +423,32 @@ grep -qx 'addons/FoundryObservabilitySentry/plugin.cfg' <<<"$sentry_listing" \
 	|| fail "Sentry package is missing plugin.cfg"
 grep -qx 'addons/FoundryObservabilitySentry/SentryObservabilityProvider.fs' <<<"$sentry_listing" \
 	|| fail "Sentry package is missing the FoundryScript provider"
-for context_resource in SentryRuntimeContextProbe SentryRuntimeContextCollector; do
+for bridge_resource in \
+	SentryNativeBridge \
+	DynamicSentryNativeBridgeAdapter; do
+	grep -qx "addons/FoundryObservabilitySentry/${bridge_resource}.fs" \
+		<<<"$sentry_listing" \
+		|| fail "Sentry package is missing ${bridge_resource}.fs"
+	grep -qx "addons/FoundryObservabilitySentry/${bridge_resource}.fs.uid" \
+		<<<"$sentry_listing" \
+		|| fail "Sentry package is missing ${bridge_resource}.fs.uid"
+done
+for context_resource in \
+	SentryRuntimeSnapshot \
+	SentryRuntimeContextSource \
+	SystemSentryRuntimeContextSource \
+	SentryRuntimeContextCollector; do
 	grep -qx "addons/FoundryObservabilitySentry/${context_resource}.fs" \
 		<<<"$sentry_listing" \
 		|| fail "Sentry package is missing ${context_resource}.fs"
+	grep -qx "addons/FoundryObservabilitySentry/${context_resource}.fs.uid" \
+		<<<"$sentry_listing" \
+		|| fail "Sentry package is missing ${context_resource}.fs.uid"
 done
 for attachment_resource in \
-	SentryAttachmentRuntimeProbe \
+	SentryAttachmentSource \
+	SystemSentryAttachmentSource \
+	SentryAttachmentCollection \
 	SentryBuiltInAttachmentCollector; do
 	resource_path="addons/FoundryObservabilitySentry/${attachment_resource}.fs"
 	grep -qx "$resource_path" <<<"$sentry_listing" \
@@ -423,6 +456,9 @@ for attachment_resource in \
 	grep -qx "$resource_path.uid" <<<"$sentry_listing" \
 		|| fail "Sentry package is missing ${attachment_resource}.fs.uid"
 done
+if rg -n 'Sentry(RuntimeContext|AttachmentRuntime)Probe\.fs' <<<"$sentry_listing"; then
+	fail "Sentry package contains deleted probe resources"
+fi
 grep -qx 'addons/FoundryObservabilitySentry/FoundryObservabilitySentry.foundryextension' <<<"$sentry_listing" \
 	|| fail "Sentry package is missing the FoundryExtension descriptor"
 grep -qx 'addons/FoundryObservabilitySentry/bin/ios/.gitkeep' <<<"$sentry_listing" \
@@ -448,7 +484,7 @@ while IFS= read -r resource; do
 	grep -qx "$relative.uid" <<<"$sentry_listing" \
 		|| fail "$relative.uid is missing from the Sentry package"
 done < <(
-	find "$repo_root/addons/FoundryObservabilitySentry" -maxdepth 1 -type f -name '*.fs' | sort
+	find "$repo_root/addons/FoundryObservabilitySentry" -type f -name '*.fs' | sort
 )
 
 probe_version="9.8.7"

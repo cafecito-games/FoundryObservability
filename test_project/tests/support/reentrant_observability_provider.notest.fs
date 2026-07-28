@@ -21,7 +21,7 @@ func is_available() -> bool:
 
 
 func configure(config: ObservabilityConfig) -> int:
-	_enabled = config.enabled
+	_enabled = config.enabled()
 	_shutdown = false
 	return Error.OK
 

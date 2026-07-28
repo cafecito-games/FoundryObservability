@@ -1,5 +1,7 @@
 namespace foundry.observability
 
+import foundry.observability.processing
+
 ## Resolves provider-neutral startup configuration from project and runtime data.
 class_name ObservabilityStartupSettings
 extends RefCounted
@@ -37,6 +39,31 @@ var _editor_feature: bool = false
 var _provider_options: Dictionary = {}
 var _validation_error: int = Error.OK
 var _scalar_project_values_valid: bool = true
+
+
+class ProviderOptionPolicy extends RefCounted:
+	uses ObservabilityValuePolicy
+
+	func visit(
+			_path: PackedStringArray,
+			value: Variant,
+	) -> ObservabilityValueVisitDecision:
+		if value is Dictionary or value is Array:
+			return ObservabilityValueVisitDecision.descend()
+		if value == null or value is bool or value is int \
+				or value is String or value is StringName:
+			return ObservabilityValueVisitDecision.keep(value)
+		if value is float and is_finite(value):
+			return ObservabilityValueVisitDecision.keep(value)
+		return ObservabilityValueVisitDecision.reject()
+
+	func visit_dictionary_key(
+			_path: PackedStringArray,
+			key: Variant,
+	) -> ObservabilityValueVisitDecision:
+		if key is String or key is StringName:
+			return ObservabilityValueVisitDecision.keep(key)
+		return ObservabilityValueVisitDecision.reject()
 
 
 func _init(
@@ -80,21 +107,24 @@ func _init(
 			PROVIDER_OPTIONS,
 			defaults[PROVIDER_OPTIONS],
 		)
-	var provider_option_budget: Dictionary = {
-		"remaining": _MAX_PROVIDER_OPTION_ITEMS,
-	}
-	var active_provider_option_containers: Array = []
-	if not (raw_options is Dictionary) \
-			or not _is_valid_provider_option(
-					raw_options,
-					0,
-					provider_option_budget,
-					active_provider_option_containers,
-				):
+	if not (raw_options is Dictionary):
 		_validation_error = Error.ERR_INVALID_PARAMETER
 	else:
-		@warning_ignore("unsafe_method_access")
-		_provider_options = raw_options.duplicate(true)
+		var provider_options_result: ObservabilityRedactionResult[Variant] = (
+				ObservabilityValueWalker.new(
+					_MAX_PROVIDER_OPTION_DEPTH,
+					_MAX_PROVIDER_OPTION_ITEMS + 1,
+				).walk(
+					raw_options,
+					ProviderOptionPolicy.new(),
+				)
+			)
+		if not provider_options_result.valid() \
+				or not (provider_options_result.value() is Dictionary):
+			_validation_error = Error.ERR_INVALID_PARAMETER
+		else:
+			@warning_ignore("unsafe_cast")
+			_provider_options = provider_options_result.value() as Dictionary
 
 	_dsn = _first_nonempty(
 			_project_string_value(values, defaults, DSN),
@@ -231,13 +261,18 @@ func debug_enabled() -> bool:
 
 func observability_config() -> ObservabilityConfig:
 	return ObservabilityConfig.new(
-			p_enabled = _enabled,
-			p_environment = _environment,
-			p_release = _release,
-			p_dist = _dist,
-			p_global_attributes = {},
-			p_provider_options = _provider_options,
-		)
+		p_enabled = _enabled,
+		p_environment = _environment,
+		p_release = _release,
+		p_dist = _dist,
+		p_global_attributes = {},
+		p_provider_options = _provider_options,
+		p_processing = ObservabilityProcessingConfig.new(),
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(),
+		p_attachments = ObservabilityAttachmentConfig.new(),
+		p_stack_traces = ObservabilityStackTraceConfig.new(),
+		p_mobile_diagnostics = ObservabilityMobileDiagnosticsConfig.new(),
+	)
 
 
 static func _first_nonempty(primary: String, fallback: String) -> String:
@@ -328,104 +363,3 @@ static func _project_string_value(
 	if value is String:
 		return str(value)
 	return str(defaults[setting_name])
-
-
-static func _is_valid_provider_option(
-		value: Variant,
-		depth: int,
-		budget: Dictionary,
-		active_containers: Array,
-) -> bool:
-	match typeof(value):
-		TYPE_NIL, TYPE_BOOL, TYPE_INT, TYPE_STRING, TYPE_STRING_NAME:
-			return true
-		TYPE_FLOAT:
-			@warning_ignore("unsafe_call_argument")
-			return is_finite(value)
-		TYPE_ARRAY:
-			if depth > _MAX_PROVIDER_OPTION_DEPTH \
-					or not _enter_active_provider_option_container(
-							value, active_containers):
-				return false
-			@warning_ignore("unsafe_call_argument")
-			var valid_array: bool = _is_valid_provider_option_array(
-					value,
-					depth,
-					budget,
-					active_containers,
-				)
-			active_containers.pop_back()
-			return valid_array
-		TYPE_DICTIONARY:
-			if depth > _MAX_PROVIDER_OPTION_DEPTH \
-					or not _enter_active_provider_option_container(
-							value, active_containers):
-				return false
-			@warning_ignore("unsafe_call_argument")
-			var valid_dictionary: bool = _is_valid_provider_option_dictionary(
-					value,
-					depth,
-					budget,
-					active_containers,
-				)
-			active_containers.pop_back()
-			return valid_dictionary
-		_:
-			return false
-
-
-static func _is_valid_provider_option_array(
-		values: Array,
-		depth: int,
-		budget: Dictionary,
-		active_containers: Array,
-) -> bool:
-	for element: Variant in values:
-		if not _consume_provider_option_item(budget) \
-				or not _is_valid_provider_option(
-						element,
-						depth + 1,
-						budget,
-						active_containers,
-					):
-			return false
-	return true
-
-
-static func _is_valid_provider_option_dictionary(
-		values: Dictionary,
-		depth: int,
-		budget: Dictionary,
-		active_containers: Array,
-) -> bool:
-	for key: Variant in values:
-		if not _consume_provider_option_item(budget) \
-				or (not (key is String) and not (key is StringName)):
-			return false
-		if not _is_valid_provider_option(
-				values[key],
-				depth + 1,
-				budget,
-				active_containers,
-			):
-			return false
-	return true
-
-
-static func _consume_provider_option_item(budget: Dictionary) -> bool:
-	var remaining: int = budget["remaining"]
-	if remaining <= 0:
-		return false
-	budget["remaining"] = remaining - 1
-	return true
-
-
-static func _enter_active_provider_option_container(
-		container: Variant,
-		active_containers: Array,
-) -> bool:
-	for active_container: Variant in active_containers:
-		if is_same(container, active_container):
-			return false
-	active_containers.append(container)
-	return true
