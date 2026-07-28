@@ -1,6 +1,7 @@
 namespace foundry.observability
 
-## Immutable aggregate configuration.
+## Immutable aggregate of deployment metadata and focused policy objects.
+## Null focused arguments are replaced with their immutable default instances.
 final class_name ObservabilityConfig extends RefCounted
 
 final var _enabled: bool

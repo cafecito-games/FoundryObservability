@@ -1,6 +1,6 @@
 namespace foundry.observability
 
-## Immutable structured stack trace configuration.
+## Immutable source-context and variable-retention policy for structured stacks.
 final class_name ObservabilityStackTraceConfig extends RefCounted
 
 final var _source_context_enabled: bool

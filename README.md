@@ -130,28 +130,27 @@ var policy: ObservabilityRedactionPolicy = ObservabilityRedactionPolicy.new([
 			"[ssn]",
 		),
 ])
-var config: ObservabilityConfig = ObservabilityConfig.new(
+var processing := ObservabilityProcessingConfig.new(
+		p_event_processors = [
+			func(event: ObservabilityEvent) -> ObservabilityEvent?:
+				if event.level() < ObservabilityLevel.WARN:
+					return null
+				return event,
+		],
+		p_event_limits = ObservabilitySignalLimits.new(5, 1000, 20, 10000),
+		p_redaction_policy = policy,
+	)
+var config := ObservabilityConfig.new(
 		p_enabled = true,
 		p_environment = "production",
 		p_release = "1.0.0",
 		p_global_attributes = {},
 		p_provider_options = {},
-		p_automatic_log_mask = ObservabilityCaptureMask.ALL_ERRORS,
-		p_max_breadcrumbs = 100,
-		p_automatic_message_filter_prefixes = PackedStringArray(
-				["FoundryObservability: "],
-		),
-		p_event_processors = [func(event: ObservabilityEvent) -> Variant:
-			if event.level() < ObservabilityLevel.WARN:
-				return null
-			return event,
-		],
-		p_log_processors = [],
-		p_metric_processors = [],
-		p_event_limits = ObservabilitySignalLimits.new(5, 1000, 20, 10000),
-		p_log_limits = ObservabilitySignalLimits.new(100, 0, 1000, 10000),
-		p_metric_limits = ObservabilitySignalLimits.new(100, 0, 1000, 10000),
-		p_redaction_policy = policy,
+		p_processing = processing,
+		p_automatic_capture = ObservabilityAutomaticCaptureConfig.new(),
+		p_attachments = ObservabilityAttachmentConfig.new(),
+		p_stack_traces = ObservabilityStackTraceConfig.new(),
+		p_mobile_diagnostics = ObservabilityMobileDiagnosticsConfig.new(),
 	)
 var provider: ObservabilityProvider = MemoryObservabilityProvider.new()
 FoundryObservability.configure(provider, config)
@@ -228,8 +227,9 @@ if attachment != null:
 		FoundryObservability.remove_attachment(handle)
 ```
 
-`attach_game_log`, `attach_screenshot`, and `attach_scene_tree` are independent
-false-by-default configuration opt-ins. `max_attachment_bytes` defaults to
+`ObservabilityAttachmentConfig` makes `attach_game_log()`,
+`attach_screenshot()`, and `attach_scene_tree()` independent
+false-by-default opt-ins. `max_bytes()` defaults to
 20 MiB per attachment; setting it to zero disables attachment delivery while
 still allowing attachment management.
 
@@ -239,9 +239,10 @@ supplying optional identifying or contact fields.
 Successful enabled configuration automatically installs the engine logger.
 By default, errors, script errors, and shader errors become events; every
 diagnostic category and ordinary output message becomes a breadcrumb; and no
-automatic structured logs are emitted. The example opts all error categories
-into structured logs as well. Each destination can be configured independently
-or automatic capture can be disabled entirely. `max_breadcrumbs` defaults to
+automatic structured logs are emitted. The example keeps those defaults. Each
+destination can be configured independently or automatic capture can be
+disabled entirely. The focused automatic capture
+configuration's `max_breadcrumbs()` defaults to
 100, while zero disables breadcrumb storage; `clear_breadcrumbs()` explicitly
 clears the current trail. Event-local scope overrides matching global tags and
 contexts for one capture without changing later events.

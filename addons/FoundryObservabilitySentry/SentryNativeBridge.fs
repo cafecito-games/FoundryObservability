@@ -1,6 +1,8 @@
 namespace foundry.observability.sentry
 
 ## Typed boundary for the optional platform-native Sentry implementation.
+## contract_valid() is monotonic after a malformed invoked method; supports_core()
+## and the supports_* groups admit required and optional capabilities explicitly.
 trait_name SentryNativeBridge
 
 abstract func contract_valid() -> bool

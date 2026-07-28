@@ -3,6 +3,8 @@ namespace foundry.observability
 import foundry.observability.processing
 
 ## Immutable provider-neutral processing configuration.
+## Processor arrays use same-type replacement-or-null callables; the optional
+## metric filter is a typed predicate evaluated before metric processors.
 final class_name ObservabilityProcessingConfig extends RefCounted
 
 final var _logs_enabled: bool

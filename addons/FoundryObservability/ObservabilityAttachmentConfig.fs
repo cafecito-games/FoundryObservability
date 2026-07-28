@@ -1,6 +1,6 @@
 namespace foundry.observability
 
-## Immutable diagnostic attachment configuration.
+## Immutable per-attachment byte limit and built-in attachment opt-ins.
 final class_name ObservabilityAttachmentConfig extends RefCounted
 
 final var _max_bytes: int

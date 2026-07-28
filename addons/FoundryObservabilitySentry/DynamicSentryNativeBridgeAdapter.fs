@@ -1,6 +1,7 @@
 namespace foundry.observability.sentry
 
-## Validates the dynamic native extension API and exposes it as a typed bridge.
+## The sole dynamic-call boundary: validates native methods and results, then
+## exposes the optional extension through the typed SentryNativeBridge trait.
 final class_name DynamicSentryNativeBridgeAdapter
 extends RefCounted
 uses SentryNativeBridge

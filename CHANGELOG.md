@@ -2,6 +2,14 @@
 
 ## [Unreleased] - 2026-07-24
 
+- **Breaking:** remodeled the Foundry Script API around injectable runtime and
+  Sentry source traits, fully typed processor/filter callables and typed
+  admission/redaction/processing results, immutable focused configuration
+  objects, recursive `runtime`, `processing`, `foundrylib`, and `sentry`
+  namespaces, generation-pinned provider sessions, and a single typed
+  fail-closed adapter around the dynamic native Sentry extension. Removed the
+  broad root configuration constructor and compatibility-only callable seams;
+  callers must migrate directly to the new focused objects and accessors.
 - Added provider-neutral filtering, ordered immutable replacement-or-drop
   processors, two-pass redaction, deterministic per-signal sampling,
   independent event/log/metric rate limits, recursion protection, and

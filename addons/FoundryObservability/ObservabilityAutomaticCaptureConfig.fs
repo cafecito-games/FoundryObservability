@@ -1,6 +1,6 @@
 namespace foundry.observability
 
-## Immutable engine logger routing configuration.
+## Immutable engine logger routing, retention, and message-filter configuration.
 final class_name ObservabilityAutomaticCaptureConfig extends RefCounted
 
 final var _enabled: bool

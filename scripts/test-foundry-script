@@ -1810,6 +1810,98 @@ require_doc_text \
 	"README is missing automatic startup setup"
 
 api_doc="docs/API.md"
+for required_text in \
+	'trait_name ObservabilityRuntime' \
+	'Callable[[ObservabilityEvent], ObservabilityEvent?]' \
+	'Callable[[ObservabilityMetric], ObservabilityMetric?]' \
+	'Callable[[ObservabilityMetric], bool]?' \
+	'ObservabilityProcessingConfig.new(' \
+	'ObservabilityAutomaticCaptureConfig.new(' \
+	'ObservabilityAttachmentConfig.new(' \
+	'ObservabilityStackTraceConfig.new(' \
+	'ObservabilityMobileDiagnosticsConfig.new(' \
+	'Foundry Script `async` is cooperative'; do
+	require_doc_text \
+		"$api_doc" \
+		"$required_text" \
+		"API documentation is missing language-model contract: $required_text"
+done
+current_public_docs=$(
+	printf '%s\n' \
+		"$(<"$repo_root/README.md")" \
+		"$(<"$repo_root/docs/API.md")" \
+		"$(<"$repo_root/BUILD.md")" \
+		"$(<"$repo_root/CHANGELOG.md")"
+)
+reject_content_text \
+	"$current_public_docs" \
+	'Callable()' \
+	"current public documentation contains an untyped Callable sentinel"
+documented_root_constructors=$(
+	awk '
+		/ObservabilityConfig\.new\(/ {
+			capturing = 1
+			depth = 0
+		}
+		capturing {
+			print
+			line = $0
+			depth += gsub(/\(/, "(", line)
+			line = $0
+			depth -= gsub(/\)/, ")", line)
+			if (depth == 0) {
+				capturing = 0
+				print ""
+			}
+		}
+		END {
+			if (capturing || depth != 0) {
+				exit 1
+			}
+		}
+	' \
+		"$repo_root/README.md" \
+		"$repo_root/docs/API.md"
+) || fail "current public documentation has an incomplete ObservabilityConfig.new() example"
+for removed_root_parameter in \
+	p_logs_enabled \
+	p_log_minimum_level \
+	p_log_rate_limit_per_second \
+	p_metrics_enabled \
+	p_event_sample_rate \
+	p_log_sample_rate \
+	p_metric_sample_rate \
+	p_metric_filter \
+	p_event_processors \
+	p_log_processors \
+	p_metric_processors \
+	p_event_limits \
+	p_log_limits \
+	p_metric_limits \
+	p_redaction_policy \
+	p_automatic_capture_enabled \
+	p_automatic_event_mask \
+	p_automatic_breadcrumb_mask \
+	p_automatic_log_mask \
+	p_max_breadcrumbs \
+	p_automatic_message_filter_prefixes \
+	p_max_attachment_bytes \
+	p_attach_game_log \
+	p_attach_screenshot \
+	p_attach_scene_tree \
+	p_stack_trace_source_context_enabled \
+	p_stack_trace_variables_enabled \
+	p_application_hang_detection_enabled \
+	p_application_hang_timeout_msec \
+	p_android_anr_detection_enabled \
+	p_android_anr_timeout_msec \
+	p_android_anr_attach_thread_dump; do
+	if rg -q "${removed_root_parameter}[[:space:]]*=" \
+		<<<"$documented_root_constructors"; then
+		fail \
+			"current public documentation passes removed root constructor parameter: $removed_root_parameter"
+	fi
+done
 require_doc_text \
 	"$api_doc" \
 	"## Project-settings startup" \
@@ -1956,7 +2048,7 @@ for processing_doc_contract in \
 	'Final event/log normalization resolves a replacement timestamp and reapplies the active exception frame, source-context, and variable policy.' \
 	'Diagnostics never retain payload objects, messages, attribute keys or values, context names, user fields, attachment paths or filenames, callable error strings, processor identities, or redaction patterns.' \
 	'Events, structured logs, and metrics have independent sampling accumulators and independent `ObservabilitySignalLimits` groups.' \
-	'`capture_metric()` follows the shared processing section: pre-redaction, the legacy filter, ordered metric processors, post-redaction, validation, deterministic metric sampling, metric signal limits, and provider dispatch.'; do
+	'`capture_metric()` follows the shared processing section: pre-redaction, the optional metric filter, ordered metric processors, post-redaction, validation, deterministic metric sampling, metric signal limits, and provider dispatch.'; do
 	require_doc_text \
 		"$api_doc" \
 		"$processing_doc_contract" \

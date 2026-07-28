@@ -1,6 +1,6 @@
 namespace foundry.observability
 
-## Immutable mobile diagnostic configuration.
+## Immutable Apple app-hang and Android ANR diagnostic configuration.
 final class_name ObservabilityMobileDiagnosticsConfig extends RefCounted
 
 final var _application_hang_detection_enabled: bool
