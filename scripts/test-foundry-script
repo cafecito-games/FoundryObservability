@@ -1837,6 +1837,10 @@ require_doc_text \
 	"README.md" \
 	"foundry_observability/startup/auto_init" \
 	"README is missing automatic startup setup"
+require_doc_text \
+	"BUILD.md" \
+	'Foundry `v0.1.0-alpha.9` or a compatible local development build' \
+	"BUILD prerequisites must require Foundry v0.1.0-alpha.9"
 
 api_doc="docs/API.md"
 for required_text in \
